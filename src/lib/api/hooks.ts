@@ -224,7 +224,34 @@ export function useCorrection() {
   return useMutation({
     mutationFn: (body: { target_type: string; target_id: string; correction: Record<string, unknown> }) =>
       api.organization("/corrections", { method: "POST", body }),
-    onSuccess: () => {
+    onMutate: async (vars) => {
+      // Optimistically apply a display_name rename for people.
+      if (vars.target_type === "person" && typeof vars.correction?.display_name === "string") {
+        await qc.cancelQueries({ queryKey: ["people"] });
+        await qc.cancelQueries({ queryKey: ["person", vars.target_id] });
+        const prevList = qc.getQueryData<{ people: Array<{ id: string; display_name: string | null }> }>(["people"]);
+        const prevPerson = qc.getQueryData<Record<string, unknown>>(["person", vars.target_id]);
+        if (prevList) {
+          qc.setQueryData(["people"], {
+            ...prevList,
+            people: prevList.people.map((p) =>
+              p.id === vars.target_id ? { ...p, display_name: vars.correction.display_name as string } : p,
+            ),
+          });
+        }
+        if (prevPerson) {
+          qc.setQueryData(["person", vars.target_id], { ...prevPerson, display_name: vars.correction.display_name });
+        }
+        return { prevList, prevPerson };
+      }
+      return {};
+    },
+    onError: (_e, vars, ctx) => {
+      const c = ctx as { prevList?: unknown; prevPerson?: unknown } | undefined;
+      if (c?.prevList) qc.setQueryData(["people"], c.prevList);
+      if (c?.prevPerson) qc.setQueryData(["person", vars.target_id], c.prevPerson);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["people"] });
       qc.invalidateQueries({ queryKey: ["events"] });
       qc.invalidateQueries({ queryKey: ["duplicates"] });

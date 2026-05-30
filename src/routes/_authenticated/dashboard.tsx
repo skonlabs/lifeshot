@@ -1,10 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDashboard } from "@/lib/api/hooks";
+import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({ component: Dashboard });
 
 function Dashboard() {
+  useSourceProgress();
   const { data, isLoading, error } = useDashboard();
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">

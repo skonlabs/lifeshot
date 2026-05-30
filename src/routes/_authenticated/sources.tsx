@@ -1,10 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useConnectSource, useDisconnectSource, useProviders, useSourceAccounts, useSyncSource } from "@/lib/api/hooks";
+import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
 function Sources() {
+  useSourceProgress();
   const accounts = useSourceAccounts();
   const providers = useProviders();
   const connect = useConnectSource();
