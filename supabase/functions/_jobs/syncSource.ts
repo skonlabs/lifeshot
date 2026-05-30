@@ -45,36 +45,61 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw e;
   }
 
-  // Upsert assets
-  const assetRows = page.items.map((a) => ({
-    user_id: acct.user_id, source_account_id,
-    provider_asset_id: a.provider_asset_id,
-    media_type: a.media_type, mime_type: a.mime_type,
-    capture_time: a.capture_time, upload_time: a.upload_time,
-    width: a.width, height: a.height, duration_ms: a.duration_ms,
-    file_size_bytes: a.file_size_bytes, checksum_hash: a.checksum_hex,
-    perceptual_hash: a.perceptual_hash,
-    location_lat: a.location?.lat ?? null,
-    location_lng: a.location?.lng ?? null,
-    device_make: a.device_make, device_model: a.device_model,
-    thumbnail_cache_key: a.thumbnail_url ?? null,
-    proxy_cache_key: a.preview_url ?? null,
-    status: "ingested",
-  }));
-  let upserted: any[] = [];
-  if (assetRows.length) {
-    const { data, error: upErr } = await sb.from("assets").upsert(assetRows, {
-      onConflict: "source_account_id,provider_asset_id",
-    }).select("id");
-    if (upErr) throw new Error(`upsert assets: ${upErr.message}`);
-    upserted = data ?? [];
+  // Upsert: per-source ref + a bare canonical asset row (if not existing).
+  const upsertedAssetIds: string[] = [];
+  for (const a of page.items) {
+    // 1) Find existing ref → asset_id
+    const { data: existingRef } = await sb.from("asset_source_refs")
+      .select("asset_id").eq("source_account_id", source_account_id)
+      .eq("source_asset_id", a.provider_asset_id).maybeSingle();
+
+    let assetId: string | null = existingRef?.asset_id ?? null;
+    if (!assetId) {
+      const { data: newAsset, error: aErr } = await sb.from("assets").insert({
+        user_id: acct.user_id,
+        media_type: a.media_type === "image" ? "photo" : a.media_type,
+        mime_type: a.mime_type,
+        capture_time: a.capture_time,
+        upload_time: a.upload_time,
+        created_time: a.created_time,
+        modified_time: a.modified_time,
+        timezone: a.timezone,
+        width: a.width, height: a.height, duration_ms: a.duration_ms,
+        file_size_bytes: a.file_size_bytes,
+        checksum_hash: a.checksum_hex,
+        perceptual_hash: a.perceptual_hash,
+        location_lat: a.location?.lat ?? null,
+        location_lng: a.location?.lng ?? null,
+        device_make: a.device_make, device_model: a.device_model,
+        thumbnail_cache_key: a.thumbnail_url ?? null,
+        proxy_cache_key: a.preview_url ?? null,
+        status: "ingested",
+      }).select("id").single();
+      if (aErr) throw new Error(`insert asset: ${aErr.message}`);
+      assetId = newAsset!.id as string;
+    }
+
+    await sb.from("asset_source_refs").upsert({
+      asset_id: assetId, source_account_id, source_asset_id: a.provider_asset_id,
+      provider_url: a.provider_url ?? null, is_primary: !existingRef,
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: "source_account_id,source_asset_id" });
+
+    upsertedAssetIds.push(assetId);
   }
 
-  // Cascade deletions
+  // Cascade deletions via refs.
   const deleted = ("deleted" in page ? (page as any).deleted : []) as string[];
   if (deleted.length) {
-    await sb.from("assets").update({ deleted_state: "deleted", status: "deleted" })
-      .eq("source_account_id", source_account_id).in("provider_asset_id", deleted);
+    const { data: gone } = await sb.from("asset_source_refs")
+      .select("asset_id").eq("source_account_id", source_account_id)
+      .in("source_asset_id", deleted);
+    const goneIds = (gone ?? []).map((r: any) => r.asset_id);
+    if (goneIds.length) {
+      await sb.from("assets").update({ deleted_state: "deleted", status: "deleted" }).in("id", goneIds);
+    }
+    await sb.from("asset_source_refs").delete()
+      .eq("source_account_id", source_account_id).in("source_asset_id", deleted);
   }
 
   // Save cursor
@@ -83,10 +108,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }, { onConflict: "source_account_id,kind" });
 
   // Fan-out normalizeMetadata
-  for (const row of upserted) {
+  for (const id of upsertedAssetIds) {
     await enqueueJob("normalizeMetadata", {
-      userId: acct.user_id, payload: { asset_id: row.id },
-      idempotencyKey: `normalize:${row.id}`,
+      userId: acct.user_id, payload: { asset_id: id },
+      idempotencyKey: `normalize:${id}`,
     });
   }
 
