@@ -52,6 +52,7 @@ function Index() {
         <Manifesto />
         <SourcesStrip />
         <Lenses />
+        <Recall />
         <HowItWorks />
         <PrivacyPact />
         <FamilyAtlas />
@@ -80,6 +81,7 @@ function TopNav() {
         <nav className="hidden items-center gap-8 text-sm text-[color:var(--umber)] md:flex">
           <a href="#thesis" className="hover:text-[color:var(--ink)]">Why</a>
           <a href="#lenses" className="hover:text-[color:var(--ink)]">Lenses</a>
+          <a href="#recall" className="hover:text-[color:var(--ink)]">Recall</a>
           <a href="#how" className="hover:text-[color:var(--ink)]">How it works</a>
           <a href="#privacy" className="hover:text-[color:var(--ink)]">Privacy</a>
           <a href="#pricing" className="hover:text-[color:var(--ink)]">Pricing</a>
