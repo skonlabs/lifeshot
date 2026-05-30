@@ -14,7 +14,7 @@ function AppShellWrapper() {
   );
 }
 
-const NAV = [
+const NAV: ReadonlyArray<{ to: string; label: string; exact?: boolean }> = [
   { to: "/app", label: "Dashboard", exact: true },
   { to: "/app/library", label: "Library" },
   { to: "/app/search", label: "Search" },
@@ -24,7 +24,7 @@ const NAV = [
   { to: "/app/sources", label: "Sources" },
   { to: "/app/family", label: "Family" },
   { to: "/app/settings", label: "Privacy" },
-] as const;
+];
 
 function AppShell() {
   const { user, signOut } = useAuth();
@@ -39,7 +39,7 @@ function AppShell() {
               <Link
                 key={n.to}
                 to={n.to}
-                activeOptions={{ exact: n.exact }}
+                activeOptions={{ exact: n.exact ?? false }}
                 activeProps={{ className: "bg-ink text-paper" }}
                 className="rounded-lg px-3 py-2 text-sm hover:bg-foreground/5 transition"
               >

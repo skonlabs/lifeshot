@@ -9,38 +9,231 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedAppRouteImport } from './routes/_authenticated/app'
+import { Route as AuthenticatedAppIndexRouteImport } from './routes/_authenticated/app.index'
+import { Route as AuthenticatedAppSourcesRouteImport } from './routes/_authenticated/app.sources'
+import { Route as AuthenticatedAppSettingsRouteImport } from './routes/_authenticated/app.settings'
+import { Route as AuthenticatedAppSearchRouteImport } from './routes/_authenticated/app.search'
+import { Route as AuthenticatedAppPeopleRouteImport } from './routes/_authenticated/app.people'
+import { Route as AuthenticatedAppLibraryRouteImport } from './routes/_authenticated/app.library'
+import { Route as AuthenticatedAppFamilyRouteImport } from './routes/_authenticated/app.family'
+import { Route as AuthenticatedAppEventsRouteImport } from './routes/_authenticated/app.events'
+import { Route as AuthenticatedAppDuplicatesRouteImport } from './routes/_authenticated/app.duplicates'
+import { Route as ApiV1SourcesCallbackProviderRouteImport } from './routes/api.v1.sources.callback.$provider'
 
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedAppRoute = AuthenticatedAppRouteImport.update({
+  id: '/app',
+  path: '/app',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedAppIndexRoute = AuthenticatedAppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppSourcesRoute = AuthenticatedAppSourcesRouteImport.update({
+  id: '/sources',
+  path: '/sources',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppSettingsRoute =
+  AuthenticatedAppSettingsRouteImport.update({
+    id: '/settings',
+    path: '/settings',
+    getParentRoute: () => AuthenticatedAppRoute,
+  } as any)
+const AuthenticatedAppSearchRoute = AuthenticatedAppSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppPeopleRoute = AuthenticatedAppPeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppLibraryRoute = AuthenticatedAppLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppFamilyRoute = AuthenticatedAppFamilyRouteImport.update({
+  id: '/family',
+  path: '/family',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppEventsRoute = AuthenticatedAppEventsRouteImport.update({
+  id: '/events',
+  path: '/events',
+  getParentRoute: () => AuthenticatedAppRoute,
+} as any)
+const AuthenticatedAppDuplicatesRoute =
+  AuthenticatedAppDuplicatesRouteImport.update({
+    id: '/duplicates',
+    path: '/duplicates',
+    getParentRoute: () => AuthenticatedAppRoute,
+  } as any)
+const ApiV1SourcesCallbackProviderRoute =
+  ApiV1SourcesCallbackProviderRouteImport.update({
+    id: '/api/v1/sources/callback/$provider',
+    path: '/api/v1/sources/callback/$provider',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/app': typeof AuthenticatedAppRouteWithChildren
+  '/app/duplicates': typeof AuthenticatedAppDuplicatesRoute
+  '/app/events': typeof AuthenticatedAppEventsRoute
+  '/app/family': typeof AuthenticatedAppFamilyRoute
+  '/app/library': typeof AuthenticatedAppLibraryRoute
+  '/app/people': typeof AuthenticatedAppPeopleRoute
+  '/app/search': typeof AuthenticatedAppSearchRoute
+  '/app/settings': typeof AuthenticatedAppSettingsRoute
+  '/app/sources': typeof AuthenticatedAppSourcesRoute
+  '/app/': typeof AuthenticatedAppIndexRoute
+  '/api/v1/sources/callback/$provider': typeof ApiV1SourcesCallbackProviderRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/app/duplicates': typeof AuthenticatedAppDuplicatesRoute
+  '/app/events': typeof AuthenticatedAppEventsRoute
+  '/app/family': typeof AuthenticatedAppFamilyRoute
+  '/app/library': typeof AuthenticatedAppLibraryRoute
+  '/app/people': typeof AuthenticatedAppPeopleRoute
+  '/app/search': typeof AuthenticatedAppSearchRoute
+  '/app/settings': typeof AuthenticatedAppSettingsRoute
+  '/app/sources': typeof AuthenticatedAppSourcesRoute
+  '/app': typeof AuthenticatedAppIndexRoute
+  '/api/v1/sources/callback/$provider': typeof ApiV1SourcesCallbackProviderRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/_authenticated': typeof AuthenticatedRouteWithChildren
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/_authenticated/app': typeof AuthenticatedAppRouteWithChildren
+  '/_authenticated/app/duplicates': typeof AuthenticatedAppDuplicatesRoute
+  '/_authenticated/app/events': typeof AuthenticatedAppEventsRoute
+  '/_authenticated/app/family': typeof AuthenticatedAppFamilyRoute
+  '/_authenticated/app/library': typeof AuthenticatedAppLibraryRoute
+  '/_authenticated/app/people': typeof AuthenticatedAppPeopleRoute
+  '/_authenticated/app/search': typeof AuthenticatedAppSearchRoute
+  '/_authenticated/app/settings': typeof AuthenticatedAppSettingsRoute
+  '/_authenticated/app/sources': typeof AuthenticatedAppSourcesRoute
+  '/_authenticated/app/': typeof AuthenticatedAppIndexRoute
+  '/api/v1/sources/callback/$provider': typeof ApiV1SourcesCallbackProviderRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/signup'
+    | '/app'
+    | '/app/duplicates'
+    | '/app/events'
+    | '/app/family'
+    | '/app/library'
+    | '/app/people'
+    | '/app/search'
+    | '/app/settings'
+    | '/app/sources'
+    | '/app/'
+    | '/api/v1/sources/callback/$provider'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/login'
+    | '/signup'
+    | '/app/duplicates'
+    | '/app/events'
+    | '/app/family'
+    | '/app/library'
+    | '/app/people'
+    | '/app/search'
+    | '/app/settings'
+    | '/app/sources'
+    | '/app'
+    | '/api/v1/sources/callback/$provider'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authenticated'
+    | '/login'
+    | '/signup'
+    | '/_authenticated/app'
+    | '/_authenticated/app/duplicates'
+    | '/_authenticated/app/events'
+    | '/_authenticated/app/family'
+    | '/_authenticated/app/library'
+    | '/_authenticated/app/people'
+    | '/_authenticated/app/search'
+    | '/_authenticated/app/settings'
+    | '/_authenticated/app/sources'
+    | '/_authenticated/app/'
+    | '/api/v1/sources/callback/$provider'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
+  LoginRoute: typeof LoginRoute
+  SignupRoute: typeof SignupRoute
+  ApiV1SourcesCallbackProviderRoute: typeof ApiV1SourcesCallbackProviderRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated': {
+      id: '/_authenticated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthenticatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,12 +241,142 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/app': {
+      id: '/_authenticated/app'
+      path: '/app'
+      fullPath: '/app'
+      preLoaderRoute: typeof AuthenticatedAppRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/app/': {
+      id: '/_authenticated/app/'
+      path: '/'
+      fullPath: '/app/'
+      preLoaderRoute: typeof AuthenticatedAppIndexRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/sources': {
+      id: '/_authenticated/app/sources'
+      path: '/sources'
+      fullPath: '/app/sources'
+      preLoaderRoute: typeof AuthenticatedAppSourcesRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/settings': {
+      id: '/_authenticated/app/settings'
+      path: '/settings'
+      fullPath: '/app/settings'
+      preLoaderRoute: typeof AuthenticatedAppSettingsRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/search': {
+      id: '/_authenticated/app/search'
+      path: '/search'
+      fullPath: '/app/search'
+      preLoaderRoute: typeof AuthenticatedAppSearchRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/people': {
+      id: '/_authenticated/app/people'
+      path: '/people'
+      fullPath: '/app/people'
+      preLoaderRoute: typeof AuthenticatedAppPeopleRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/library': {
+      id: '/_authenticated/app/library'
+      path: '/library'
+      fullPath: '/app/library'
+      preLoaderRoute: typeof AuthenticatedAppLibraryRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/family': {
+      id: '/_authenticated/app/family'
+      path: '/family'
+      fullPath: '/app/family'
+      preLoaderRoute: typeof AuthenticatedAppFamilyRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/events': {
+      id: '/_authenticated/app/events'
+      path: '/events'
+      fullPath: '/app/events'
+      preLoaderRoute: typeof AuthenticatedAppEventsRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/_authenticated/app/duplicates': {
+      id: '/_authenticated/app/duplicates'
+      path: '/duplicates'
+      fullPath: '/app/duplicates'
+      preLoaderRoute: typeof AuthenticatedAppDuplicatesRouteImport
+      parentRoute: typeof AuthenticatedAppRoute
+    }
+    '/api/v1/sources/callback/$provider': {
+      id: '/api/v1/sources/callback/$provider'
+      path: '/api/v1/sources/callback/$provider'
+      fullPath: '/api/v1/sources/callback/$provider'
+      preLoaderRoute: typeof ApiV1SourcesCallbackProviderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
+interface AuthenticatedAppRouteChildren {
+  AuthenticatedAppDuplicatesRoute: typeof AuthenticatedAppDuplicatesRoute
+  AuthenticatedAppEventsRoute: typeof AuthenticatedAppEventsRoute
+  AuthenticatedAppFamilyRoute: typeof AuthenticatedAppFamilyRoute
+  AuthenticatedAppLibraryRoute: typeof AuthenticatedAppLibraryRoute
+  AuthenticatedAppPeopleRoute: typeof AuthenticatedAppPeopleRoute
+  AuthenticatedAppSearchRoute: typeof AuthenticatedAppSearchRoute
+  AuthenticatedAppSettingsRoute: typeof AuthenticatedAppSettingsRoute
+  AuthenticatedAppSourcesRoute: typeof AuthenticatedAppSourcesRoute
+  AuthenticatedAppIndexRoute: typeof AuthenticatedAppIndexRoute
+}
+
+const AuthenticatedAppRouteChildren: AuthenticatedAppRouteChildren = {
+  AuthenticatedAppDuplicatesRoute: AuthenticatedAppDuplicatesRoute,
+  AuthenticatedAppEventsRoute: AuthenticatedAppEventsRoute,
+  AuthenticatedAppFamilyRoute: AuthenticatedAppFamilyRoute,
+  AuthenticatedAppLibraryRoute: AuthenticatedAppLibraryRoute,
+  AuthenticatedAppPeopleRoute: AuthenticatedAppPeopleRoute,
+  AuthenticatedAppSearchRoute: AuthenticatedAppSearchRoute,
+  AuthenticatedAppSettingsRoute: AuthenticatedAppSettingsRoute,
+  AuthenticatedAppSourcesRoute: AuthenticatedAppSourcesRoute,
+  AuthenticatedAppIndexRoute: AuthenticatedAppIndexRoute,
+}
+
+const AuthenticatedAppRouteWithChildren =
+  AuthenticatedAppRoute._addFileChildren(AuthenticatedAppRouteChildren)
+
+interface AuthenticatedRouteChildren {
+  AuthenticatedAppRoute: typeof AuthenticatedAppRouteWithChildren
+}
+
+const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedAppRoute: AuthenticatedAppRouteWithChildren,
+}
+
+const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
+  AuthenticatedRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  LoginRoute: LoginRoute,
+  SignupRoute: SignupRoute,
+  ApiV1SourcesCallbackProviderRoute: ApiV1SourcesCallbackProviderRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
