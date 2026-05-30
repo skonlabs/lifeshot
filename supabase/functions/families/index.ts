@@ -17,7 +17,7 @@ const PatchMemberIn = z.object({
   status: z.enum(["active","suspended","removed"]).optional(),
 }).strict();
 
-const app = authed(createApi().basePath("/families"));
+const app = authed(createApi("/families"));
 
 app.post("/", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");

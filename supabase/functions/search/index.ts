@@ -15,7 +15,7 @@ const SearchIn = z.object({
   mode: z.enum(["hybrid","vector","fts"]).default("hybrid"),
 }).strict();
 
-const app = authed(createApi().basePath("/search"));
+const app = authed(createApi("/search"));
 
 app.post("/", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
