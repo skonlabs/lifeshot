@@ -14,7 +14,9 @@ export async function dedupGroup(ctx: JobContext): Promise<unknown> {
     phash, canonical_asset_id: canonical, member_count: members.length,
   }, { onConflict: "phash" }).select("id").single();
   if (grp) {
-    await sb.from("assets").update({ dedup_group_id: grp.id }).in("id", members.map((m) => m.id));
+    await sb.from("assets")
+      .update({ dedup_group_id: grp.id, duplicate_group_id: grp.id })
+      .in("id", members.map((m) => m.id));
   }
   return { phash, canonical, members: members.length };
 }
