@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAsset, useAssetSources } from "@/lib/api/hooks";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Layers } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/asset/$id")({ component: AssetDetail });
 
@@ -17,48 +17,51 @@ function AssetDetail() {
   const hiRes = d?.next_quality_url ?? d?.thumbnail_url ?? null;
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <Link to="/library" className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-4 w-4" /> Back to library
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <Link to="/library" className="mb-6 inline-flex items-center gap-1 text-[11px] uppercase tracking-[0.18em] text-[color:var(--umber)] hover:text-[color:var(--ink)]">
+        <ArrowLeft className="h-3 w-3" /> Back to library
       </Link>
       {asset.isLoading ? (
-        <div className="aspect-video animate-pulse rounded-lg bg-muted" />
+        <div className="aspect-video animate-pulse rounded-md bg-[color:var(--paper-2)]" />
       ) : asset.error ? (
-        <p className="text-sm text-destructive">Couldn't load this asset.</p>
+        <p className="text-sm text-destructive">Couldn't load this memory.</p>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-          <div className="overflow-hidden rounded-lg bg-muted" style={{ backgroundColor: d?.dominant_color ?? undefined }}>
+        <div className="grid gap-8 lg:grid-cols-[1.7fr_1fr]">
+          <figure
+            className="hairline overflow-hidden rounded-md border bg-[color:var(--paper-2)]"
+            style={{ backgroundColor: d?.dominant_color ?? undefined }}
+          >
             {hiRes && <img src={hiRes} alt="" className="h-auto w-full object-contain" />}
-          </div>
-          <aside className="space-y-4 text-sm">
-            <section className="rounded-lg border p-4">
-              <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Metadata</h2>
-              <dl className="space-y-1">
+          </figure>
+          <aside className="space-y-6">
+            <section>
+              <div className="text-archive-label mb-3">Metadata</div>
+              <dl className="hairline divide-y divide-[color:var(--border)] rounded-md border bg-[color:var(--paper)] text-sm">
                 {a && Object.entries(a)
                   .filter(([k]) => !k.startsWith("_") && typeof a[k] !== "object")
                   .slice(0, 14)
                   .map(([k, v]) => (
-                    <div key={k} className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">{k}</dt>
-                      <dd className="truncate text-right">{String(v ?? "—")}</dd>
+                    <div key={k} className="flex justify-between gap-3 px-4 py-2">
+                      <dt className="text-[color:var(--umber)]">{k}</dt>
+                      <dd className="truncate text-right text-[color:var(--ink)]">{String(v ?? "—")}</dd>
                     </div>
                   ))}
               </dl>
             </section>
-            <section className="rounded-lg border p-4">
-              <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Sources</h2>
+            <section>
+              <div className="text-archive-label mb-3 flex items-center gap-1"><Layers className="h-3 w-3" /> Sources</div>
               {sources.isLoading ? (
-                <p className="text-muted-foreground">Loading…</p>
+                <p className="text-sm text-[color:var(--umber)]">Loading…</p>
               ) : sources.data?.sources?.length ? (
-                <ul className="space-y-1">
+                <ul className="flex flex-wrap gap-2">
                   {sources.data.sources.map((s, i) => (
-                    <li key={i} className="text-xs text-muted-foreground">
+                    <li key={i} className="rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-[11px] uppercase tracking-wider text-[color:var(--umber)]">
                       {String((s as Record<string, unknown>).provider_kind ?? "source")}
                     </li>
                   ))}
                 </ul>
               ) : (
-                <p className="text-xs text-muted-foreground">No source refs.</p>
+                <p className="text-sm text-[color:var(--umber)]">No source refs.</p>
               )}
             </section>
           </aside>
