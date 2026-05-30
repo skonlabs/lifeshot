@@ -286,6 +286,81 @@ function Lenses() {
 }
 
 /* =========================================================================
+ * Recall — natural-language query across every source
+ * ===================================================================== */
+function Recall() {
+  const examples = [
+    { q: "the night we surprised mom for her 60th", hint: "→ 14 photos · 2 videos · iCloud + WhatsApp · Jul 2022" },
+    { q: "screenshots of receipts from Lisbon", hint: "→ 31 screenshots · Google Drive + iPhone · Apr–May 2024" },
+    { q: "every voice note dad sent me", hint: "→ 87 audio clips · WhatsApp · 2019 → today" },
+    { q: "handwritten notes that mention 'thesis'", hint: "→ 6 documents · Dropbox + Notes · OCR matched" },
+    { q: "videos of the kids learning to swim", hint: "→ 22 videos · iPhone + Google Photos · Jun 2021" },
+  ];
+  return (
+    <section id="recall" className="border-y border-[color:var(--border)] bg-[color:var(--paper-2)]">
+      <div className="mx-auto grid max-w-7xl gap-12 px-6 py-24 lg:grid-cols-[1fr_1.05fr] lg:gap-16 lg:py-32">
+        <div>
+          <span className="text-archive-label">recall · natural language</span>
+          <h2 className="mt-3 font-serif-display text-4xl leading-tight text-[color:var(--ink)] md:text-5xl">
+            Ask your life a question.<br/>
+            <span className="text-[color:var(--umber)]">In your own words.</span>
+          </h2>
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-[color:var(--umber)]">
+            One prompt searches every source you've connected — photos, videos, screenshots,
+            voice notes, chats, documents, scans. We translate plain English into a hybrid query
+            across faces, places, captions, transcripts, OCR text and timestamps, then return the
+            moments themselves — not blue links.
+          </p>
+          <ul className="mt-8 space-y-3 text-sm text-[color:var(--ink)]">
+            <li className="flex gap-3"><Sparkles className="mt-0.5 h-4 w-4 text-[color:var(--clay)]" /><span><b className="font-medium">Cross-source.</b> One query reaches iPhone, iCloud, Google, Dropbox, WhatsApp, NAS, old hard drives — together.</span></li>
+            <li className="flex gap-3"><Search className="mt-0.5 h-4 w-4 text-[color:var(--clay)]" /><span><b className="font-medium">Hybrid recall.</b> Semantic meaning + keyword + metadata. Vague memories work as well as exact dates.</span></li>
+            <li className="flex gap-3"><MessageCircle className="mt-0.5 h-4 w-4 text-[color:var(--clay)]" /><span><b className="font-medium">Conversational.</b> Refine in follow-ups — "only the ones with grandma", "just from that summer".</span></li>
+            <li className="flex gap-3"><Lock className="mt-0.5 h-4 w-4 text-[color:var(--clay)]" /><span><b className="font-medium">In place.</b> Originals never leave their source. Recall reads the index, not your files.</span></li>
+          </ul>
+        </div>
+
+        <div className="relative">
+          <div className="rounded-2xl border border-[color:var(--border)] bg-[color:var(--paper)] p-5 shadow-[0_30px_80px_-40px_rgba(60,40,20,0.35)]">
+            <div className="flex items-center gap-2 border-b border-[color:var(--border)] pb-3">
+              <span className="text-archive-label">prompt</span>
+              <span className="ml-auto text-[10px] uppercase tracking-widest text-[color:var(--umber)]">⌘K</span>
+            </div>
+            <div className="flex items-start gap-3 py-4">
+              <Search className="mt-1 h-4 w-4 text-[color:var(--umber)]" />
+              <p className="font-serif-display text-2xl leading-snug text-[color:var(--ink)]">
+                "Show me every birthday cake from the last ten years."
+              </p>
+            </div>
+            <div className="hairline-t pt-4">
+              <div className="grid grid-cols-5 gap-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="aspect-square rounded-md border border-[color:var(--border)] bg-gradient-to-br from-[color:var(--paper-2)] to-[color:var(--paper)]" style={{ opacity: 0.6 + i * 0.08 }} />
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-[color:var(--umber)]">
+                42 moments · across iCloud, Google Photos, WhatsApp · 2014 → 2024
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-[color:var(--border)] bg-[color:var(--paper)] p-5">
+            <span className="text-archive-label">try asking</span>
+            <ul className="mt-3 divide-y divide-[color:var(--border)]">
+              {examples.map((e) => (
+                <li key={e.q} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-6">
+                  <span className="text-sm text-[color:var(--ink)]">"{e.q}"</span>
+                  <span className="text-[11px] uppercase tracking-wide text-[color:var(--umber)]">{e.hint}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* =========================================================================
  * How it works — three-step ritual
  * ===================================================================== */
 function HowItWorks() {
