@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCreateFamily, useFamilies, useInviteToFamily } from "@/lib/api/hooks";
 import { toast } from "sonner";
 
@@ -12,6 +12,12 @@ function Family() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [familyId, setFamilyId] = useState("");
+  const list = families.data?.families ?? [];
+
+  useEffect(() => {
+    if (!familyId && list[0]) setFamilyId(list[0].id);
+  }, [familyId, list]);
+
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
       <h1 className="font-display text-2xl">Family</h1>
@@ -19,9 +25,9 @@ function Family() {
         <h2 className="text-sm font-semibold text-muted-foreground">Your families</h2>
         {families.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : families.data?.families?.length ? (
+        ) : list.length ? (
           <ul className="divide-y rounded-lg border">
-            {families.data.families.map((f) => (
+            {list.map((f) => (
               <li key={f.id} className="flex items-center justify-between px-4 py-3">
                 <span className="font-medium">{f.name}</span>
                 <span className="text-xs text-muted-foreground">{f.role}</span>
@@ -50,6 +56,9 @@ function Family() {
       </section>
       <section className="rounded-lg border p-4">
         <h2 className="mb-3 text-sm font-semibold">Invite someone</h2>
+        {list.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Create a family first.</p>
+        ) : (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -60,12 +69,17 @@ function Family() {
           }}
           className="space-y-2"
         >
-          <input value={familyId} onChange={(e) => setFamilyId(e.target.value)} placeholder="Family ID" required className="w-full rounded-md border bg-background px-3 py-2 text-sm" />
+          <select value={familyId} onChange={(e) => setFamilyId(e.target.value)} required className="w-full rounded-md border bg-background px-3 py-2 text-sm">
+            {list.map((f) => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
           <div className="flex gap-2">
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" />
             <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Invite</button>
           </div>
         </form>
+        )}
       </section>
     </div>
   );
