@@ -15,9 +15,9 @@ const SearchIn = z.object({
   mode: z.enum(["hybrid","vector","fts"]).default("hybrid"),
 }).strict();
 
-const app = authed(createApi().basePath("/search"));
+const app = authed(createApi("/search/v1"));
 
-app.post("/", async (c) => {
+app.post("/search", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "search");
   const body = await parseBody(c, SearchIn);

@@ -17,9 +17,9 @@ const PatchMemberIn = z.object({
   status: z.enum(["active","suspended","removed"]).optional(),
 }).strict();
 
-const app = authed(createApi().basePath("/families"));
+const app = authed(createApi("/families/v1"));
 
-app.post("/", async (c) => {
+app.post("/families", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const body = await parseBody(c, CreateIn);

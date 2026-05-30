@@ -19,7 +19,7 @@ const DeleteDerivedIn = z.object({
 }).strict();
 const DeleteAccountIn = z.object({ confirm: z.literal(true) }).strict();
 
-const app = authed(createApi().basePath("/privacy"));
+const app = authed(createApi("/privacy/v1"));
 
 app.post("/consent", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");

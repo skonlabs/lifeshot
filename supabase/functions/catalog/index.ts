@@ -27,7 +27,7 @@ const TimelineIn = z.object({
   filters: z.string().optional(),
 });
 
-const app = authed(createApi().basePath("/catalog"));
+const app = authed(createApi("/catalog/v1"));
 
 async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
   return {

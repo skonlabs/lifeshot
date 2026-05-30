@@ -19,9 +19,9 @@ const PatchPrivacy = z.object({
   per_source_overrides: z.record(z.unknown()).optional(),
 }).strict();
 
-const app = authed(createApi().basePath("/me"));
+const app = authed(createApi("/me/v1"));
 
-app.get("/", async (c) => {
+app.get("/me", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const [{ data: profile }, { data: fams }] = await Promise.all([
@@ -44,7 +44,7 @@ app.get("/", async (c) => {
   });
 });
 
-app.patch("/", async (c) => {
+app.patch("/me", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const body = await parseBody(c, PatchMe);
