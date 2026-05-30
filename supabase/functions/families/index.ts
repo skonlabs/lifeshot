@@ -19,7 +19,7 @@ const PatchMemberIn = z.object({
 
 const app = authed(createApi("/families/v1"));
 
-app.post("/", async (c) => {
+app.post("/families", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const body = await parseBody(c, CreateIn);

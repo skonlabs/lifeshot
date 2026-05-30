@@ -17,7 +17,7 @@ const SearchIn = z.object({
 
 const app = authed(createApi("/search/v1"));
 
-app.post("/", async (c) => {
+app.post("/search", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "search");
   const body = await parseBody(c, SearchIn);
