@@ -21,7 +21,7 @@ const PatchPrivacy = z.object({
 
 const app = authed(createApi("/me/v1"));
 
-app.get("/", async (c) => {
+app.get("/me", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const [{ data: profile }, { data: fams }] = await Promise.all([
@@ -44,7 +44,7 @@ app.get("/", async (c) => {
   });
 });
 
-app.patch("/", async (c) => {
+app.patch("/me", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const body = await parseBody(c, PatchMe);
