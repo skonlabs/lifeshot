@@ -15,6 +15,12 @@ import type {
   TViewportIn,
   TViewportOut,
   TUserProfileOut,
+  TPatchMe,
+  TPrivacySettings,
+  TPatchPrivacy,
+  TConsentIn,
+  TDeleteDerivedIn,
+  TSourceStatus,
 } from "@core/api";
 import { api } from "./client";
 
@@ -27,10 +33,22 @@ export function useMe() {
   });
 }
 
+export function useUpdateMe() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TPatchMe) =>
+      api.me<TUserProfileOut>("/me", { method: "PATCH", body }),
+    onSuccess: (data) => {
+      qc.setQueryData(["me"], data);
+      qc.invalidateQueries({ queryKey: ["families"] });
+    },
+  });
+}
+
 export function usePrivacySettings() {
   return useQuery({
     queryKey: ["privacy-settings"],
-    queryFn: () => api.me<Record<string, unknown>>("/privacy-settings"),
+    queryFn: () => api.me<TPrivacySettings>("/privacy-settings"),
     staleTime: 60_000,
   });
 }
@@ -38,8 +56,8 @@ export function usePrivacySettings() {
 export function useUpdatePrivacy() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      api.me<Record<string, unknown>>("/privacy-settings", { method: "PATCH", body }),
+    mutationFn: (body: TPatchPrivacy) =>
+      api.me<TPrivacySettings>("/privacy-settings", { method: "PATCH", body }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["privacy-settings"] }),
   });
 }
@@ -47,8 +65,9 @@ export function useUpdatePrivacy() {
 export function useGrantConsent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { scope: string; granted: boolean; source_account_id?: string }) =>
-      api.me("/consent", { method: "POST", body }),
+    // /consent lives on the privacy edge function, not /me.
+    mutationFn: (body: TConsentIn) =>
+      api.privacy("/consent", { method: "POST", body }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["privacy-settings"] }),
   });
 }
@@ -150,8 +169,9 @@ export function useConnectSource() {
 export function useSyncSource() {
   const qc = useQueryClient();
   return useMutation({
+    // Backend mounts as POST /:id/sync, not /accounts/:id/sync.
     mutationFn: (accountId: string) =>
-      api.sources(`/accounts/${accountId}/sync`, { method: "POST", body: {} }),
+      api.sources(`/${accountId}/sync`, { method: "POST", body: {} }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
   });
 }
@@ -159,9 +179,19 @@ export function useSyncSource() {
 export function useDisconnectSource() {
   const qc = useQueryClient();
   return useMutation({
+    // Backend mounts as DELETE /:id, not /accounts/:id.
     mutationFn: (accountId: string) =>
-      api.sources(`/accounts/${accountId}`, { method: "DELETE" }),
+      api.sources(`/${accountId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+  });
+}
+
+export function useSourceStatus(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["source-status", accountId],
+    enabled: !!accountId,
+    queryFn: () => api.sources<TSourceStatus>(`/${accountId}/status`),
+    refetchInterval: 5_000,
   });
 }
 
@@ -260,10 +290,32 @@ export function useCorrection() {
 }
 
 // ---------- families ----------
+/**
+ * The /me payload already includes the user's families. The families function
+ * has no GET /families list endpoint, so derive from useMe() instead.
+ */
 export function useFamilies() {
+  const me = useMe();
+  return {
+    ...me,
+    data: me.data
+      ? {
+          families: me.data.families.map((f) => ({
+            id: f.family_id,
+            name: f.name,
+            role: f.role,
+          })),
+        }
+      : undefined,
+  };
+}
+
+export function useFamilyDetail(id: string | undefined) {
   return useQuery({
-    queryKey: ["families"],
-    queryFn: () => api.families<{ families: Array<{ id: string; name: string; role: string }> }>("/families"),
+    queryKey: ["family", id],
+    enabled: !!id,
+    queryFn: () =>
+      api.families<{ family: { id: string; name: string }; members: Array<{ id: string; user_id: string; role: string; status: string; display_name: string | null }> }>(`/${id}`),
   });
 }
 
@@ -271,14 +323,24 @@ export function useCreateFamily() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { name: string }) => api.families("/families", { method: "POST", body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["families"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
   });
 }
 
 export function useInviteToFamily() {
   return useMutation({
+    // Backend mounts at POST /invite, not /invitations.
     mutationFn: (body: { family_id: string; email: string; role?: string }) =>
-      api.families("/invitations", { method: "POST", body }),
+      api.families("/invite", { method: "POST", body }),
+  });
+}
+
+export function usePatchFamilyMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ familyId, memberId, body }: { familyId: string; memberId: string; body: { role?: string; status?: string } }) =>
+      api.families(`/${familyId}/members/${memberId}`, { method: "PATCH", body }),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["family", v.familyId] }),
   });
 }
 
@@ -289,8 +351,20 @@ export function useExportData() {
   });
 }
 
+export function useDeleteDerivedData() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TDeleteDerivedIn) =>
+      api.privacy<{ deleted: number }>("/derived-data", { method: "DELETE", body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["viewport"] });
+    },
+  });
+}
+
 export function useDeleteAccount() {
   return useMutation({
-    mutationFn: () => api.privacy("/account", { method: "DELETE" }),
+    mutationFn: () => api.privacy("/account", { method: "DELETE", body: { confirm: true } }),
   });
 }
