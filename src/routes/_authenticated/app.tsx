@@ -14,17 +14,17 @@ function AppShellWrapper() {
   );
 }
 
-const NAV: ReadonlyArray<{ to: string; label: string; exact?: boolean }> = [
+const NAV = [
   { to: "/app", label: "Dashboard", exact: true },
-  { to: "/app/library", label: "Library" },
-  { to: "/app/search", label: "Search" },
-  { to: "/app/events", label: "Events" },
-  { to: "/app/people", label: "People" },
-  { to: "/app/duplicates", label: "Duplicates" },
-  { to: "/app/sources", label: "Sources" },
-  { to: "/app/family", label: "Family" },
-  { to: "/app/settings", label: "Privacy" },
-];
+  { to: "/app/library", label: "Library", exact: false },
+  { to: "/app/search", label: "Search", exact: false },
+  { to: "/app/events", label: "Events", exact: false },
+  { to: "/app/people", label: "People", exact: false },
+  { to: "/app/duplicates", label: "Duplicates", exact: false },
+  { to: "/app/sources", label: "Sources", exact: false },
+  { to: "/app/family", label: "Family", exact: false },
+  { to: "/app/settings", label: "Privacy", exact: false },
+] as const;
 
 function AppShell() {
   const { user, signOut } = useAuth();
@@ -39,7 +39,7 @@ function AppShell() {
               <Link
                 key={n.to}
                 to={n.to}
-                activeOptions={{ exact: n.exact ?? false }}
+                activeOptions={{ exact: n.exact }}
                 activeProps={{ className: "bg-ink text-paper" }}
                 className="rounded-lg px-3 py-2 text-sm hover:bg-foreground/5 transition"
               >
