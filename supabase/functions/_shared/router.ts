@@ -4,8 +4,7 @@ import { withRequestId } from "./observability.ts";
 import { withAuth } from "./auth.ts";
 import { sendError, ApiError } from "./errors.ts";
 
-export function createApi(): Hono {
-  const app = new Hono();
+function installShell(app: Hono) {
   app.use("*", cors({
     origin: ENV.ALLOWED_ORIGINS.includes("*") ? "*" : ENV.ALLOWED_ORIGINS,
     allowMethods: ["GET","POST","PATCH","DELETE","OPTIONS"],
@@ -16,6 +15,11 @@ export function createApi(): Hono {
   app.onError((err, c) => sendError(c, err));
   app.notFound((c) => sendError(c, new ApiError("not_found", `${c.req.method} ${new URL(c.req.url).pathname} not found`)));
   return app;
+}
+
+export function createApi(basePath?: string): Hono {
+  const app = basePath ? new Hono().basePath(basePath) : new Hono();
+  return installShell(app);
 }
 
 export function authed(app: Hono) {
