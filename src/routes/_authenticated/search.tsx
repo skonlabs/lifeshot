@@ -1,17 +1,33 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearch } from "@/lib/api/hooks";
 import { AssetCell } from "@/components/app/AssetCell";
-import { Search as SearchIcon, X } from "lucide-react";
+import { Search as SearchIcon, Sparkles, X } from "lucide-react";
 
-export const Route = createFileRoute("/_authenticated/search")({ component: SearchPage });
+export const Route = createFileRoute("/_authenticated/search")({
+  validateSearch: (s: Record<string, unknown>) => ({ q: typeof s.q === "string" ? s.q : "" }),
+  component: SearchPage,
+});
+
+const SUGGESTED = [
+  "summer at the beach",
+  "mom and dad together",
+  "screenshots from 2019",
+  "handwritten notes",
+  "videos with the kids",
+];
 
 type FacetMap = Record<string, Array<{ value: string; label?: string; count: number }>>;
 
 function SearchPage() {
-  const [query, setQuery] = useState("");
-  const [submitted, setSubmitted] = useState<string | null>(null);
+  const initial = Route.useSearch().q;
+  const [query, setQuery] = useState(initial ?? "");
+  const [submitted, setSubmitted] = useState<string | null>(initial?.trim() || null);
   const [filters, setFilters] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (initial && initial !== submitted) { setQuery(initial); setSubmitted(initial); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
   const searchInput = useMemo(
     () => (submitted ? { query: submitted, k: 50, mode: "hybrid" as const, filters } : null),
     [submitted, filters],
@@ -32,17 +48,36 @@ function SearchPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
-      <h1 className="mb-4 font-display text-2xl">Search</h1>
-      <form onSubmit={(e) => { e.preventDefault(); setSubmitted(query.trim() || null); }} className="relative mb-6">
-        <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <header className="hairline-b mb-6 pb-4">
+        <span className="text-archive-label">recall</span>
+        <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">Ask your archive anything.</h1>
+        <p className="mt-1 text-sm text-[color:var(--umber)]">Hybrid search across faces, places, captions, transcripts, and metadata.</p>
+      </header>
+      <form onSubmit={(e) => { e.preventDefault(); setSubmitted(query.trim() || null); }} className="relative mb-4">
+        <SearchIcon className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[color:var(--umber)]" />
         <input
           type="text"
-          placeholder="Try: photos of the kids at the beach last summer"
+          autoFocus
+          placeholder="e.g. photos of the kids at the beach last summer"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded-lg border bg-background py-3 pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          className="w-full rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] py-3.5 pl-11 pr-28 text-[15px] shadow-sm focus:border-[color:var(--umber)] focus:outline-none"
         />
+        <button type="submit" className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-[color:var(--ink)] px-4 py-1.5 text-xs font-medium text-[color:var(--paper)] hover:bg-[color:var(--umber)]">
+          Recall
+        </button>
       </form>
+      {!submitted && (
+        <div className="mb-6 flex flex-wrap gap-2">
+          <span className="text-archive-label mr-1 self-center">try</span>
+          {SUGGESTED.map((s) => (
+            <button key={s} onClick={() => { setQuery(s); setSubmitted(s); }}
+              className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-xs text-[color:var(--umber)] hover:border-[color:var(--umber)] hover:text-[color:var(--ink)]">
+              <Sparkles className="h-3 w-3" /> {s}
+            </button>
+          ))}
+        </div>
+      )}
       {activeFilters.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
           {activeFilters.map(({ k, v }) => (
