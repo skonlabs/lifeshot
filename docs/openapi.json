@@ -1,0 +1,465 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LifeShot API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/functions/v1"
+    }
+  ],
+  "paths": {
+    "/me": {
+      "get": {
+        "summary": "Get profile"
+      },
+      "patch": {
+        "summary": "Update profile",
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/me/privacy-settings": {
+      "get": {},
+      "patch": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/sources/providers": {
+      "get": {}
+    },
+    "/sources/connect": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/sources/callback": {
+      "get": {}
+    },
+    "/sources/accounts": {
+      "get": {}
+    },
+    "/sources/{id}/status": {
+      "get": {}
+    },
+    "/sources/{id}/sync": {
+      "post": {}
+    },
+    "/sources/{id}": {
+      "delete": {}
+    },
+    "/catalog/assets/{id}": {
+      "get": {}
+    },
+    "/catalog/assets/{id}/sources": {
+      "get": {}
+    },
+    "/catalog/timeline": {
+      "get": {}
+    },
+    "/catalog/memory/viewport": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        },
+        "responseBody": {
+          "_def": {
+            "unknownKeys": "strip",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/catalog/dashboard": {
+      "get": {
+        "responseBody": {
+          "_def": {
+            "unknownKeys": "strip",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/search": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        },
+        "responseBody": {
+          "_def": {
+            "unknownKeys": "strip",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/search/facets": {
+      "get": {}
+    },
+    "/search/{query_id}": {
+      "get": {}
+    },
+    "/organization/events": {
+      "get": {}
+    },
+    "/organization/events/{id}": {
+      "get": {}
+    },
+    "/organization/people": {
+      "get": {}
+    },
+    "/organization/people/{id}": {
+      "get": {}
+    },
+    "/organization/places": {
+      "get": {}
+    },
+    "/organization/duplicates": {
+      "get": {}
+    },
+    "/organization/duplicates/{id}/confirm": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/organization/corrections": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/families": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/families/invite": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/families/{id}": {
+      "get": {}
+    },
+    "/families/{id}/members/{member_id}": {
+      "patch": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/privacy/consent": {
+      "post": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/privacy/derived-data": {
+      "delete": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    },
+    "/privacy/export": {
+      "post": {}
+    },
+    "/privacy/account": {
+      "delete": {
+        "requestBody": {
+          "_def": {
+            "unknownKeys": "strict",
+            "catchall": {
+              "_def": {
+                "typeName": "ZodNever"
+              },
+              "~standard": {
+                "version": 1,
+                "vendor": "zod"
+              }
+            },
+            "typeName": "ZodObject"
+          },
+          "~standard": {
+            "version": 1,
+            "vendor": "zod"
+          },
+          "_cached": null
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}
