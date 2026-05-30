@@ -8,9 +8,9 @@ function Onboarding() {
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-6 py-12">
       <div className="text-center">
-        <Camera className="mx-auto h-10 w-10 text-primary" />
-        <h1 className="mt-4 font-display text-3xl">Welcome to LifeShot</h1>
-        <p className="mt-2 text-sm text-muted-foreground">We index your memories — we don't move them. Originals stay where they are.</p>
+        <span className="text-archive-label">welcome</span>
+        <h1 className="mt-2 font-serif-display text-5xl text-[color:var(--ink)]">Your memory atlas, opened.</h1>
+        <p className="mt-3 text-sm text-[color:var(--umber)]">We index. We never move. Originals stay where they are — phone, cloud, drive.</p>
       </div>
       <ul className="space-y-3 text-sm">
         <li className="flex gap-3 rounded-lg border p-4">
