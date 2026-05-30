@@ -19,7 +19,7 @@ const PatchPrivacy = z.object({
   per_source_overrides: z.record(z.unknown()).optional(),
 }).strict();
 
-const app = authed(createApi("/me"));
+const app = authed(createApi("/me/v1"));
 
 app.get("/", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");

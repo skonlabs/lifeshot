@@ -15,7 +15,7 @@ const ConnectIn = z.object({
   redirect_uri: z.string().url().max(2048).optional(),
 }).strict();
 
-const app = createApi("/sources");
+const app = createApi("/sources/v1");
 
 // Providers list (public-ish: providers seeded reference data)
 app.get("/providers", async (c) => {

@@ -13,7 +13,7 @@ const ListPage = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
-const app = authed(createApi("/organization"));
+const app = authed(createApi("/organization/v1"));
 
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
