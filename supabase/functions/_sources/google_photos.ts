@@ -29,6 +29,8 @@ const CAPS: SourceCapabilities = {
 const API = "https://photoslibrary.googleapis.com/v1";
 
 export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
+  // forward decls so getDeltaChanges can call listAssets without `this`
+  let listAssetsRef: (cursor: string | null) => Promise<PageResult>;
   async function getAccessToken(): Promise<string> {
     const { data, error } = await supabase.from("source_accounts")
       .select("access_token, refresh_token, expires_at")
@@ -93,7 +95,7 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
     };
   }
 
-  return {
+  const conn: SourceConnector = {
     capabilities: CAPS,
     getCapabilities: () => CAPS,
     authenticate: async () => { await getAccessToken(); },
@@ -132,7 +134,7 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
     },
     getDeltaChanges: async (cursor): Promise<DeltaResult> => {
       // Google Photos has no delta; fall back to bounded list with checkpoint.
-      const page = await (this as any).listAssets?.(cursor) ?? { items: [], nextCursor: null };
+      const page = await listAssetsRef(cursor);
       return { items: page.items, deleted: [], nextCursor: page.nextCursor };
     },
     disconnect: async () => {
@@ -146,4 +148,6 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       await supabase.from("source_accounts").update({ access_token: null, refresh_token: null, status: "revoked" }).eq("id", ctx.source_account_id);
     },
   };
+  listAssetsRef = conn.listAssets;
+  return conn;
 };
