@@ -52,12 +52,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     media_type: a.media_type, mime_type: a.mime_type,
     capture_time: a.capture_time, upload_time: a.upload_time,
     width: a.width, height: a.height, duration_ms: a.duration_ms,
-    file_size_bytes: a.file_size_bytes, checksum_hex: a.checksum_hex,
+    file_size_bytes: a.file_size_bytes, checksum_hash: a.checksum_hex,
     perceptual_hash: a.perceptual_hash,
-    exif: a.exif ?? {}, location: a.location ?? null,
+    location_lat: a.location?.lat ?? null,
+    location_lng: a.location?.lng ?? null,
     device_make: a.device_make, device_model: a.device_model,
-    thumbnail_url: a.thumbnail_url, preview_url: a.preview_url, provider_url: a.provider_url,
-    raw: a.raw ?? {}, status: "ingested",
+    thumbnail_cache_key: a.thumbnail_url ?? null,
+    proxy_cache_key: a.preview_url ?? null,
+    status: "ingested",
   }));
   let upserted: any[] = [];
   if (assetRows.length) {
@@ -71,7 +73,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   // Cascade deletions
   const deleted = ("deleted" in page ? (page as any).deleted : []) as string[];
   if (deleted.length) {
-    await sb.from("assets").update({ status: "deleted" })
+    await sb.from("assets").update({ deleted_state: "deleted", status: "deleted" })
       .eq("source_account_id", source_account_id).in("provider_asset_id", deleted);
   }
 
