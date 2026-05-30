@@ -2,6 +2,13 @@
 // these via env (LIFESHOT_USE_REAL_*=1) — not implemented in this prompt.
 import { getServiceClient } from "./clients.ts";
 import { LANES, laneFor } from "../_pipeline/lanes.ts";
+import { installOpenAIProviders } from "../_ai/factory.ts";
+import { parseQuery as openaiParse } from "../_ai/parser.ts";
+import { embedText as openaiEmbed } from "../_ai/embedder.ts";
+
+const AI_ON = (() => {
+  try { return installOpenAIProviders(); } catch { return false; }
+})();
 
 export interface JobEnqueuer {
   enqueue(name: string, payload: Record<string, unknown>, opts?: {
@@ -42,6 +49,21 @@ export interface QueryParser {
 const SOURCE_HINTS = ["google","icloud","dropbox","onedrive","whatsapp","ios","android","nas","drive","photos","amazon"];
 export const queryParser: QueryParser = {
   async parse(query) {
+    if (AI_ON) {
+      try {
+        const p = await openaiParse(query);
+        return {
+          intent: p.intent === "browse" ? "browse" : "filter",
+          entities: {
+            dates: [p.entities.date_range?.from, p.entities.date_range?.to].filter(Boolean) as string[],
+            sources: p.entities.sources,
+            people: p.entities.people,
+            places: p.entities.places,
+          },
+          filterPlan: p.filter_plan as unknown as Record<string, unknown>,
+        };
+      } catch { /* fall through to heuristic */ }
+    }
     const q = query.toLowerCase();
     const sources = SOURCE_HINTS.filter(s => q.includes(s));
     const years = [...q.matchAll(/\b(19|20)\d{2}\b/g)].map(m => m[0]);
@@ -69,6 +91,9 @@ export interface Embedder {
 export const embedder: Embedder = {
   dim: 1536,
   async embed(text) {
+    if (AI_ON) {
+      try { return await openaiEmbed(text); } catch { /* fall back */ }
+    }
     const buf = new TextEncoder().encode(text);
     const h = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
     const out = new Array<number>(1536);
