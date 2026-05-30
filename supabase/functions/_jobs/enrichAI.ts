@@ -10,11 +10,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const { data: prof } = await sb.from("user_profiles").select("ai_processing_enabled").eq("user_id", ctx.userId!).maybeSingle();
   if (prof && prof.ai_processing_enabled === false) return { skipped: "consent" };
 
-  const { data: asset } = await sb.from("assets").select("id, thumbnail_url, preview_url").eq("id", asset_id).single();
+  const { data: asset } = await sb.from("assets")
+    .select("id, thumbnail_cache_key, proxy_cache_key").eq("id", asset_id).single();
   if (!asset) throw new Error("not found: asset");
-
-  const cap = await providers.ai.caption({ url: asset.preview_url ?? asset.thumbnail_url });
-  const obj = await providers.ai.detectObjects({ url: asset.preview_url ?? asset.thumbnail_url });
+  const url = asset.proxy_cache_key ?? asset.thumbnail_cache_key;
+  const cap = await providers.ai.caption({ url });
+  const obj = await providers.ai.detectObjects({ url });
 
   await sb.from("asset_ai_enrichment").upsert({
     asset_id, caption: cap.caption, tags: cap.tags, objects: obj,
