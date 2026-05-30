@@ -48,9 +48,9 @@ export function installOpenAIProviders(): boolean {
     },
     ocr: {
       extractText: async ({ url }) => {
-        if (!url) return { text: "", lang: null };
+        if (!url) return { text: "" };
         const r = await ocrImage({ imageUrl: url });
-        return { text: r.text, lang: r.lang ?? null };
+        return { text: r.text, lang: r.lang ?? undefined };
       },
     },
   });
