@@ -16,14 +16,14 @@ function AppShellWrapper() {
 
 const NAV = [
   { to: "/app", label: "Dashboard", exact: true },
-  { to: "/app/library", label: "Library" },
-  { to: "/app/search", label: "Search" },
-  { to: "/app/events", label: "Events" },
-  { to: "/app/people", label: "People" },
-  { to: "/app/duplicates", label: "Duplicates" },
-  { to: "/app/sources", label: "Sources" },
-  { to: "/app/family", label: "Family" },
-  { to: "/app/settings", label: "Privacy" },
+  { to: "/app/library", label: "Library", exact: false },
+  { to: "/app/search", label: "Search", exact: false },
+  { to: "/app/events", label: "Events", exact: false },
+  { to: "/app/people", label: "People", exact: false },
+  { to: "/app/duplicates", label: "Duplicates", exact: false },
+  { to: "/app/sources", label: "Sources", exact: false },
+  { to: "/app/family", label: "Family", exact: false },
+  { to: "/app/settings", label: "Privacy", exact: false },
 ] as const;
 
 function AppShell() {
