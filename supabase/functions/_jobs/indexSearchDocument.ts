@@ -6,14 +6,16 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { asset_id } = ctx.payload as { asset_id: string };
   const { data: asset } = await sb.from("assets")
-    .select("id, user_id, capture_time, place_name, device_make, device_model").eq("id", asset_id).single();
+    .select("id, user_id, capture_time, place_name, location_city, location_country, device_make, device_model")
+    .eq("id", asset_id).single();
   if (!asset) throw new Error("not found: asset");
   const { data: ai } = await sb.from("asset_ai_enrichment").select("caption, tags").eq("asset_id", asset_id).maybeSingle();
   const { data: ocr } = await sb.from("asset_ocr").select("text").eq("asset_id", asset_id).maybeSingle();
 
   const text = [
     ai?.caption, (ai?.tags ?? []).join(" "), ocr?.text,
-    asset.place_name, asset.device_make, asset.device_model,
+    asset.place_name, asset.location_city, asset.location_country,
+    asset.device_make, asset.device_model,
   ].filter(Boolean).join(" ");
 
   await sb.from("asset_search_index").upsert({

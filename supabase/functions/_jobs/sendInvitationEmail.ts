@@ -6,10 +6,11 @@ import type { JobContext } from "../_pipeline/runner.ts";
 export async function sendInvitationEmail(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { invitation_id } = ctx.payload as { invitation_id: string };
-  const { data: inv } = await sb.from("family_invitations").select("*").eq("id", invitation_id).single();
+  const { data: inv } = await sb.from("family_invitations")
+    .select("id, email, token").eq("id", invitation_id).single();
   if (!inv) throw new Error("not found: invitation");
   const r = await providers.email.send({
-    to: inv.invited_email,
+    to: inv.email,
     subject: "You've been invited to a Lifeshot family",
     html: `<p>You've been invited. <a href="${Deno.env.get('APP_BASE_URL') ?? ''}/invite/${inv.token}">Accept</a></p>`,
     text: `Accept your Lifeshot family invite: ${Deno.env.get('APP_BASE_URL') ?? ''}/invite/${inv.token}`,

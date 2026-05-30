@@ -29,12 +29,14 @@ export async function detectEvents(ctx: JobContext): Promise<unknown> {
   if (cur) events.push(cur);
 
   for (const ev of events) {
-    const { data: row } = await sb.from("events").upsert({
-      user_id, started_at: ev.start, ended_at: ev.end, asset_count: ev.ids.length,
-    }, { onConflict: "user_id,started_at" }).select("id").single();
-    if (row) {
-      await sb.from("event_assets").upsert(ev.ids.map((aid) => ({ event_id: row.id, asset_id: aid })), { onConflict: "event_id,asset_id" });
-    }
+    const { data: row, error: evErr } = await sb.from("events").insert({
+      user_id, start_time: ev.start, end_time: ev.end, status: "active",
+    }).select("id").single();
+    if (evErr || !row) continue;
+    await sb.from("event_assets").upsert(
+      ev.ids.map((aid) => ({ event_id: row.id, asset_id: aid })),
+      { onConflict: "event_id,asset_id" },
+    );
   }
   return { events: events.length };
 }

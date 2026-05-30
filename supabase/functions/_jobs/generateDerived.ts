@@ -12,13 +12,15 @@ const SIZES = [
 export async function generateDerived(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { asset_id } = ctx.payload as { asset_id: string };
-  const { data: asset } = await sb.from("assets").select("id, user_id, thumbnail_url, preview_url").eq("id", asset_id).single();
+  const { data: asset } = await sb.from("assets")
+    .select("id, user_id, thumbnail_cache_key, proxy_cache_key").eq("id", asset_id).single();
   if (!asset) throw new Error("not found: asset");
 
   const written: Array<{ name: string; path: string; mime: string; blurhash?: string }> = [];
   for (const sz of SIZES) {
     const r = await providers.renderer.render({
-      sourceUrl: asset.preview_url ?? asset.thumbnail_url, width: sz.width, height: sz.height, kind: sz.kind,
+      sourceUrl: asset.proxy_cache_key ?? asset.thumbnail_cache_key,
+      width: sz.width, height: sz.height, kind: sz.kind,
     });
     const path = `${asset.user_id}/${asset_id}/${sz.name}.${r.mime.split("/")[1] ?? "bin"}`;
     const { error } = await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, r.bytes, {
