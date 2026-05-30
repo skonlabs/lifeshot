@@ -15,7 +15,17 @@ function Event() {
         start_time: string | null;
         end_time: string | null;
         asset_count?: number;
-        assets?: Array<{ asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null }>;
+        assets?: Array<{
+          asset_id: string;
+          thumbnail_url: string | null;
+          blurhash: string | null;
+          dominant_color: string | null;
+          width: number | null;
+          height: number | null;
+          media_type: string;
+          source_badge: string | null;
+          hydration_status: "pending" | "ready";
+        }>;
       }
     | undefined;
   return (
