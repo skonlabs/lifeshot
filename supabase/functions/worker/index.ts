@@ -5,7 +5,9 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { logger } from "../_pipeline/logger.ts";
 
-const app = new Hono();
+// Supabase Edge Functions forward the full path (incl. /<function-name>) to
+// the handler, so mount Hono under the "/worker" basePath.
+const app = new Hono().basePath("/worker");
 
 function authorize(req: Request): boolean {
   const expected = Deno.env.get("WORKER_SECRET") ?? "";
