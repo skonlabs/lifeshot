@@ -686,9 +686,9 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
   );
 }
 
-function SourceRow({ a, onSync, onDisconnect, provider }: {
+function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
   a: { id: string; provider_kind: string; status: string; display_label: string | null; asset_count: number; last_sync_at: string | null };
-  onSync: () => void; onDisconnect: () => void;
+  onSync: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
 }) {
   const status = useSourceStatus(a.id);
@@ -711,6 +711,9 @@ function SourceRow({ a, onSync, onDisconnect, provider }: {
           </div>
         </div>
         <div className="flex gap-2">
+          <button onClick={onSelectFolders} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
+            <Settings2 className="h-3 w-3" /> Select folders
+          </button>
           <button onClick={onSync} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
             <RefreshCcw className="h-3 w-3" /> Sync
           </button>
