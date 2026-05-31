@@ -19,9 +19,12 @@ interface Props {
   fetchNext: () => void;
   hasNext: boolean;
   isFetching: boolean;
+  selectionMode?: boolean;
+  selected?: Set<string>;
+  onToggleSelect?: (id: string, shift: boolean) => void;
 }
 
-export function VirtualGrid({ items, fetchNext, hasNext, isFetching }: Props) {
+export function VirtualGrid({ items, fetchNext, hasNext, isFetching, selectionMode, selected, onToggleSelect }: Props) {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const COLS = 6;
   const rows = useMemo(() => {
@@ -60,8 +63,31 @@ export function VirtualGrid({ items, fetchNext, hasNext, isFetching }: Props) {
               }}
             >
               {row.map((d) => (
-                <div key={d.asset_id} className="aspect-square">
-                  <AssetCell d={d} style={{ width: "100%", height: "100%" }} />
+                <div
+                  key={d.asset_id}
+                  className="aspect-square relative"
+                  onClick={(e) => {
+                    if (!selectionMode) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onToggleSelect?.(d.asset_id, e.shiftKey);
+                  }}
+                >
+                  <AssetCell d={d} style={{ width: "100%", height: "100%" }} disableLink={selectionMode} />
+                  {selectionMode && (
+                    <div className={
+                      "pointer-events-none absolute inset-0 rounded-md ring-2 transition " +
+                      (selected?.has(d.asset_id) ? "ring-[color:var(--ink)] bg-[color:var(--ink)]/15" : "ring-transparent")
+                    } />
+                  )}
+                  {selectionMode && (
+                    <div className={
+                      "absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full border text-[10px] font-semibold transition " +
+                      (selected?.has(d.asset_id)
+                        ? "border-[color:var(--ink)] bg-[color:var(--ink)] text-[color:var(--paper)]"
+                        : "border-white/80 bg-black/30 text-transparent")
+                    }>✓</div>
+                  )}
                 </div>
               ))}
             </div>
