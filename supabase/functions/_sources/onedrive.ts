@@ -188,15 +188,29 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       const url = item["@microsoft.graph.downloadUrl"] as string | undefined;
       return url ? { url, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() } : null;
     },
-    listAlbums: async () => {
+    listAlbums: async (parentId) => {
       try {
-        const json = await call(`${API}/me/drive/root/children?$top=200&$select=id,name,folder`);
+        const isRoot = !parentId || parentId === "root";
+        const url = isRoot
+          ? `${API}/me/drive/root/children?$top=200&$select=id,name,folder,parentReference`
+          : `${API}/me/drive/items/${parentId}/children?$top=200&$select=id,name,folder,parentReference`;
+        const json = await call(url);
         const folders = (json.value ?? [])
           .filter((item: any) => !!item.folder)
-          .map((item: any) => ({ id: item.id as string, name: item.name as string }));
-        return [{ id: "root", name: "All of OneDrive (root)" }, ...folders];
+          .map((item: any) => ({
+            id: item.id as string,
+            name: item.name as string,
+            path: `${item.parentReference?.path ?? "/drive/root:"}/${item.name}`.replace(/^.*root:/, "") || `/${item.name}`,
+            has_children: true,
+            selectable: true,
+          }));
+        return isRoot
+          ? [{ id: "root", name: "All of OneDrive (root)", path: "/", has_children: true, selectable: true }, ...folders]
+          : folders;
       } catch {
-        return [{ id: "root", name: "All of OneDrive (root)" }];
+        return (!parentId || parentId === "root")
+          ? [{ id: "root", name: "All of OneDrive (root)", path: "/", has_children: true, selectable: true }]
+          : [];
       }
     },
     disconnect: async () => {
