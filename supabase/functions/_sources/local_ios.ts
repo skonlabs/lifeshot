@@ -45,6 +45,7 @@ export const localIosFactory = (ctx: ConnectorContext, supabase: any): SourceCon
     authenticate: async () => { /* device-paired token validated at upload time */ },
     refreshToken: async () => { /* no-op */ },
     listAssets: async (cursor) => readBatch(cursor),
+    countSelectionStats: async () => ({ folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 }),
     getDeltaChanges: async (cursor) => {
       const r = await readBatch(cursor);
       return { items: r.items, deleted: [], nextCursor: r.nextCursor };
