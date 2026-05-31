@@ -7,6 +7,7 @@ import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
+import { resolveThumbUrl } from "../_shared/signed-url.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -40,7 +41,6 @@ app.get("/events", async (c) => {
       .in("id", coverAssetIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
   }
-  const { resolveThumbUrl } = await import("../_shared/signed-url.ts");
   const enriched = await Promise.all(events.map(async (e: any) => {
     const cid = coverMap[e.id];
     const cov = cid && covers[cid] ? covers[cid] : null;

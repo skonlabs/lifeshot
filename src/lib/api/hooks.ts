@@ -245,7 +245,13 @@ export function usePlaces() {
 export function useEvents() {
   return useQuery({
     queryKey: ["events"],
-    queryFn: () => api.organization<{ events: Array<{ id: string; title: string | null; start_time: string | null; end_time: string | null; asset_count: number; confidence: number | null }> }>("/events"),
+    queryFn: () => api.organization<{
+      events: Array<{
+        id: string; title: string | null; start_time: string | null; end_time: string | null;
+        asset_count: number; confidence: number | null;
+        cover: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; media_type: string } | null;
+      }>;
+    }>("/events"),
   });
 }
 
@@ -374,5 +380,19 @@ export function useDeleteDerivedData() {
 export function useDeleteAccount() {
   return useMutation({
     mutationFn: () => api.privacy("/account", { method: "DELETE", body: { confirm: true } }),
+  });
+}
+
+// ---------- bulk asset actions ----------
+export function useBulkAssetAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { asset_ids: string[]; action: "trash" | "restore" | "tag"; tag?: string }) =>
+      api.organization<{ affected: number; action: string }>("/assets/bulk", { method: "POST", body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["viewport"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["timeline"] });
+    },
   });
 }
