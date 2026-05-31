@@ -156,7 +156,7 @@ app.post("/connect", async (c) => {
     }
     const u = new URL(meta.authorize_url);
     u.searchParams.set("state", state);
-    u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/callback`);
+    u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/v1/callback`);
     u.searchParams.set("client_id", clientId);
     u.searchParams.set("response_type", "code");
     u.searchParams.set("scope", meta.scope);
@@ -258,7 +258,7 @@ app.get("/callback", async (c) => {
         code,
         client_id: cfg.cid,
         client_secret: cfg.cs,
-        redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/callback`,
+        redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/v1/callback`,
         grant_type: "authorization_code",
       });
       const r = await fetch(cfg.url, {
