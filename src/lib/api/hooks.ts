@@ -152,7 +152,16 @@ export function useProviders() {
 export function useSourceAccounts() {
   return useQuery({
     queryKey: ["source-accounts"],
-    queryFn: () => api.sources<{ accounts: Array<{ id: string; provider_kind: string; status: string; display_label: string | null; asset_count: number; last_sync_at: string | null }> }>("/accounts"),
+    queryFn: () => api.sources<{ accounts: Array<{
+      id: string;
+      provider_kind: string;
+      status: string;
+      display_label: string | null;
+      asset_count: number;
+      last_sync_at: string | null;
+      selected_container_count?: number;
+      selected_containers?: Array<{ id: string; name?: string }>;
+    }> }>("/accounts"),
     staleTime: 30_000,
   });
 }
@@ -197,6 +206,34 @@ export function useDisconnectSource() {
     mutationFn: (accountId: string) =>
       api.sources(`/${accountId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+  });
+}
+
+export function useSourceContainers(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["source-containers", accountId],
+    enabled: !!accountId,
+    queryFn: () => api.sources<{
+      containers: Array<{ id: string; name?: string }>;
+      selected: Array<{ id: string; name?: string }>;
+    }>(`/${accountId}/containers`),
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateSourceContainers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ accountId, containers }: { accountId: string; containers: Array<{ id: string; name?: string }> }) =>
+      api.sources<{ updated: boolean; selected_count: number; job_id: string | null }>(`/${accountId}/containers`, {
+        method: "PATCH",
+        body: { containers },
+      }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      qc.invalidateQueries({ queryKey: ["source-status", vars.accountId] });
+      qc.invalidateQueries({ queryKey: ["source-containers", vars.accountId] });
+    },
   });
 }
 
