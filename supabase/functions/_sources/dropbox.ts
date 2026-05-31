@@ -82,6 +82,24 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     return Array.isArray(selected?.containers) ? selected!.containers : [];
   }
 
+  async function resolveFolderPath(target: { id: string; name?: string; path?: string }): Promise<string> {
+    const rawPath = target.path ?? target.id;
+    if (!rawPath) return "";
+    if (rawPath === "/") return "";
+    if (rawPath.startsWith("/")) return rawPath.toLowerCase();
+
+    try {
+      const meta = await call("/files/get_metadata", {
+        path: target.id,
+        include_media_info: false,
+      });
+      const canonical = (meta?.path_lower ?? meta?.path_display ?? rawPath) as string;
+      return canonical === "/" ? "" : canonical.toLowerCase();
+    } catch {
+      return rawPath.toLowerCase();
+    }
+  }
+
   async function getAccessToken(): Promise<string> {
     const { data, error } = await supabase.from("source_tokens")
       .select("access_token_encrypted, refresh_token_encrypted, expires_at")
@@ -252,7 +270,8 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       const seenFiles = new Set<string>();
 
       for (const target of selectedFolders) {
-        const rootPath = target.id === "/" ? "/" : target.id;
+        const canonicalPath = await resolveFolderPath(target as { id: string; name?: string; path?: string });
+        const rootPath = canonicalPath ? canonicalPath : "/";
         if (rootPath && !seenFolders.has(rootPath)) {
           seenFolders.add(rootPath);
           stats.folder_count += 1;
