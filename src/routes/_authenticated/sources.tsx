@@ -489,7 +489,7 @@ function ConfigMissingDialog({ state, onClose }: { state: ConfigMissingState; on
         <DialogHeader>
           <DialogTitle>{state?.provider.name} isn't configured yet</DialogTitle>
           <DialogDescription>
-            OAuth credentials for {state?.provider.name} haven't been added. An admin needs to set the following secrets in Lovable Cloud → Edge Function secrets:
+            OAuth credentials for {state?.provider.name} haven't been added. An admin needs to set the following secrets in the Supabase project (Edge Functions → Secrets):
           </DialogDescription>
         </DialogHeader>
         <ul className="my-2 space-y-1 rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3 font-mono text-xs">
