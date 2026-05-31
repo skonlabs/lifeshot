@@ -25,6 +25,7 @@ export function useSourceProgress() {
         { event: "*", schema: "public", table: "job_queue", filter: `user_id=eq.${user.id}` },
         () => {
           qc.invalidateQueries({ queryKey: ["source-accounts"] });
+          qc.invalidateQueries({ queryKey: ["source-status"] });
           qc.invalidateQueries({ queryKey: ["dashboard"] });
         },
       )
