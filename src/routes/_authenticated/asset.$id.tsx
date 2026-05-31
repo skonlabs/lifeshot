@@ -65,10 +65,16 @@ function AssetDetail() {
                 </a>
               )}
               {hiRes && (
-                <a href={hiRes} download
+                <a href={hiRes} download target="_blank" rel="noreferrer"
+                  title="Saves the preview thumbnail. Open in source for the original."
                   className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs text-[color:var(--ink)] hover:bg-[color:var(--paper-2)]">
-                  <Download className="h-3 w-3" /> Download preview
+                  <Download className="h-3 w-3" /> Save preview
                 </a>
+              )}
+              {!primarySource?.provider_url && srcs.length > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs text-[color:var(--umber)] opacity-70">
+                  <ExternalLink className="h-3 w-3" /> No direct source link
+                </span>
               )}
             </section>
             <section>
