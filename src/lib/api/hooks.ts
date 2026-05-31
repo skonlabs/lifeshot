@@ -265,10 +265,18 @@ export function useSourceContainers(accountId: string | undefined) {
       let selected: Array<{ id: string; name?: string }> = [];
       let reason: string | null = null;
       try {
-        const res = await api.sources<{
+        const fetchContainers = (path: string) => api.sources<{
           containers: Array<{ id: string; name?: string }>;
           selected: Array<{ id: string; name?: string }>;
-        }>(`/${accountId}/containers`, { signal });
+        }>(path, { signal });
+
+        let res;
+        try {
+          res = await fetchContainers(`/${accountId}/containers`);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "not_found") throw error;
+          res = await fetchContainers(`/${accountId}/folders`);
+        }
         containers = Array.isArray(res.containers) ? res.containers : [];
         selected = Array.isArray(res.selected) ? res.selected : [];
         if (!containers.length) reason = "empty";
