@@ -337,7 +337,7 @@ async function handleOAuthCallback(c: Context) {
 app.get("/callback", handleOAuthCallback);
 app.get("/v1/callback", handleOAuthCallback);
 
-app.post("/:id/sync", async (c) => {
+app.post("/v1/:id/sync", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
@@ -351,7 +351,7 @@ app.post("/:id/sync", async (c) => {
 
 // After client-side upload to the source_uploads storage bucket, scan the
 // folder for this account and enqueue an import job. Returns counts.
-app.post("/:id/import-uploaded", async (c) => {
+app.post("/v1/:id/import-uploaded", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
@@ -375,7 +375,7 @@ app.post("/:id/import-uploaded", async (c) => {
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
-app.delete("/:id", async (c) => {
+app.delete("/v1/:id", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "delete");
