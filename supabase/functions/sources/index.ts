@@ -348,7 +348,7 @@ app.get("/v1/:id/status", async (c) => {
     supa.from("source_sync_cursors").select("*").eq("source_account_id", id).maybeSingle(),
     supa.from("source_errors").select("message, occurred_at").eq("source_account_id", id).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("job_queue")
-      .select("id, status, job_name, payload, created_at, started_at, finished_at")
+      .select("id, status, job_name, payload, created_at, started_at, finished_at, last_error, attempts")
       .eq("job_name", "syncSource")
       .in("status", ["pending", "running"])
       .contains("payload", { source_account_id: id })
@@ -361,9 +361,16 @@ app.get("/v1/:id/status", async (c) => {
   const indexed = count ?? 0;
   const effectiveJobStatus = running ? running.status : (lastJob?.status ?? null);
   const effectiveJobKind = running ? "syncSource" : (lastJob?.kind ?? null);
-  const jobStats = (lastJob?.stats && typeof lastJob.stats === "object") ? lastJob.stats as Record<string, unknown> : {};
-  const discovered = Number(jobStats.discovered ?? indexed ?? 0);
-  const progressIndexed = Number(jobStats.indexed ?? indexed ?? 0);
+  const persistedJobStats = (lastJob?.stats && typeof lastJob.stats === "object") ? lastJob.stats as Record<string, unknown> : {};
+  const activeJobStats = running ? {
+    discovered: Number(persistedJobStats.discovered ?? indexed ?? 0),
+    indexed,
+    queue_attempts: Number(running.attempts ?? 0),
+    queue_error: running.last_error ?? null,
+  } : {};
+  const jobStats = running ? { ...persistedJobStats, ...activeJobStats } : persistedJobStats;
+  const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed);
+  const progressIndexed = indexed;
   return c.json({
     account_id: id,
     status: running ? "syncing" : acc.status,
