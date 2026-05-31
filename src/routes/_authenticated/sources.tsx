@@ -498,6 +498,41 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   );
 }
 
+function DisconnectDialog({
+  state,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  state: DisconnectState;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={!!state} onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Disconnect {state?.providerName}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Indexed memories from this source will be removed, and future syncs will stop.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={pending}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={onConfirm}
+          >
+            {pending ? "Disconnecting…" : "Disconnect"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function ConfigMissingDialog({ state, onClose }: { state: ConfigMissingState; onClose: () => void }) {
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
