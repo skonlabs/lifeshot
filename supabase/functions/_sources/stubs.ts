@@ -16,6 +16,7 @@ function buildStub(kind: ProviderKind, overrides: Partial<SourceCapabilities> = 
     authenticate: async () => {},
     refreshToken: async () => {},
     listAssets: async () => ({ items: [], nextCursor: null }),
+    countSelectionStats: async () => ({ folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 }),
     getDeltaChanges: async () => ({ items: [], deleted: [], nextCursor: null }),
     getAssetMetadata: async () => { throw new Error(`${kind}: not implemented (stub)`); },
     getThumbnail: async () => { throw new Error(`${kind}: not implemented (stub)`); },
