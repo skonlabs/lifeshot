@@ -307,6 +307,72 @@ export function useSourceContainers(accountId: string | undefined) {
   });
 }
 
+export function useSourceContainerChildren({
+  accountId,
+  parentId,
+  enabled = true,
+}: {
+  accountId: string | undefined;
+  parentId?: string | null;
+  enabled?: boolean;
+}) {
+  return useQuery({
+    queryKey: ["source-containers", accountId, parentId ?? null],
+    enabled: !!accountId && enabled,
+    queryFn: async ({ signal }) => {
+      let containers: Array<{ id: string; name?: string; path?: string; selectable?: boolean; has_children?: boolean }> = [];
+      let selected: Array<{ id: string; name?: string; path?: string }> = [];
+      let reason: string | null = null;
+
+      const fetchContainers = (path: string) => api.sources<{
+        containers: Array<{ id: string; name?: string; path?: string; selectable?: boolean; has_children?: boolean }>;
+        selected: Array<{ id: string; name?: string; path?: string }>;
+        parent_id?: string | null;
+      }>(path, {
+        signal,
+        query: parentId ? { parent_id: parentId } : undefined,
+      });
+
+      try {
+        let res;
+        try {
+          res = await fetchContainers(`/${accountId}/containers`);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "not_found") throw error;
+          res = await fetchContainers(`/${accountId}/folders`);
+        }
+        containers = Array.isArray(res.containers) ? res.containers : [];
+        selected = Array.isArray(res.selected) ? res.selected : [];
+        if (!containers.length) reason = "empty";
+      } catch (error) {
+        reason = error instanceof ApiError ? error.code : "internal_error";
+        console.warn("folder listing failed", error);
+
+        if (!parentId) {
+          try {
+            const { data: permRow } = await supabase
+              .from("source_permissions")
+              .select("scopes")
+              .eq("source_account_id", accountId!)
+              .maybeSingle();
+            const scopes = Array.isArray(permRow?.scopes) ? (permRow!.scopes as unknown[]) : [];
+            const entry = scopes.find(
+              (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
+            ) as { containers?: Array<{ id: string; name?: string; path?: string }> } | undefined;
+            selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      return { containers, selected, reason, parentId: parentId ?? null };
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
 export function useUpdateSourceContainers() {
   const qc = useQueryClient();
   return useMutation({
