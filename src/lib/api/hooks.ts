@@ -336,10 +336,6 @@ export function useSourceContainers(accountId: string | undefined) {
             edgeErr instanceof ApiError ? edgeErr.code : "internal_error";
           console.warn("folder listing failed", edgeErr, fnErr);
         }
-      } catch (e) {
-        // Never throw — UI should still render with selected list and a hint.
-        reason = "internal_error";
-        console.warn("folder listing failed", e);
       }
       return { containers, selected, reason };
     },
