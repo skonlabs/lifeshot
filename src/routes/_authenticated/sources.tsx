@@ -149,8 +149,16 @@ function Sources() {
     // block it. We point it at a blank page and navigate it once we have the
     // authorize URL from the server.
     const w = 560, h = 720;
-    const y = window.top?.outerHeight ? Math.max(0, ((window.top.outerHeight - h) / 2) + (window.top.screenY ?? 0)) : 100;
-    const x = window.top?.outerWidth ? Math.max(0, ((window.top.outerWidth - w) / 2) + (window.top.screenX ?? 0)) : 100;
+    const hostWindow = (() => {
+      try {
+        void window.top?.location?.origin;
+        return window.top ?? window;
+      } catch {
+        return window;
+      }
+    })();
+    const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
+    const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
     const popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
     if (!popup) {
       toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
