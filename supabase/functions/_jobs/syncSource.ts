@@ -6,6 +6,41 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
+async function recordSyncError(
+  sb: ReturnType<typeof serviceClient>,
+  sourceAccountId: string,
+  code: string,
+  message: string,
+  payload: Record<string, unknown> = {},
+) {
+  await sb.from("source_errors").insert({
+    source_account_id: sourceAccountId,
+    code,
+    message,
+    payload,
+  });
+}
+
+async function failSyncJob(
+  sb: ReturnType<typeof serviceClient>,
+  sourceAccountId: string,
+  jobId: string,
+  code: string,
+  message: string,
+  payload: Record<string, unknown> = {},
+) {
+  await recordSyncError(sb, sourceAccountId, code, message, payload);
+  await sb.from("source_sync_jobs").upsert({
+    id: jobId,
+    source_account_id: sourceAccountId,
+    kind: "incremental",
+    status: "failed",
+    finished_at: new Date().toISOString(),
+    stats: { ...payload, error: message },
+  }, { onConflict: "id" });
+  await sb.from("source_accounts").update({ status: "error" }).eq("id", sourceAccountId);
+}
+
 async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId: string, cursorKind: string): Promise<string | null> {
   const modern = await sb.from("source_sync_cursors")
     .select("cursor")
@@ -60,7 +95,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
 
-  await sb.from("source_sync_jobs").upsert({
+  const startJob = await sb.from("source_sync_jobs").upsert({
     id: ctx.jobId,
     source_account_id,
     kind: syncKind,
@@ -68,10 +103,23 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     started_at: new Date().toISOString(),
     finished_at: null,
   }, { onConflict: "id" });
+  if (startJob.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_job_start_failed", startJob.error.message, { stage: "start" });
+    throw new Error(`source_sync_jobs start failed: ${startJob.error.message}`);
+  }
+
+  const accountRunning = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
+  if (accountRunning.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_status_failed", accountRunning.error.message, { stage: "account_running" });
+    throw new Error(`source_accounts pending failed: ${accountRunning.error.message}`);
+  }
 
   const { data: acct, error } = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single();
-  if (error || !acct) throw new Error("not found: source_account");
+  if (error || !acct) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
+    throw new Error("not found: source_account");
+  }
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
   let providerKind = acct.provider_kind;
@@ -80,7 +128,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .select("kind")
       .eq("id", acct.provider_id)
       .single();
-    if (providerErr || !provider?.kind) throw new Error("invalid: provider_kind missing");
+    if (providerErr || !provider?.kind) {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "provider_kind_missing", providerErr?.message ?? "provider_kind missing", { stage: "provider_lookup" });
+      throw new Error("invalid: provider_kind missing");
+    }
     providerKind = provider.kind;
     await sb.from("source_accounts").update({ provider_kind: providerKind }).eq("id", source_account_id);
   }
@@ -105,6 +156,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: e.retryAfterSeconds });
       return { rateLimited: true };
     }
+    const msg = e instanceof Error ? e.message : String(e);
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_connector_failed", msg, { stage: "list", provider_kind: providerKind, mode });
     throw e;
   }
 
@@ -181,7 +234,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     .select("id", { count: "exact", head: true })
     .eq("source_account_id", source_account_id);
 
-  await sb.from("source_sync_jobs").update({
+  const finishJob = await sb.from("source_sync_jobs").update({
     status: page.nextCursor ? "running" : "completed",
     finished_at: page.nextCursor ? null : new Date().toISOString(),
     stats: {
@@ -192,12 +245,20 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       has_more: !!page.nextCursor,
     },
   }).eq("id", ctx.jobId);
+  if (finishJob.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_job_finish_failed", finishJob.error.message, { stage: "finish" });
+    throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
+  }
 
   if (page.nextCursor) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
-    await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
+    const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
+    if (completeAccount.error) {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_complete_failed", completeAccount.error.message, { stage: "complete" });
+      throw new Error(`source_accounts complete failed: ${completeAccount.error.message}`);
+    }
   }
 
   return { items: page.items.length, deleted: deleted.length, more: !!page.nextCursor };
