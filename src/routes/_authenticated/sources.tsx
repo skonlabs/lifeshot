@@ -1,5 +1,6 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceStatus, useSyncSource } from "@/lib/api/hooks";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -63,11 +64,48 @@ function Sources() {
   const connect = useConnectSource();
   const sync = useSyncSource();
   const disconnect = useDisconnectSource();
+  const qc = useQueryClient();
+  const popupRef = useRef<Window | null>(null);
   const [explainer, setExplainer] = useState<ExplainerState>(null);
   const [upload, setUpload] = useState<UploadState>(null);
   const [consent, setConsent] = useState<ConsentState>(null);
   const [manage, setManage] = useState<ManageState>(null);
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
+
+  // If this page is itself the OAuth popup, forward the result to the opener
+  // and close the window. Detect by ?oauth_popup=1 + window.opener.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (search?.oauth_popup !== "1") return;
+    if (!window.opener || window.opener === window) return;
+    try {
+      window.opener.postMessage(
+        { type: "pmp:oauth", error: search?.error ?? null, detail: search?.detail ?? null },
+        window.location.origin,
+      );
+    } catch { /* ignore */ }
+    window.close();
+  }, [search?.oauth_popup, search?.error, search?.detail]);
+
+  // Listen for OAuth result postMessage from the popup.
+  useEffect(() => {
+    function handler(ev: MessageEvent) {
+      if (ev.origin !== window.location.origin) return;
+      const data = ev.data as { type?: string; error?: string | null; detail?: string | null } | null;
+      if (!data || data.type !== "pmp:oauth") return;
+      if (data.error) {
+        const detail = data.detail ? `: ${decodeURIComponent(data.detail)}` : "";
+        toast.error(`Connection failed (${data.error}${detail})`);
+      } else {
+        toast.success("Source connected. Indexing started.");
+      }
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      try { popupRef.current?.close(); } catch { /* ignore */ }
+      popupRef.current = null;
+    }
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [qc]);
 
   // Surface OAuth callback errors as toasts.
   useEffect(() => {
@@ -107,16 +145,29 @@ function Sources() {
 
   async function startConnect(provider: Provider) {
     setConsent(null);
+    // Open the popup synchronously inside the click handler so browsers don't
+    // block it. We point it at a blank page and navigate it once we have the
+    // authorize URL from the server.
+    const w = 560, h = 720;
+    const y = window.top?.outerHeight ? Math.max(0, ((window.top.outerHeight - h) / 2) + (window.top.screenY ?? 0)) : 100;
+    const x = window.top?.outerWidth ? Math.max(0, ((window.top.outerWidth - w) / 2) + (window.top.screenX ?? 0)) : 100;
+    const popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
+    if (!popup) {
+      toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
+      return;
+    }
+    popupRef.current = popup;
     try {
       const out = await connect.mutateAsync({
         provider_id: provider.id,
-        redirect_uri: `${window.location.origin}/sources`,
+        redirect_uri: `${window.location.origin}/sources?oauth_popup=1`,
       });
       if (out.authorize_url) {
-        toast.message(`Redirecting to ${provider.name}…`);
-        window.location.href = out.authorize_url;
+        popup.location.href = out.authorize_url;
         return;
       }
+      popup.close();
+      popupRef.current = null;
       if (provider.kind === "export_import" && out.upload_target && out.session_token) {
         setUpload({ accountId: out.session_token, prefix: out.upload_target.prefix });
         return;
@@ -124,6 +175,8 @@ function Sources() {
       // Defensive: server should always return one of the above.
       toast.error(`${provider.name} did not return a connection URL. Please try again.`);
     } catch (e) {
+      try { popup.close(); } catch { /* ignore */ }
+      popupRef.current = null;
       const msg = (e as Error).message ?? "";
       // Server error when OAuth env keys are missing — show a config dialog
       // with the exact env vars to set instead of a cryptic toast.
