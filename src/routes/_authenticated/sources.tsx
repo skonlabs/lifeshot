@@ -811,12 +811,29 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
   onSync: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
 }) {
+  const qc = useQueryClient();
   const status = useSourceStatus(a.id);
   const s = status.data;
   const running =
     s?.status === "syncing" ||
     s?.last_job?.status === "running" ||
     s?.last_job?.status === "pending";
+  // While running, refresh the parent accounts list so indexed/folder counts
+  // climb in near-real-time as the worker upserts assets.
+  const wasRunningRef = useRef(running);
+  useEffect(() => {
+    if (running) {
+      const t = setInterval(() => {
+        qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      }, 5_000);
+      return () => clearInterval(t);
+    }
+    if (wasRunningRef.current && !running) {
+      // Just finished — pull fresh totals once.
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+    }
+    wasRunningRef.current = running;
+  }, [running, qc]);
   const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
   const discovered = s?.progress.discovered ?? indexed;
   const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : null;

@@ -10,6 +10,23 @@ import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
+// Kick the worker drain immediately so newly enqueued jobs start within ~1s
+// instead of waiting up to 10s for pg_cron. Fire-and-forget.
+function kickWorker() {
+  try {
+    const workerUrl = ENV.SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/worker/drain";
+    const workerSecret = Deno.env.get("WORKER_SECRET") ?? "";
+    // deno-lint-ignore no-explicit-any
+    const globalAny = globalThis as any;
+    const kick = fetch(workerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-worker-secret": workerSecret },
+      body: "{}",
+    }).catch(() => undefined);
+    if (globalAny.EdgeRuntime?.waitUntil) globalAny.EdgeRuntime.waitUntil(kick);
+  } catch { /* ignore */ }
+}
+
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
   redirect_uri: z.string().url().max(2048).optional(),
@@ -438,7 +455,7 @@ app.patch("/v1/:id/containers", async (c) => {
     { source_account_id: acc.id, mode: "initial" },
     { userId: acc.user_id, priority: 4 },
   );
-
+  kickWorker();
   return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
 
@@ -656,6 +673,7 @@ app.post("/v1/:id/sync", async (c) => {
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   emitEvent(c, "sources.sync_enqueued", { id });
+  kickWorker();
   return c.json({ job_id: job.id }, 202);
 });
 
@@ -682,6 +700,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
     { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
     { userId: uid, priority: 4 });
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
+  kickWorker();
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 

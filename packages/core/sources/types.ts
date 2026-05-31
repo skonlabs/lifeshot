@@ -61,7 +61,7 @@ export interface SourceSelectionStats {
 /** Normalized record emitted by every connector — no originals. */
 export interface AssetRecord {
   provider_asset_id: string;
-  media_type: "image" | "video";
+  media_type: "image" | "video" | "audio" | "document";
   mime_type?: string;
   capture_time?: string;           // iso
   upload_time?: string;
