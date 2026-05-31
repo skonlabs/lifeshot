@@ -23,7 +23,6 @@ import type {
   TSourceStatus,
 } from "@core/api";
 import { ApiError, api } from "./client";
-import { supabase } from "@/lib/supabase";
 
 type SourceAccountsResponse = {
   accounts: Array<{
