@@ -19,6 +19,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as InviteTokenRouteImport } from './routes/invite.$token'
 import { Route as AuthenticatedSourcesRouteImport } from './routes/_authenticated/sources'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
+import { Route as AuthenticatedScansRouteImport } from './routes/_authenticated/scans'
 import { Route as AuthenticatedPlacesRouteImport } from './routes/_authenticated/places'
 import { Route as AuthenticatedPeopleRouteImport } from './routes/_authenticated/people'
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
@@ -80,6 +81,11 @@ const AuthenticatedSourcesRoute = AuthenticatedSourcesRouteImport.update({
 const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
   id: '/search',
   path: '/search',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedScansRoute = AuthenticatedScansRouteImport.update({
+  id: '/scans',
+  path: '/scans',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedPlacesRoute = AuthenticatedPlacesRouteImport.update({
@@ -165,6 +171,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/people': typeof AuthenticatedPeopleRouteWithChildren
   '/places': typeof AuthenticatedPlacesRoute
+  '/scans': typeof AuthenticatedScansRoute
   '/search': typeof AuthenticatedSearchRoute
   '/sources': typeof AuthenticatedSourcesRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -189,6 +196,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/people': typeof AuthenticatedPeopleRouteWithChildren
   '/places': typeof AuthenticatedPlacesRoute
+  '/scans': typeof AuthenticatedScansRoute
   '/search': typeof AuthenticatedSearchRoute
   '/sources': typeof AuthenticatedSourcesRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -215,6 +223,7 @@ export interface FileRoutesById {
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
   '/_authenticated/people': typeof AuthenticatedPeopleRouteWithChildren
   '/_authenticated/places': typeof AuthenticatedPlacesRoute
+  '/_authenticated/scans': typeof AuthenticatedScansRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
   '/_authenticated/sources': typeof AuthenticatedSourcesRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -241,6 +250,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/people'
     | '/places'
+    | '/scans'
     | '/search'
     | '/sources'
     | '/invite/$token'
@@ -265,6 +275,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/people'
     | '/places'
+    | '/scans'
     | '/search'
     | '/sources'
     | '/invite/$token'
@@ -290,6 +301,7 @@ export interface FileRouteTypes {
     | '/_authenticated/onboarding'
     | '/_authenticated/people'
     | '/_authenticated/places'
+    | '/_authenticated/scans'
     | '/_authenticated/search'
     | '/_authenticated/sources'
     | '/invite/$token'
@@ -381,6 +393,13 @@ declare module '@tanstack/react-router' {
       path: '/search'
       fullPath: '/search'
       preLoaderRoute: typeof AuthenticatedSearchRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/scans': {
+      id: '/_authenticated/scans'
+      path: '/scans'
+      fullPath: '/scans'
+      preLoaderRoute: typeof AuthenticatedScansRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/places': {
@@ -508,6 +527,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
   AuthenticatedPeopleRoute: typeof AuthenticatedPeopleRouteWithChildren
   AuthenticatedPlacesRoute: typeof AuthenticatedPlacesRoute
+  AuthenticatedScansRoute: typeof AuthenticatedScansRoute
   AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
   AuthenticatedSourcesRoute: typeof AuthenticatedSourcesRoute
   AuthenticatedAssetIdRoute: typeof AuthenticatedAssetIdRoute
@@ -524,6 +544,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
   AuthenticatedPeopleRoute: AuthenticatedPeopleRouteWithChildren,
   AuthenticatedPlacesRoute: AuthenticatedPlacesRoute,
+  AuthenticatedScansRoute: AuthenticatedScansRoute,
   AuthenticatedSearchRoute: AuthenticatedSearchRoute,
   AuthenticatedSourcesRoute: AuthenticatedSourcesRoute,
   AuthenticatedAssetIdRoute: AuthenticatedAssetIdRoute,
