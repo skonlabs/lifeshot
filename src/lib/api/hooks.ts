@@ -22,8 +22,21 @@ import type {
   TDeleteDerivedIn,
   TSourceStatus,
 } from "@core/api";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
+
+type SourceAccountsResponse = {
+  accounts: Array<{
+    id: string;
+    provider_kind: string;
+    status: string;
+    display_label: string | null;
+    asset_count: number;
+    last_sync_at: string | null;
+    selected_container_count?: number;
+    selected_containers?: Array<{ id: string; name?: string }>;
+  }>;
+};
 
 // ---------- me / privacy ----------
 export function useMe() {
@@ -153,16 +166,7 @@ export function useProviders() {
 export function useSourceAccounts() {
   return useQuery({
     queryKey: ["source-accounts"],
-    queryFn: () => api.sources<{ accounts: Array<{
-      id: string;
-      provider_kind: string;
-      status: string;
-      display_label: string | null;
-      asset_count: number;
-      last_sync_at: string | null;
-      selected_container_count?: number;
-      selected_containers?: Array<{ id: string; name?: string }>;
-    }> }>("/accounts"),
+    queryFn: () => api.sources<SourceAccountsResponse>("/accounts"),
     staleTime: 30_000,
   });
 }
@@ -207,6 +211,27 @@ export function useSyncSource() {
 export function useDisconnectSource() {
   const qc = useQueryClient();
   return useMutation({
+    onMutate: async (accountId: string) => {
+      await Promise.all([
+        qc.cancelQueries({ queryKey: ["source-accounts"] }),
+        qc.cancelQueries({ queryKey: ["source-status", accountId] }),
+        qc.cancelQueries({ queryKey: ["source-containers", accountId] }),
+      ]);
+
+      const previousAccounts = qc.getQueryData<SourceAccountsResponse>(["source-accounts"]);
+
+      qc.setQueryData<SourceAccountsResponse | undefined>(["source-accounts"], (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          accounts: current.accounts.filter((account) => account.id !== accountId),
+        };
+      });
+      qc.removeQueries({ queryKey: ["source-status", accountId] });
+      qc.removeQueries({ queryKey: ["source-containers", accountId] });
+
+      return { previousAccounts };
+    },
     mutationFn: async (accountId: string) => {
       const { data: refs, error: refsError } = await supabase
         .from("asset_source_refs")
@@ -245,10 +270,18 @@ export function useDisconnectSource() {
 
       return { status: "disconnected", account_id: accountId, direct: true };
     },
+    onError: (_error, _accountId, context) => {
+      if (context?.previousAccounts) {
+        qc.setQueryData(["source-accounts"], context.previousAccounts);
+      }
+    },
     onSuccess: (_data, accountId) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
       qc.removeQueries({ queryKey: ["source-status", accountId] });
       qc.removeQueries({ queryKey: ["source-containers", accountId] });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
     },
   });
 }
@@ -257,11 +290,21 @@ export function useSourceContainers(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
-    queryFn: () => api.sources<{
-      containers: Array<{ id: string; name?: string }>;
-      selected: Array<{ id: string; name?: string }>;
-    }>(`/${accountId}/containers`),
+    queryFn: async () => {
+      try {
+        return await api.sources<{
+          containers: Array<{ id: string; name?: string }>;
+          selected: Array<{ id: string; name?: string }>;
+        }>(`/${accountId}/containers`);
+      } catch (error) {
+        if (error instanceof ApiError && error.code === "not_found") {
+          return { containers: [], selected: [] };
+        }
+        throw error;
+      }
+    },
     staleTime: 30_000,
+    retry: false,
   });
 }
 
@@ -285,16 +328,26 @@ export function useSourceStatus(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-status", accountId],
     enabled: !!accountId,
-    queryFn: () => api.sources<TSourceStatus>(`/${accountId}/status`),
+    queryFn: async () => {
+      try {
+        return await api.sources<TSourceStatus | null>(`/${accountId}/status`);
+      } catch (error) {
+        if (error instanceof ApiError && error.code === "not_found") {
+          return null;
+        }
+        throw error;
+      }
+    },
     // Only poll while a job is actively running. Once it completes/fails,
     // stop hammering the backend.
     refetchInterval: (q) => {
-      const s = (q.state.data as TSourceStatus | undefined);
+      const s = (q.state.data as TSourceStatus | null | undefined);
       const status = s?.last_job?.status;
       const accStatus = s?.status;
       const running = status === "running" || status === "pending" || accStatus === "syncing";
       return running ? 5_000 : false;
     },
+    retry: false,
   });
 }
 
