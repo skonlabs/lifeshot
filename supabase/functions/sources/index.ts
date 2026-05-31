@@ -165,7 +165,7 @@ app.post("/connect", async (c) => {
   } else if (provider.kind === "export_import") {
     // Create the account up front so the upload UI can target it
     const { data: account, error: accErr } = await svc.from("source_accounts").insert({
-      user_id: uid, provider_id: provider.id, status: "active",
+      user_id: uid, provider_id: provider.id, provider_kind: provider.kind, status: "active",
       external_account_id: `upload_${state.slice(0, 8)}`,
       display_label: "Uploaded files",
     }).select().single();
