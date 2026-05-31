@@ -504,6 +504,7 @@ async function handleOAuthCallback(c: Context) {
     { source_account_id: account.id, mode: "initial" }, { userId: st.user_id, priority: 3 });
 
   callbackUrl.searchParams.set("connected", account.id);
+  callbackUrl.searchParams.set("provider", provider.kind);
   return c.redirect(callbackUrl.toString());
 }
 
