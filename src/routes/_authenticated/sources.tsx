@@ -1,5 +1,5 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceStatus, useSyncSource } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -20,6 +20,7 @@ type UploadState = { accountId: string; prefix: string } | null;
 type ConsentState = { provider: Provider } | null;
 type ManageState = { provider: Provider; accountId: string } | null;
 type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
+type SourceContainer = { id: string; name?: string };
 
 const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars: string[] }> = {
   google_photos: {
@@ -159,7 +160,14 @@ function Sources() {
     })();
     const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
     const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
-    const popup = window.open("about:blank", "pmp_oauth", `popup=yes,width=${w},height=${h},left=${x},top=${y}`);
+    const popupHost = (() => {
+      try {
+        return window.top && typeof window.top.open === "function" ? window.top : window;
+      } catch {
+        return window;
+      }
+    })();
+    const popup = popupHost.open("about:blank", "pmp_oauth", `popup=yes,width=${w},height=${h},left=${x},top=${y}`);
     if (!popup) {
       toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
       return;
@@ -214,7 +222,10 @@ function Sources() {
           <ul className="space-y-2">
             {accounts.data.accounts.map((a) => (
               <SourceRow key={a.id} a={a} onSync={() => sync.mutate(a.id)} onDisconnect={() => {
-                if (confirm("Disconnect this source? Indexed memories will be removed.")) disconnect.mutate(a.id);
+                if (confirm("Disconnect this source? Indexed memories will be removed.")) disconnect.mutate(a.id, {
+                  onSuccess: () => toast.success("Source disconnected."),
+                  onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
+                });
               }} />
             ))}
           </ul>
@@ -270,7 +281,10 @@ function Sources() {
         onSync={(id) => { sync.mutate(id); setManage(null); }}
         onDisconnect={(id) => {
           if (confirm("Disconnect this source? Indexed memories will be removed.")) {
-            disconnect.mutate(id);
+            disconnect.mutate(id, {
+              onSuccess: () => toast.success("Source disconnected."),
+              onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
+            });
             setManage(null);
           }
         }}
@@ -325,6 +339,32 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   state: ManageState; onClose: () => void;
   onSync: (id: string) => void; onDisconnect: (id: string) => void; onReconnect: (p: Provider) => void;
 }) {
+  const containers = useSourceContainers(state?.accountId);
+  const updateContainers = useUpdateSourceContainers();
+  const selected = containers.data?.selected ?? [];
+  const allContainers = containers.data?.containers ?? [];
+  const [draft, setDraft] = useState<Record<string, SourceContainer>>({});
+
+  useEffect(() => {
+    if (!state) {
+      setDraft({});
+      return;
+    }
+    const next = Object.fromEntries(selected.map((item) => [item.id, item]));
+    setDraft(next);
+  }, [state, containers.data?.selected]);
+
+  const toggleContainer = (item: SourceContainer) => {
+    setDraft((prev) => {
+      if (prev[item.id]) {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      }
+      return { ...prev, [item.id]: item };
+    });
+  };
+
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -335,6 +375,39 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
+          {!!allContainers.length && (
+            <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3">
+              <div className="mb-2 text-sm font-medium text-[color:var(--ink)]">Folders to index</div>
+              <div className="max-h-52 space-y-2 overflow-auto pr-1">
+                {allContainers.map((item) => (
+                  <label key={item.id} className="flex items-start gap-2 text-sm text-[color:var(--ink)]">
+                    <input
+                      type="checkbox"
+                      checked={!!draft[item.id]}
+                      onChange={() => toggleContainer(item)}
+                    />
+                    <span>{item.name ?? item.id}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-[color:var(--umber)]">Only selected folders/albums will be used for indexing and future syncs.</p>
+                <Button
+                  size="sm"
+                  disabled={updateContainers.isPending || containers.isLoading}
+                  onClick={() => state && updateContainers.mutate({
+                    accountId: state.accountId,
+                    containers: Object.values(draft),
+                  }, {
+                    onSuccess: () => toast.success("Folder scope updated. Re-sync queued."),
+                    onError: (e) => toast.error((e as Error).message || "Failed to save folder scope."),
+                  })}
+                >
+                  {updateContainers.isPending ? "Saving…" : "Save scope"}
+                </Button>
+              </div>
+            </div>
+          )}
           <Button variant="outline" onClick={() => state && onSync(state.accountId)}>
             <RefreshCcw className="mr-2 h-4 w-4" /> Sync now
           </Button>
