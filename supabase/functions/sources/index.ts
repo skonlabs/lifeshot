@@ -115,8 +115,16 @@ app.post("/connect", async (c) => {
     const u = new URL(oauth.authorize_url);
     u.searchParams.set("state", state);
     u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/callback`);
-    if (oauth.client_id) u.searchParams.set("client_id", oauth.client_id);
+    // Prefer credentials from edge function secrets over seeded oauth_config
+    // so client IDs never live in the database.
+    const envClientId = provider.kind === "google_photos"
+      ? Deno.env.get("GOOGLE_CLIENT_ID")
+      : undefined;
+    const clientId = envClientId ?? oauth.client_id;
+    if (clientId) u.searchParams.set("client_id", clientId);
     if (oauth.scope) u.searchParams.set("scope", oauth.scope);
+    if (oauth.access_type) u.searchParams.set("access_type", oauth.access_type);
+    if (oauth.prompt) u.searchParams.set("prompt", oauth.prompt);
     u.searchParams.set("response_type", "code");
     authorize_url = u.toString();
   } else {
