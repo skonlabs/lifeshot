@@ -61,16 +61,19 @@ function isSandboxPreviewHost(hostname: string) {
   return hostname.endsWith(SANDBOX_PREVIEW_SUFFIX);
 }
 
-function getStandalonePreviewConnectUrl(providerId: string) {
+function getStandalonePreviewBridgeUrl(providerId: string, accessToken: string, refreshToken: string) {
   if (typeof window === "undefined") return null;
   const { hostname } = window.location;
   if (!isSandboxPreviewHost(hostname)) return null;
   const projectId = hostname.replace(SANDBOX_PREVIEW_SUFFIX, "");
   if (!projectId) return null;
 
-  const url = new URL(`https://id-preview--${projectId}.lovable.app/sources`);
+  const url = new URL(`https://id-preview--${projectId}.lovable.app/oauth-bridge`);
   url.searchParams.set("connect_provider", providerId);
-  url.searchParams.set("oauth_bridge", "1");
+  url.hash = new URLSearchParams({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  }).toString();
   return url.toString();
 }
 
