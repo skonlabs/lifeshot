@@ -6,6 +6,50 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
+async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId: string, cursorKind: string): Promise<string | null> {
+  const modern = await sb.from("source_sync_cursors")
+    .select("cursor")
+    .eq("source_account_id", sourceAccountId)
+    .eq("kind", cursorKind)
+    .maybeSingle();
+
+  if (!modern.error) {
+    return ((modern.data?.cursor as { token?: string } | null)?.token ?? null);
+  }
+
+  const legacy = await sb.from("source_sync_cursors")
+    .select("cursor, delta_token")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (legacy.error) throw new Error(`load cursor: ${legacy.error.message}`);
+  return cursorKind === "delta" ? (legacy.data?.delta_token ?? null) : (legacy.data?.cursor ?? null);
+}
+
+async function saveCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId: string, cursorKind: string, nextCursor: string | null) {
+  const modern = await sb.from("source_sync_cursors").upsert({
+    source_account_id: sourceAccountId,
+    kind: cursorKind,
+    cursor: { token: nextCursor },
+    last_sync_at: new Date().toISOString(),
+  }, { onConflict: "source_account_id,kind" });
+
+  if (!modern.error) return;
+
+  const patch = cursorKind === "delta"
+    ? { delta_token: nextCursor, updated_at: new Date().toISOString() }
+    : { cursor: nextCursor, updated_at: new Date().toISOString() };
+
+  const legacyUpdate = await sb.from("source_sync_cursors").update(patch).eq("source_account_id", sourceAccountId);
+  if (legacyUpdate.error) {
+    const legacyInsert = await sb.from("source_sync_cursors").insert({
+      source_account_id: sourceAccountId,
+      cursor: cursorKind === "delta" ? null : nextCursor,
+      delta_token: cursorKind === "delta" ? nextCursor : null,
+    });
+    if (legacyInsert.error) throw new Error(`save cursor: ${legacyInsert.error.message}`);
+  }
+}
+
 /**
  * syncSource — pull a page of assets from a source_account, upsert assets,
  * enqueue normalizeMetadata for each new/updated, and chain itself if more pages.
@@ -41,9 +85,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   // Load cursor
   const cursorKind = mode === "initial" ? "list" : (caps.supportsDelta ? "delta" : "list");
-  const { data: cur } = await sb.from("source_sync_cursors")
-    .select("cursor").eq("source_account_id", source_account_id).eq("kind", cursorKind).maybeSingle();
-  const cursor = (cur?.cursor as any)?.token ?? null;
+  const cursor = await loadCursor(sb, source_account_id, cursorKind);
 
   let page;
   try {
@@ -114,9 +156,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   // Save cursor
-  await sb.from("source_sync_cursors").upsert({
-    source_account_id, kind: cursorKind, cursor: { token: page.nextCursor }, last_sync_at: new Date().toISOString(),
-  }, { onConflict: "source_account_id,kind" });
+  await saveCursor(sb, source_account_id, cursorKind, page.nextCursor);
 
   // Fan-out normalizeMetadata
   for (const id of upsertedAssetIds) {
