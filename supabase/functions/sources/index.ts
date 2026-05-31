@@ -198,13 +198,31 @@ app.get("/v1/accounts", async (c) => {
   const counts: Record<string, number> = {};
   const breakdown: Record<string, { photo: number; video: number; document: number; audio: number; other: number }> = {};
   if (ids.length) {
-    const { data: cs } = await supa.from("asset_source_refs")
-      .select("source_account_id, asset:assets(media_type)")
+    // Use the service client to avoid RLS/embedding pitfalls when joining
+    // asset_source_refs -> assets. Fetch the two tables separately and
+    // aggregate in code so each account gets accurate per-kind counts.
+    const svc = getServiceClient();
+    const { data: refs, error: refsErr } = await svc.from("asset_source_refs")
+      .select("source_account_id, asset_id")
       .in("source_account_id", ids);
-    for (const row of (cs ?? []) as Array<{ source_account_id: string; asset?: { media_type?: string } | null }>) {
+    if (refsErr) throw new ApiError("internal", refsErr.message);
+    const assetIds = Array.from(new Set((refs ?? []).map((r: any) => r.asset_id).filter(Boolean)));
+    const mediaByAsset = new Map<string, string>();
+    // Chunk the IN(...) to stay under URL length limits.
+    const CHUNK = 500;
+    for (let i = 0; i < assetIds.length; i += CHUNK) {
+      const slice = assetIds.slice(i, i + CHUNK);
+      const { data: rows, error: aErr } = await svc.from("assets")
+        .select("id, media_type").in("id", slice);
+      if (aErr) throw new ApiError("internal", aErr.message);
+      for (const row of (rows ?? []) as Array<{ id: string; media_type: string }>) {
+        mediaByAsset.set(row.id, row.media_type);
+      }
+    }
+    for (const row of (refs ?? []) as Array<{ source_account_id: string; asset_id: string }>) {
       counts[row.source_account_id] = (counts[row.source_account_id] ?? 0) + 1;
       const bucket = breakdown[row.source_account_id] ??= { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
-      const kind = row.asset?.media_type ?? "unknown";
+      const kind = mediaByAsset.get(row.asset_id) ?? "unknown";
       if (kind === "photo" || kind === "live_photo" || kind === "animation") bucket.photo += 1;
       else if (kind === "video") bucket.video += 1;
       else if (kind === "document") bucket.document += 1;
