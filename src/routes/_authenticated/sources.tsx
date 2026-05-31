@@ -175,9 +175,14 @@ function Sources() {
     popupRef.current = popup;
 
     try {
+      const redirectUrl = new URL(`${window.location.origin}/oauth-popup`);
+      const previewToken = new URLSearchParams(window.location.search).get("__lovable_token");
+      if (previewToken) {
+        redirectUrl.searchParams.set("__lovable_token", previewToken);
+      }
       const out = await connect.mutateAsync({
         provider_id: provider.id,
-        redirect_uri: `${window.location.origin}/oauth-popup`,
+        redirect_uri: redirectUrl.toString(),
       });
       if (out.authorize_url) {
         popup.location.href = out.authorize_url;
