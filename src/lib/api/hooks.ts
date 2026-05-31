@@ -307,26 +307,35 @@ export function useSourceContainers(accountId: string | undefined) {
       const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
 
       // 2) Fetch the real folder/album list from the provider via a
-      //    TanStack server function. The server function reads OAuth
-            //    tokens server-side and calls the provider's listing API.
+      //    Supabase edge function (it has the OAuth secrets server-side).
+      //    If the edge function is unavailable, fall back to a TanStack
+      //    server function that does the same via Cloudflare Worker env.
       let containers: Array<{ id: string; name?: string }> = [];
       let reason: string | null = null;
       try {
-        const { data: sess } = await supabase.auth.getSession();
-        const bearer = sess.session?.access_token;
-        if (bearer) {
-          const res = await listSourceFolders({
-            data: { accountId: accountId!, bearer },
-          });
-          if (res.ok) containers = res.folders;
-          else reason = res.reason;
-        } else {
-          reason = "no_session";
+        const res = await api.sources<{
+          containers: Array<{ id: string; name?: string }>;
+          selected: Array<{ id: string; name?: string }>;
+        }>(`/${accountId}/containers`, { signal });
+        containers = res.containers ?? [];
+      } catch (edgeErr) {
+        try {
+          const { data: sess } = await supabase.auth.getSession();
+          const bearer = sess.session?.access_token;
+          if (!bearer) {
+            reason = "no_session";
+          } else {
+            const res = await listSourceFolders({
+              data: { accountId: accountId!, bearer },
+            });
+            if (res.ok) containers = res.folders;
+            else reason = res.reason;
+          }
+        } catch (fnErr) {
+          reason =
+            edgeErr instanceof ApiError ? edgeErr.code : "internal_error";
+          console.warn("folder listing failed", edgeErr, fnErr);
         }
-      } catch (e) {
-        // Never throw — UI should still render with selected list and a hint.
-        reason = "internal_error";
-        console.warn("listSourceFolders failed", e);
       }
       return { containers, selected, reason };
     },
