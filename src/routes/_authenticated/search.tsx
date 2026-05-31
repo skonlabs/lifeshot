@@ -157,7 +157,7 @@ function SearchPage() {
                 </div>
               </section>
             )}
-            {result.data?.parsed && (
+            {result.data?.parsed && import.meta.env.DEV && (
               <section className="rounded-lg border p-3">
                 <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Why these</h2>
                 <pre className="overflow-auto text-xs">{JSON.stringify(result.data.parsed, null, 2)}</pre>
