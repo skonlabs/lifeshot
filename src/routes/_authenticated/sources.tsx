@@ -123,13 +123,19 @@ function Sources() {
   // Listen for OAuth result postMessage from the popup.
   useEffect(() => {
     function handler(ev: MessageEvent) {
-      const data = ev.data as { type?: string; error?: string | null; detail?: string | null } | null;
+      const data = ev.data as { type?: string; error?: string | null; detail?: string | null; connected?: string | null; provider?: string | null } | null;
       if (!data || data.type !== "pmp:oauth") return;
       if (data.error) {
         const detail = data.detail ? `: ${decodeURIComponent(data.detail)}` : "";
         toast.error(`Connection failed (${data.error}${detail})`);
       } else {
         toast.success("Source connected. Indexing started.");
+        if (data.connected && data.provider) {
+          const provider = providers.data?.providers?.find((item) => item.kind === data.provider);
+          if (provider) {
+            setManage({ provider, accountId: data.connected });
+          }
+        }
       }
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
       try { popupRef.current?.close(); } catch { /* ignore */ }
@@ -137,7 +143,7 @@ function Sources() {
     }
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [qc]);
+  }, [providers.data?.providers, qc]);
 
   // Surface OAuth callback errors as toasts.
   useEffect(() => {
@@ -146,8 +152,14 @@ function Sources() {
       toast.error(`Connection failed (${search.error}${detail})`);
     } else if (search?.connected) {
       toast.success("Source connected. Indexing started.");
+      if (search.provider) {
+        const provider = providers.data?.providers?.find((item) => item.kind === search.provider);
+        if (provider) {
+          setManage({ provider, accountId: search.connected });
+        }
+      }
     }
-  }, [search?.error, search?.detail, search?.connected]);
+  }, [providers.data?.providers, search?.connected, search?.detail, search?.error, search?.provider]);
 
   // Map provider_kind → first connected account so we can show a "Connected" badge
   // and switch the card from a Connect button to a Manage button.
