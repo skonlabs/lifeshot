@@ -5,8 +5,7 @@ import { sendError, ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
-import { cache, keys, hashJson } from "../_shared/cache.ts";
-import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
+import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 
@@ -131,10 +130,6 @@ app.post("/connect", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "connect");
   const body = await parseBody(c, ConnectIn);
-  const reqHash = await hashJson(body);
-  const cached = await findIdempotent(c, "sources.connect", reqHash);
-  if (cached && "conflict" in cached) throw new ApiError("conflict", "Idempotency-Key reused with different payload");
-  if (cached?.response) return c.json(cached.response, cached.status as 200);
 
   // Verify provider exists
   const { data: provider } = await supa.from("source_providers").select("*").eq("id", body.provider_id).maybeSingle();
@@ -196,7 +191,6 @@ app.post("/connect", async (c) => {
   }
 
   const out = { authorize_url, session_token, state, upload_target };
-  await storeIdempotent(c, "sources.connect", reqHash, out, 200);
   emitEvent(c, "sources.connect_initiated", { provider: provider.kind });
   return c.json(out);
 });
