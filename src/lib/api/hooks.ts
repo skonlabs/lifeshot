@@ -170,6 +170,13 @@ export function useSourceAccounts() {
     queryKey: ["source-accounts"],
     queryFn: () => api.sources<SourceAccountsResponse>("/accounts"),
     staleTime: 30_000,
+    // While any source is actively syncing, refresh counts every 5s so the
+    // user sees indexed/photo/video totals climb in near-real-time.
+    refetchInterval: (q) => {
+      const data = q.state.data as SourceAccountsResponse | undefined;
+      const anyRunning = (data?.accounts ?? []).some((a) => a.status === "syncing");
+      return anyRunning ? 5_000 : false;
+    },
   });
 }
 
