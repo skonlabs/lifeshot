@@ -1,4 +1,4 @@
-import { z } from "../_shared/deps.ts";
+import { z, type Context } from "../_shared/deps.ts";
 import { createApi, authed } from "../_shared/router.ts";
 import { parseBody, parseParams, parseQuery } from "../_shared/validation.ts";
 import { sendError, ApiError } from "../_shared/errors.ts";
@@ -54,6 +54,12 @@ const OAUTH_META: Record<string, OAuthMeta> = {
     clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
   },
 };
+
+const CALLBACK_PATHS = [
+  "/functions/v1/sources/callback",
+  "/functions/v1/sources/v1/callback",
+] as const;
+const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
 // Providers list (public-ish: providers seeded reference data)
 app.get("/providers", async (c) => {
@@ -156,7 +162,7 @@ app.post("/connect", async (c) => {
     }
     const u = new URL(meta.authorize_url);
     u.searchParams.set("state", state);
-    u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/v1/callback`);
+    u.searchParams.set("redirect_uri", OAUTH_CALLBACK_URL);
     u.searchParams.set("client_id", clientId);
     u.searchParams.set("response_type", "code");
     u.searchParams.set("scope", meta.scope);
@@ -195,7 +201,7 @@ app.post("/connect", async (c) => {
   return c.json(out);
 });
 
-app.get("/callback", async (c) => {
+async function handleOAuthCallback(c: Context) {
   // SERVICE ROLE: store tokens, create account. We intentionally bypass RLS here.
   const { code, state, error } = parseQuery(c, z.object({
     code: z.string().min(1).optional(),
@@ -258,7 +264,7 @@ app.get("/callback", async (c) => {
         code,
         client_id: cfg.cid,
         client_secret: cfg.cs,
-        redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/v1/callback`,
+        redirect_uri: OAUTH_CALLBACK_URL,
         grant_type: "authorization_code",
       });
       const r = await fetch(cfg.url, {
@@ -326,7 +332,10 @@ app.get("/callback", async (c) => {
 
   callbackUrl.searchParams.set("connected", account.id);
   return c.redirect(callbackUrl.toString());
-});
+}
+
+app.get("/callback", handleOAuthCallback);
+app.get("/v1/callback", handleOAuthCallback);
 
 app.post("/:id/sync", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");

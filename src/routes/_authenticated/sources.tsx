@@ -368,6 +368,7 @@ function ConfigMissingDialog({ state, onClose }: { state: ConfigMissingState; on
         <p className="text-xs text-[color:var(--umber)]">
           Also register the redirect URI{" "}
           <code className="break-all">{`${import.meta.env.VITE_SUPABASE_URL ?? ""}/functions/v1/sources/callback`}</code>{" "}
+          <span className="mx-1">(legacy <code>{`${import.meta.env.VITE_SUPABASE_URL ?? ""}/functions/v1/sources/v1/callback`}</code> also works)</span>
           in the provider's developer console.
         </p>
         <DialogFooter>
