@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Check, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -20,6 +21,7 @@ type UploadState = { accountId: string; prefix: string } | null;
 type ConsentState = { provider: Provider } | null;
 type ManageState = { provider: Provider; accountId: string } | null;
 type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
+type DisconnectState = { accountId: string; providerName: string } | null;
 type SourceContainer = { id: string; name?: string };
 
 const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars: string[] }> = {
@@ -85,6 +87,23 @@ function Sources() {
   const [consent, setConsent] = useState<ConsentState>(null);
   const [manage, setManage] = useState<ManageState>(null);
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
+  const [disconnectConfirm, setDisconnectConfirm] = useState<DisconnectState>(null);
+
+  function requestDisconnect(accountId: string, providerName: string) {
+    setDisconnectConfirm({ accountId, providerName });
+  }
+
+  function confirmDisconnect() {
+    if (!disconnectConfirm) return;
+    disconnect.mutate(disconnectConfirm.accountId, {
+      onSuccess: () => {
+        toast.success("Source disconnected.");
+        setDisconnectConfirm(null);
+        setManage(null);
+      },
+      onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
+    });
+  }
 
   // If this page is itself the OAuth popup, forward the result to the opener
   // and close the window. Detect by ?oauth_popup=1 + window.opener.
@@ -240,10 +259,7 @@ function Sources() {
           <ul className="space-y-2">
             {accounts.data.accounts.map((a) => (
               <SourceRow key={a.id} a={a} provider={providers.data?.providers?.find(p => p.kind === a.provider_kind)} onSync={() => sync.mutate(a.id)} onDisconnect={() => {
-                if (confirm("Disconnect this source? Indexed memories will be removed.")) disconnect.mutate(a.id, {
-                  onSuccess: () => toast.success("Source disconnected."),
-                  onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
-                });
+                requestDisconnect(a.id, providers.data?.providers?.find(p => p.kind === a.provider_kind)?.name ?? a.display_label ?? a.provider_kind);
               }} />
             ))}
           </ul>
@@ -298,17 +314,17 @@ function Sources() {
         onClose={() => setManage(null)}
         onSync={(id) => { sync.mutate(id); setManage(null); }}
         onDisconnect={(id) => {
-          if (confirm("Disconnect this source? Indexed memories will be removed.")) {
-            disconnect.mutate(id, {
-              onSuccess: () => toast.success("Source disconnected."),
-              onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
-            });
-            setManage(null);
-          }
+          requestDisconnect(id, manage?.provider.name ?? "this source");
         }}
         onReconnect={(p) => { setManage(null); setConsent({ provider: p }); }}
       />
       <ConfigMissingDialog state={configMissing} onClose={() => setConfigMissing(null)} />
+      <DisconnectDialog
+        state={disconnectConfirm}
+        pending={disconnect.isPending}
+        onClose={() => !disconnect.isPending && setDisconnectConfirm(null)}
+        onConfirm={confirmDisconnect}
+      />
     </div>
   );
 }
