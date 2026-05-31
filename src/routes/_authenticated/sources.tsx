@@ -54,11 +54,11 @@ export const Route = createFileRoute("/_authenticated/sources")({ component: Sou
 const PROVIDER_EXPLAINERS: Record<string, string> = {
   icloud: "Apple does not provide a public iCloud Photos API. To bring iCloud memories in, export them from iCloud.com or Photos on Mac as a zip and use the Export/Import provider below.",
   amazon_photos: "Amazon Photos has no public API for third-party indexing. Use Amazon's export tool, then upload the zip via Export/Import.",
-  local_ios: "iOS Camera Roll requires the PMP iOS app for on-device indexing (PhotoKit). Coming soon \u2014 in the meantime export an album to a zip and upload it.",
-  local_android: "Android Gallery requires the PMP Android app (MediaStore). Coming soon \u2014 export to zip and upload as a workaround.",
-  desktop_folder: "Desktop folders require the PMP desktop agent. Coming soon \u2014 zip the folder and upload it.",
-  external_drive: "External drives require the PMP desktop agent. Coming soon \u2014 zip the contents and upload them.",
-  nas: "NAS volumes require the PMP desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
+  local_ios: "iOS Camera Roll requires the LifeShot iOS app for on-device indexing (PhotoKit). Coming soon \u2014 in the meantime export an album to a zip and upload it.",
+  local_android: "Android Gallery requires the LifeShot Android app (MediaStore). Coming soon \u2014 export to zip and upload as a workaround.",
+  desktop_folder: "Desktop folders require the LifeShot desktop agent. Coming soon \u2014 zip the folder and upload it.",
+  external_drive: "External drives require the LifeShot desktop agent. Coming soon \u2014 zip the contents and upload them.",
+  nas: "NAS volumes require the LifeShot desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
 };
 
 function Sources() {
