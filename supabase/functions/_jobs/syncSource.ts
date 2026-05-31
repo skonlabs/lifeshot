@@ -130,7 +130,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (page.nextCursor) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
-    await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "connected" })
+    await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
   }
 
