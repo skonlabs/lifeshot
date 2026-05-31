@@ -269,7 +269,7 @@ function Sources() {
         <span className="text-archive-label">sources</span>
         <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">Where your memories live</h1>
         <p className="mt-2 max-w-2xl text-sm text-[color:var(--umber)]">
-          PMP indexes — never stores. We keep a tiny reference and thumbnail; originals stay in the source you trust.
+          LifeShot indexes — never stores. We keep a tiny reference and thumbnail; originals stay in the source you trust.
         </p>
       </header>
       <section className="mb-10">
@@ -373,7 +373,7 @@ function ConsentDialog({ state, onClose, onConfirm, pending }: {
         <DialogHeader>
           <DialogTitle>Connect {state?.provider.name}</DialogTitle>
           <DialogDescription>
-            You'll be redirected to {state?.provider.name} to approve access. PMP only indexes — your originals stay where they are.
+            You'll be redirected to {state?.provider.name} to approve access. LifeShot only indexes — your originals stay where they are.
           </DialogDescription>
         </DialogHeader>
         {meta && (
@@ -387,7 +387,7 @@ function ConsentDialog({ state, onClose, onConfirm, pending }: {
           <input type="checkbox" className="mt-0.5" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
           <span>
             I agree to the <a href="/terms" className="underline">Terms of Use</a> and{" "}
-            <a href="/privacy" className="underline">Privacy Policy</a>, and authorize PMP to index this source on my behalf.
+            <a href="/privacy" className="underline">Privacy Policy</a>, and authorize LifeShot to index this source on my behalf.
           </span>
         </label>
         <DialogFooter>
@@ -753,7 +753,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
         <DialogHeader>
           <DialogTitle>Upload photos & videos</DialogTitle>
           <DialogDescription>
-            Drop a zip export or pick files directly. They upload to your private storage, then PMP indexes them \u2014 originals stay yours.
+            Drop a zip export or pick files directly. They upload to your private storage, then LifeShot indexes them \u2014 originals stay yours.
           </DialogDescription>
         </DialogHeader>
         <div className="hairline rounded-md border border-dashed bg-[color:var(--paper-2)] p-8 text-center">
