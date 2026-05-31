@@ -13,6 +13,7 @@ import { supabase } from "@/lib/supabase";
 
 const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
 const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
+const SANDBOX_PREVIEW_SUFFIX = ".lovableproject.com";
 
 type Provider = { id: string; kind: string; name: string; priority: string };
 type ExplainerState = { provider: Provider; reason: string } | null;
@@ -56,6 +57,26 @@ const PROVIDER_EXPLAINERS: Record<string, string> = {
   nas: "NAS volumes require the PMP desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
 };
 
+function isSandboxPreviewHost(hostname: string) {
+  return hostname.endsWith(SANDBOX_PREVIEW_SUFFIX);
+}
+
+function getStandalonePreviewBridgeUrl(providerId: string, accessToken: string, refreshToken: string) {
+  if (typeof window === "undefined") return null;
+  const { hostname } = window.location;
+  if (!isSandboxPreviewHost(hostname)) return null;
+  const projectId = hostname.replace(SANDBOX_PREVIEW_SUFFIX, "");
+  if (!projectId) return null;
+
+  const url = new URL(`https://id-preview--${projectId}.lovable.app/oauth-bridge`);
+  url.searchParams.set("connect_provider", providerId);
+  url.hash = new URLSearchParams({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  }).toString();
+  return url.toString();
+}
+
 function Sources() {
   useSourceProgress();
   const search = useSearch({ strict: false }) as Record<string, string | undefined>;
@@ -66,6 +87,7 @@ function Sources() {
   const disconnect = useDisconnectSource();
   const qc = useQueryClient();
   const popupRef = useRef<Window | null>(null);
+  const autoConnectRef = useRef<string | null>(null);
   const [explainer, setExplainer] = useState<ExplainerState>(null);
   const [upload, setUpload] = useState<UploadState>(null);
   const [consent, setConsent] = useState<ConsentState>(null);
@@ -116,6 +138,25 @@ function Sources() {
     }
   }, [search?.error, search?.detail, search?.connected]);
 
+  useEffect(() => {
+    const providerId = search?.connect_provider;
+    if (!providerId || search?.oauth_bridge !== "1") return;
+    if (!providers.data?.providers?.length) return;
+    if (autoConnectRef.current === providerId) return;
+
+    const provider = providers.data.providers.find((item) => item.id === providerId);
+    if (!provider) return;
+
+    autoConnectRef.current = providerId;
+    const existing = connectedByKind.get(provider.kind);
+    if (existing) {
+      setManage({ provider, accountId: existing.id });
+      return;
+    }
+
+    void startConnect(provider);
+  }, [providers.data?.providers, search?.connect_provider, search?.oauth_bridge]);
+
   // Map provider_kind → first connected account so we can show a "Connected" badge
   // and switch the card from a Connect button to a Manage button.
   const connectedByKind = new Map<string, { id: string; status: string; asset_count: number }>();
@@ -144,36 +185,77 @@ function Sources() {
 
   async function startConnect(provider: Provider) {
     setConsent(null);
+    const useTopLevelRedirect = search?.oauth_bridge === "1";
+
+    if (!useTopLevelRedirect && provider.kind === "google_photos") {
+      const bridgeWindow = window.open("about:blank", "pmp_google_oauth_bridge");
+      if (!bridgeWindow) {
+        toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
+        return;
+      }
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const accessToken = data.session?.access_token;
+        const refreshToken = data.session?.refresh_token;
+        const bridgeUrl = accessToken && refreshToken
+          ? getStandalonePreviewBridgeUrl(provider.id, accessToken, refreshToken)
+          : null;
+
+        if (bridgeUrl) {
+          bridgeWindow.location.href = bridgeUrl;
+          toast.info("Google Photos opens in a standalone window because Google blocks embedded preview auth.");
+          return;
+        }
+
+        bridgeWindow.close();
+        toast.error("Your session expired. Sign in again, then reconnect Google Photos.");
+        return;
+      } catch {
+        try { bridgeWindow.close(); } catch { /* ignore */ }
+        toast.error("Unable to prepare Google Photos sign-in.");
+        return;
+      }
+    }
+
     // Open the popup synchronously inside the click handler so browsers don't
     // block it. We point it at a blank page and navigate it once we have the
     // authorize URL from the server.
-    const w = 560, h = 720;
-    const hostWindow = (() => {
-      try {
-        void window.top?.location?.origin;
-        return window.top ?? window;
-      } catch {
-        return window;
+    let popup: Window | null = null;
+    if (!useTopLevelRedirect) {
+      const w = 560, h = 720;
+      const hostWindow = (() => {
+        try {
+          void window.top?.location?.origin;
+          return window.top ?? window;
+        } catch {
+          return window;
+        }
+      })();
+      const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
+      const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
+      popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
+      if (!popup) {
+        toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
+        return;
       }
-    })();
-    const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
-    const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
-    const popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
-    if (!popup) {
-      toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
-      return;
+      popupRef.current = popup;
     }
-    popupRef.current = popup;
+
     try {
       const out = await connect.mutateAsync({
         provider_id: provider.id,
         redirect_uri: `${window.location.origin}/oauth-popup`,
       });
       if (out.authorize_url) {
-        popup.location.href = out.authorize_url;
+        if (useTopLevelRedirect) {
+          window.location.assign(out.authorize_url);
+        } else {
+          popup!.location.href = out.authorize_url;
+        }
         return;
       }
-      popup.close();
+      popup?.close();
       popupRef.current = null;
       if (provider.kind === "export_import" && out.upload_target && out.session_token) {
         setUpload({ accountId: out.session_token, prefix: out.upload_target.prefix });
@@ -182,7 +264,7 @@ function Sources() {
       // Defensive: server should always return one of the above.
       toast.error(`${provider.name} did not return a connection URL. Please try again.`);
     } catch (e) {
-      try { popup.close(); } catch { /* ignore */ }
+      try { popup?.close(); } catch { /* ignore */ }
       popupRef.current = null;
       const msg = (e as Error).message ?? "";
       // Server error when OAuth env keys are missing — show a config dialog
