@@ -25,13 +25,16 @@ app.get("/events", async (c) => {
     .order("start_time", { ascending: false }).limit(limit);
   if (error) throw new ApiError("internal", error.message);
   const events = data ?? [];
-  // Hydrate cover thumbnail from first asset in event_assets.
   const ids = events.map((e: any) => e.id);
   const coverMap: Record<string, string> = {};
+  const countMap: Record<string, number> = {};
   if (ids.length) {
     const { data: ea } = await supa.from("event_assets")
       .select("event_id, asset_id").in("event_id", ids);
-    for (const row of ea ?? []) if (!coverMap[row.event_id]) coverMap[row.event_id] = row.asset_id;
+    for (const row of ea ?? []) {
+      if (!coverMap[row.event_id]) coverMap[row.event_id] = row.asset_id;
+      countMap[row.event_id] = (countMap[row.event_id] ?? 0) + 1;
+    }
   }
   const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
   const covers: Record<string, any> = {};
@@ -46,7 +49,7 @@ app.get("/events", async (c) => {
     const cov = cid && covers[cid] ? covers[cid] : null;
     return {
       ...e,
-      asset_count: (e as any).asset_count ?? null,
+      asset_count: countMap[e.id] ?? 0,
       cover: cov ? {
         asset_id: cid,
         thumbnail_url: await resolveThumbUrl(c, supa, uid, cid, cov.thumbnail_cache_key ?? null),
@@ -60,16 +63,36 @@ app.get("/events", async (c) => {
 });
 
 app.get("/events/:id", async (c) => {
-  const supa = c.get("supabase");
+  const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   const [{ data: event }, { data: eAssets }, { data: ePeople }, { data: ePlaces }] = await Promise.all([
     supa.from("events").select("*").eq("id", id).maybeSingle(),
-    supa.from("event_assets").select("asset_id, assets(*)").eq("event_id", id),
+    supa.from("event_assets").select("asset_id, assets(id, thumbnail_cache_key, blurhash, dominant_color, media_type, width, height)").eq("event_id", id).limit(200),
     supa.from("event_people").select("person_id, people(*)").eq("event_id", id),
     supa.from("event_places").select("place_id, places(*)").eq("event_id", id),
   ]);
   if (!event) throw new ApiError("not_found", "Event not found");
-  return c.json({ event, assets: eAssets, people: ePeople, places: ePlaces });
+  const assets = await Promise.all((eAssets ?? []).map(async (row: any) => {
+    const a = row.assets ?? {};
+    return {
+      asset_id: row.asset_id,
+      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id, a.thumbnail_cache_key ?? null),
+      blurhash: a.blurhash ?? null,
+      dominant_color: a.dominant_color ?? null,
+      width: a.width ?? null,
+      height: a.height ?? null,
+      media_type: a.media_type ?? "photo",
+      source_badge: null,
+      hydration_status: "ready" as const,
+    };
+  }));
+  return c.json({
+    ...event,
+    asset_count: assets.length,
+    assets,
+    people: ePeople,
+    places: ePlaces,
+  });
 });
 
 app.get("/people", async (c) => {
@@ -83,7 +106,20 @@ app.get("/people", async (c) => {
   const { data, error } = await supa.from("people")
     .select("id, display_name, is_child, is_elder, consent_required");
   if (error) throw new ApiError("internal", error.message);
-  return c.json({ people: data ?? [], face_processing_disabled: false });
+  const peopleRows = data ?? [];
+  const ids = peopleRows.map((p: any) => p.id);
+  const counts: Record<string, number> = {};
+  if (ids.length) {
+    const { data: faces } = await supa.from("person_faces")
+      .select("person_id, asset_id").in("person_id", ids);
+    const seen: Record<string, Set<string>> = {};
+    for (const f of faces ?? []) {
+      (seen[f.person_id] ??= new Set()).add(f.asset_id);
+    }
+    for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
+  }
+  const people = peopleRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+  return c.json({ people, face_processing_disabled: false });
 });
 
 app.get("/people/:id", async (c) => {
@@ -94,14 +130,35 @@ app.get("/people/:id", async (c) => {
     supa.from("person_faces").select("asset_id, confidence").eq("person_id", id).limit(50),
   ]);
   if (!person) throw new ApiError("not_found", "Person not found");
-  return c.json({ person, faces });
+  const asset_count = new Set((faces ?? []).map((f: any) => f.asset_id)).size;
+  return c.json({ ...person, person, asset_count, faces });
 });
 
 app.get("/places", async (c) => {
-  const supa = c.get("supabase");
+  const supa = c.get("supabase"); const uid = c.get("userId");
   const { data, error } = await supa.from("places").select("*").limit(500);
   if (error) throw new ApiError("internal", error.message);
-  return c.json({ places: data ?? [] });
+  const placeRows = data ?? [];
+  const ids = placeRows.map((p: any) => p.id);
+  const counts: Record<string, number> = {};
+  if (ids.length) {
+    const { data: ep } = await supa.from("event_places")
+      .select("place_id, event_id").in("place_id", ids);
+    const byPlace: Record<string, string[]> = {};
+    for (const r of ep ?? []) (byPlace[r.place_id] ??= []).push(r.event_id);
+    const allEventIds = Array.from(new Set((ep ?? []).map((r: any) => r.event_id)));
+    const evCount: Record<string, number> = {};
+    if (allEventIds.length) {
+      const { data: ea } = await supa.from("event_assets")
+        .select("event_id, asset_id").in("event_id", allEventIds);
+      for (const r of ea ?? []) evCount[r.event_id] = (evCount[r.event_id] ?? 0) + 1;
+    }
+    for (const [pid, evIds] of Object.entries(byPlace)) {
+      counts[pid] = evIds.reduce((acc, eid) => acc + (evCount[eid] ?? 0), 0);
+    }
+  }
+  const places = placeRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+  return c.json({ places });
 });
 
 app.get("/duplicates", async (c) => {
