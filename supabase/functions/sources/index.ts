@@ -10,6 +10,23 @@ import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
+// Kick the worker drain immediately so newly enqueued jobs start within ~1s
+// instead of waiting up to 10s for pg_cron. Fire-and-forget.
+function kickWorker() {
+  try {
+    const workerUrl = ENV.SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/worker/drain";
+    const workerSecret = Deno.env.get("WORKER_SECRET") ?? "";
+    // deno-lint-ignore no-explicit-any
+    const globalAny = globalThis as any;
+    const kick = fetch(workerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-worker-secret": workerSecret },
+      body: "{}",
+    }).catch(() => undefined);
+    if (globalAny.EdgeRuntime?.waitUntil) globalAny.EdgeRuntime.waitUntil(kick);
+  } catch { /* ignore */ }
+}
+
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
   redirect_uri: z.string().url().max(2048).optional(),
