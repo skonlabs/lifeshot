@@ -89,6 +89,18 @@ function Sources() {
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<DisconnectState>(null);
 
+  useEffect(() => {
+    if (!consent?.provider || manage) return;
+    const matching = (accounts.data?.accounts ?? []).find(
+      (account) => account.provider_kind === consent.provider.kind && account.status === "active",
+    );
+    if (matching) {
+      setConsent(null);
+      setManage({ provider: consent.provider, accountId: matching.id });
+      void qc.invalidateQueries({ queryKey: ["source-containers", matching.id] });
+    }
+  }, [accounts.data?.accounts, consent, manage, qc]);
+
   function requestDisconnect(accountId: string, providerName: string) {
     setDisconnectConfirm({ accountId, providerName });
   }
@@ -167,7 +179,7 @@ function Sources() {
   // and switch the card from a Connect button to a Manage button.
   const connectedByKind = new Map<string, { id: string; status: string; asset_count: number }>();
   for (const a of accounts.data?.accounts ?? []) {
-    if (!connectedByKind.has(a.provider_kind)) {
+    if (a.status === "active" && !connectedByKind.has(a.provider_kind)) {
       connectedByKind.set(a.provider_kind, { id: a.id, status: a.status, asset_count: a.asset_count });
     }
   }
