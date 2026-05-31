@@ -14,6 +14,7 @@ import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as CallbackRouteImport } from './routes/callback'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as InviteTokenRouteImport } from './routes/invite.$token'
 import { Route as AuthenticatedSourcesRouteImport } from './routes/_authenticated/sources'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedPlacesRouteImport } from './routes/_authenticated/places'
@@ -52,6 +53,11 @@ const AuthenticatedRoute = AuthenticatedRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedSourcesRoute = AuthenticatedSourcesRouteImport.update({
@@ -147,6 +153,7 @@ export interface FileRoutesByFullPath {
   '/places': typeof AuthenticatedPlacesRoute
   '/search': typeof AuthenticatedSearchRoute
   '/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/asset/$id': typeof AuthenticatedAssetIdRoute
   '/events/$id': typeof AuthenticatedEventsIdRoute
   '/people/$id': typeof AuthenticatedPeopleIdRoute
@@ -168,6 +175,7 @@ export interface FileRoutesByTo {
   '/places': typeof AuthenticatedPlacesRoute
   '/search': typeof AuthenticatedSearchRoute
   '/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/asset/$id': typeof AuthenticatedAssetIdRoute
   '/events/$id': typeof AuthenticatedEventsIdRoute
   '/people/$id': typeof AuthenticatedPeopleIdRoute
@@ -191,6 +199,7 @@ export interface FileRoutesById {
   '/_authenticated/places': typeof AuthenticatedPlacesRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
   '/_authenticated/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/_authenticated/asset/$id': typeof AuthenticatedAssetIdRoute
   '/_authenticated/events/$id': typeof AuthenticatedEventsIdRoute
   '/_authenticated/people/$id': typeof AuthenticatedPeopleIdRoute
@@ -214,6 +223,7 @@ export interface FileRouteTypes {
     | '/places'
     | '/search'
     | '/sources'
+    | '/invite/$token'
     | '/asset/$id'
     | '/events/$id'
     | '/people/$id'
@@ -235,6 +245,7 @@ export interface FileRouteTypes {
     | '/places'
     | '/search'
     | '/sources'
+    | '/invite/$token'
     | '/asset/$id'
     | '/events/$id'
     | '/people/$id'
@@ -257,6 +268,7 @@ export interface FileRouteTypes {
     | '/_authenticated/places'
     | '/_authenticated/search'
     | '/_authenticated/sources'
+    | '/invite/$token'
     | '/_authenticated/asset/$id'
     | '/_authenticated/events/$id'
     | '/_authenticated/people/$id'
@@ -270,6 +282,7 @@ export interface RootRouteChildren {
   CallbackRoute: typeof CallbackRoute
   SignInRoute: typeof SignInRoute
   SignUpRoute: typeof SignUpRoute
+  InviteTokenRoute: typeof InviteTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -307,6 +320,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/sources': {
@@ -481,6 +501,7 @@ const rootRouteChildren: RootRouteChildren = {
   CallbackRoute: CallbackRoute,
   SignInRoute: SignInRoute,
   SignUpRoute: SignUpRoute,
+  InviteTokenRoute: InviteTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

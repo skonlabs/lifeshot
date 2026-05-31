@@ -19,6 +19,31 @@ const PatchMemberIn = z.object({
 
 const app = authed(createApi("/families/v1"));
 
+// Invitation acceptance: redeem token → create membership.
+app.post("/accept/:token", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { token } = parseParams(c, z.object({ token: z.string().min(8).max(128) }));
+  const { data: inv, error: invErr } = await supa.from("family_invitations")
+    .select("id, family_id, email, role, expires_at, accepted_at")
+    .eq("token", token).maybeSingle();
+  if (invErr || !inv) throw new ApiError("not_found", "Invitation not found");
+  if (inv.accepted_at) throw new ApiError("conflict", "Invitation already accepted");
+  if (inv.expires_at && new Date(inv.expires_at).getTime() < Date.now()) {
+    throw new ApiError("conflict", "Invitation expired");
+  }
+  // Upsert membership (idempotent on family_id+user_id).
+  const { error: mErr } = await supa.from("family_members").upsert({
+    family_id: inv.family_id, user_id: uid, role: inv.role ?? "member", status: "active",
+  }, { onConflict: "family_id,user_id" });
+  if (mErr) throw new ApiError("internal", mErr.message);
+  await supa.from("family_invitations").update({
+    accepted_at: new Date().toISOString(),
+    accepted_by: uid,
+    status: "accepted",
+  }).eq("id", inv.id);
+  return c.json({ family_id: inv.family_id });
+});
+
 app.post("/families", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
@@ -48,7 +73,7 @@ app.post("/invite", async (c) => {
     created_by: uid,
   }).select().single();
   if (error) throw new ApiError("internal", error.message);
-  await jobEnqueuer.enqueue("family.invite_email",
+  await jobEnqueuer.enqueue("sendInvitationEmail",
     { invitation_id: data!.id, email: body.email, token }, { userId: uid });
   return c.json({ invitation: { id: data!.id, email: data!.email, role: data!.role } });
 });

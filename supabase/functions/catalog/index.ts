@@ -69,11 +69,12 @@ app.get("/assets/:id/sources", async (c) => {
     account:source_accounts(display_label, provider:source_providers(kind, name))
   `).eq("asset_id", id);
   return c.json({
-    refs: (data ?? []).map((r: any) => ({
+    sources: (data ?? []).map((r: any) => ({
       id: r.id, source_account_id: r.source_account_id,
       provider_kind: r.account?.provider?.kind ?? null,
       provider_name: r.account?.provider?.name ?? null,
       label: r.account?.display_label ?? null,
+      provider_url: r.provider_url ?? null,
       is_primary: r.is_primary, match_confidence: r.match_confidence,
       first_seen_at: r.first_seen_at, last_seen_at: r.last_seen_at,
     })),
@@ -117,6 +118,33 @@ app.post("/memory/viewport", async (c) => {
   if (hit) return c.json({ ...hit, cache: { hit: true, ttl_seconds: 30 } });
 
   const cur = decodeCursor<{ before: string }>(body.cursor);
+  // Optionally narrow asset id set by people/source filters first, since these
+  // require joins on other tables. We compute the candidate id set up-front and
+  // intersect via .in("id", ...) on the main query.
+  let restrictIds: string[] | null = null;
+  if (body.people_filter?.length) {
+    const { data: pf } = await supa.from("person_faces")
+      .select("asset_id").in("person_id", body.people_filter);
+    const ids = Array.from(new Set((pf ?? []).map((r: any) => r.asset_id)));
+    restrictIds = ids;
+    if (ids.length === 0) {
+      return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
+    }
+  }
+  if (body.source_filter?.length) {
+    const { data: sf } = await supa.from("asset_source_refs")
+      .select("asset_id").in("source_account_id", body.source_filter);
+    const ids = Array.from(new Set((sf ?? []).map((r: any) => r.asset_id)));
+    if (restrictIds) {
+      const setB = new Set(ids);
+      restrictIds = restrictIds.filter((x) => setB.has(x));
+    } else {
+      restrictIds = ids;
+    }
+    if (restrictIds.length === 0) {
+      return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
+    }
+  }
   let q = supa.from("assets")
     .select("id, capture_time, media_type, thumbnail_cache_key, blurhash, dominant_color, width, height")
     .eq("deleted_state", "active")
@@ -127,6 +155,7 @@ app.post("/memory/viewport", async (c) => {
   if (body.timeline_filter?.from) q = q.gte("capture_time", body.timeline_filter.from);
   if (body.timeline_filter?.to)   q = q.lte("capture_time", body.timeline_filter.to);
   if (body.event_filter?.length)  q = q.in("event_id", body.event_filter);
+  if (restrictIds)                q = q.in("id", restrictIds);
 
   const { data, error } = await q;
   if (error) throw new ApiError("internal", error.message);
