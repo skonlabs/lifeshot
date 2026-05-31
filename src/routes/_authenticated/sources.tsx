@@ -283,7 +283,10 @@ function Sources() {
                 key={a.id}
                 a={a}
                 provider={providers.data?.providers?.find(p => p.kind === a.provider_kind)}
-                onSync={() => sync.mutate(a.id)}
+                onSync={() => sync.mutate(a.id, {
+                  onSuccess: () => toast.success("Sync queued. Indexing your folders…"),
+                  onError: (e) => toast.error((e as Error).message || "Sync failed to start."),
+                })}
                 onSelectFolders={() => {
                   const provider = providers.data?.providers?.find(p => p.kind === a.provider_kind);
                   if (!provider) return;
@@ -344,7 +347,13 @@ function Sources() {
       <ManageDialog
         state={manage}
         onClose={() => setManage(null)}
-        onSync={(id) => { sync.mutate(id); setManage(null); }}
+        onSync={(id) => {
+          sync.mutate(id, {
+            onSuccess: () => toast.success("Sync queued. Indexing your folders…"),
+            onError: (e) => toast.error((e as Error).message || "Sync failed to start."),
+          });
+          setManage(null);
+        }}
         onDisconnect={(id) => {
           requestDisconnect(id, manage?.provider.name ?? "this source");
         }}
@@ -804,8 +813,13 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
 }) {
   const status = useSourceStatus(a.id);
   const s = status.data;
-  const pct = s ? Math.min(100, Math.round((s.progress.indexed / Math.max(1, s.progress.discovered)) * 100)) : null;
-  const running = s?.last_job?.status === "running" || s?.status === "syncing";
+  const running =
+    s?.status === "syncing" ||
+    s?.last_job?.status === "running" ||
+    s?.last_job?.status === "pending";
+  const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
+  const discovered = s?.progress.discovered ?? indexed;
+  const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : null;
   const k = a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
   const docsCombined = k.document + k.audio + k.other;
@@ -826,7 +840,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
             {" · "}
             <span className="font-medium text-[color:var(--ink)]">{a.asset_count.toLocaleString()} indexed</span>
             {" · "}
-            <span className={running ? "text-emerald-700" : ""}>{a.status}</span>
+            <span className={running ? "text-emerald-700" : ""}>{running ? "syncing" : a.status}</span>
             {a.last_sync_at && ` · synced ${new Date(a.last_sync_at).toLocaleString()}`}
           </div>
           </div>
@@ -844,14 +858,20 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
           </button>
         </div>
       </div>
-      {(running || (pct !== null && pct < 100)) && pct !== null && (
+      {running && (
         <div className="mt-3">
           <div className="h-1.5 overflow-hidden rounded-full bg-[color:var(--paper-2)]">
-            <div className="h-full bg-[color:var(--ink)] transition-all" style={{ width: `${pct}%` }} />
+            <div
+              className={`h-full bg-[color:var(--ink)] transition-all ${pct === null ? "animate-pulse w-1/3" : ""}`}
+              style={pct !== null ? { width: `${pct}%` } : undefined}
+            />
           </div>
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
-            <span>{s?.last_job?.kind ?? "syncing"}</span>
-            <span>{s?.progress.indexed.toLocaleString()} / {s?.progress.discovered.toLocaleString()} ({pct}%)</span>
+            <span>Syncing…</span>
+            <span>
+              {indexed.toLocaleString()} indexed
+              {pct !== null ? ` (${pct}%)` : ""}
+            </span>
           </div>
         </div>
       )}

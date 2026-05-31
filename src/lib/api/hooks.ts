@@ -206,7 +206,10 @@ export function useSyncSource() {
     // Backend mounts as POST /:id/sync, not /accounts/:id/sync.
     mutationFn: (accountId: string) =>
       api.sources(`/${accountId}/sync`, { method: "POST", body: {} }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+    onSuccess: (_d, accountId) => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      qc.invalidateQueries({ queryKey: ["source-status", accountId] });
+    },
   });
 }
 

@@ -316,22 +316,39 @@ app.get("/v1/:id/status", async (c) => {
   await enforceRateLimit(uid, "general");
   const { data: acc } = await supa.from("source_accounts").select("*").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
-  const [{ data: lastJob }, { data: cursor }, { data: lastErr }] = await Promise.all([
+  const svc = getServiceClient();
+  const [{ data: lastJob }, { data: cursor }, { data: lastErr }, { data: activeJobs }] = await Promise.all([
     supa.from("source_sync_jobs").select("*").eq("source_account_id", id).order("started_at", { ascending: false }).limit(1).maybeSingle(),
     supa.from("source_sync_cursors").select("*").eq("source_account_id", id).maybeSingle(),
     supa.from("source_errors").select("message, occurred_at").eq("source_account_id", id).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
+    svc.from("job_queue")
+      .select("id, status, job_name, payload, created_at, started_at, finished_at")
+      .eq("job_name", "syncSource")
+      .in("status", ["pending", "running"])
+      .order("created_at", { ascending: false })
+      .limit(50),
   ]);
+  // Filter active jobs for this source account (payload is jsonb).
+  const myActive = (activeJobs ?? []).filter((j: any) => j?.payload?.source_account_id === id);
+  const running = myActive.find((j: any) => j.status === "running") ?? myActive[0] ?? null;
   const { count } = await supa.from("asset_source_refs").select("id", { count: "exact", head: true }).eq("source_account_id", id);
+  const indexed = count ?? 0;
+  const effectiveJobStatus = running ? running.status : (lastJob?.status ?? null);
+  const effectiveJobKind = running ? "syncSource" : (lastJob?.kind ?? null);
   return c.json({
-    account_id: id, status: acc.status,
+    account_id: id,
+    status: running ? "syncing" : acc.status,
     last_job: {
-      id: lastJob?.id ?? null, kind: lastJob?.kind ?? null, status: lastJob?.status ?? null,
-      started_at: lastJob?.started_at ?? null, finished_at: lastJob?.finished_at ?? null,
+      id: running?.id ?? lastJob?.id ?? null,
+      kind: effectiveJobKind,
+      status: effectiveJobStatus,
+      started_at: running?.started_at ?? lastJob?.started_at ?? null,
+      finished_at: running ? null : (lastJob?.finished_at ?? null),
       stats: lastJob?.stats ?? {},
     },
     cursor_age_seconds: cursor ? Math.floor((Date.now() - new Date(cursor.updated_at).getTime()) / 1000) : null,
     last_error: lastErr?.message ?? null,
-    progress: { discovered: count ?? 0, indexed: count ?? 0 },
+    progress: { discovered: indexed, indexed },
   });
 });
 
