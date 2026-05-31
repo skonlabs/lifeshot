@@ -538,7 +538,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
   );
 }
 
-function SourceRow({ a, onSync, onDisconnect }: {
+function SourceRow({ a, onSync, onDisconnect, provider }: {
   a: { id: string; provider_kind: string; status: string; display_label: string | null; asset_count: number; last_sync_at: string | null };
   onSync: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
