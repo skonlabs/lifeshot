@@ -220,7 +220,9 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
           recursive: true,
           include_deleted: false,
           include_media_info: false,
-          limit: 1000,
+          include_mounted_folders: true,
+          include_non_downloadable_files: true,
+          limit: 2000,
         });
         let safety = 0;
         while (true) {
@@ -230,7 +232,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
             folders.push({ id: e.path_lower ?? path, name: e.name, path });
           }
           if (!json.has_more || !json.cursor) break;
-          if (++safety > 50) break; // cap at ~50k entries
+          if (++safety > 1000) break; // walk up to ~2M entries to reach all folders
           json = await call("/files/list_folder/continue", { cursor: json.cursor });
         }
         // Sort by path so the UI can render a stable tree.
