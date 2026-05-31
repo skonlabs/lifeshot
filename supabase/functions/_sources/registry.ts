@@ -3,8 +3,9 @@ import type { ConnectorContext, ConnectorFactory, ProviderKind, SourceConnector 
 import { googlePhotosFactory } from "./google_photos.ts";
 import { localIosFactory } from "./local_ios.ts";
 import { exportImportFactory } from "./export_import.ts";
-import { dropboxFactory } from "./stubs.ts";
-import { onedriveFactory, nasFactory, externalDriveFactory, desktopFolderFactory, icloudFactory, amazonPhotosFactory, localAndroidFactory } from "./stubs.ts";
+import { dropboxFactory } from "./dropbox.ts";
+import { onedriveFactory } from "./onedrive.ts";
+import { nasFactory, externalDriveFactory, desktopFolderFactory, icloudFactory, amazonPhotosFactory, localAndroidFactory } from "./stubs.ts";
 
 const REGISTRY: Record<ProviderKind, ConnectorFactory> = {
   google_photos:   googlePhotosFactory,
