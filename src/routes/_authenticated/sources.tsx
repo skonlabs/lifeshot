@@ -89,6 +89,14 @@ function Sources() {
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<DisconnectState>(null);
 
+  useEffect(() => {
+    if (!manage) return;
+    const stillExists = accounts.data?.accounts?.some((account) => account.id === manage.accountId);
+    if (accounts.data && !stillExists) {
+      setManage(null);
+    }
+  }, [accounts.data, manage]);
+
   function requestDisconnect(accountId: string, providerName: string) {
     setDisconnectConfirm({ accountId, providerName });
   }
@@ -427,6 +435,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const extraSelected = Object.values(draft).filter((c) => !discoveredIds.has(c.id));
   const rows: SourceContainer[] = [...allContainers, ...extraSelected];
   const supportsManual = !containers.isLoading && allContainers.length === 0;
+  const accountMissing = !!state && !containers.isLoading && !containers.data && !containers.error;
 
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
@@ -440,7 +449,9 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
         <div className="flex flex-col gap-2">
           <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3">
             <div className="mb-2 text-sm font-medium text-[color:var(--ink)]">Folders to index</div>
-            {containers.isLoading ? (
+            {accountMissing ? (
+              <p className="text-xs text-[color:var(--umber)]">This source is no longer connected.</p>
+            ) : containers.isLoading ? (
               <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
             ) : rows.length ? (
               <div className="max-h-52 space-y-2 overflow-auto pr-1">
@@ -479,7 +490,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               </p>
               <Button
                 size="sm"
-                disabled={updateContainers.isPending || containers.isLoading}
+                disabled={accountMissing || updateContainers.isPending || containers.isLoading}
                 onClick={() => state && updateContainers.mutate({
                   accountId: state.accountId,
                   containers: Object.values(draft),
@@ -492,10 +503,10 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               </Button>
             </div>
           </div>
-          <Button variant="outline" onClick={() => state && onSync(state.accountId)}>
+          <Button variant="outline" disabled={accountMissing} onClick={() => state && onSync(state.accountId)}>
             <RefreshCcw className="mr-2 h-4 w-4" /> Sync now
           </Button>
-          <Button variant="outline" onClick={() => state && onReconnect(state.provider)}>
+          <Button variant="outline" disabled={accountMissing} onClick={() => state && onReconnect(state.provider)}>
             <Plug className="mr-2 h-4 w-4" /> Re-authenticate
           </Button>
           <Button variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10" onClick={() => state && onDisconnect(state.accountId)}>
