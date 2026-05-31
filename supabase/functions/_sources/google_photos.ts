@@ -161,9 +161,34 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       return { url: `${it.baseUrl}=d`, expiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString() };
     },
     listAlbums: async () => {
-      const r = await call(`/albums?pageSize=50`);
-      const j = await r.json() as { albums?: any[] };
-      return (j.albums ?? []).map((a) => ({ id: a.id, name: a.title })) as AssetAlbumRef[];
+      const out: AssetAlbumRef[] = [];
+      // Synthetic "everything" container so users can opt in to the full library.
+      out.push({ id: "__all__", name: "All photos & videos (entire library)" } as any);
+      const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string) => {
+        let pageToken: string | undefined;
+        let safety = 0;
+        do {
+          const params = new URLSearchParams({ pageSize: "50" });
+          if (pageToken) params.set("pageToken", pageToken);
+          const r = await call(`/${endpoint}?${params.toString()}`);
+          if (!r.ok) {
+            console.error(`google_photos ${endpoint} failed`, r.status, await r.text().catch(() => ""));
+            return;
+          }
+          const j = await r.json() as { albums?: any[]; sharedAlbums?: any[]; nextPageToken?: string };
+          const items = (j.albums ?? j.sharedAlbums ?? []) as any[];
+          for (const a of items) {
+            if (!a?.id) continue;
+            const title = a.title ?? "(untitled)";
+            const count = a.mediaItemsCount ? ` · ${a.mediaItemsCount}` : "";
+            out.push({ id: a.id, name: `${label}${title}${count}` } as any);
+          }
+          pageToken = j.nextPageToken;
+        } while (pageToken && ++safety < 40);
+      };
+      try { await fetchAll("albums", ""); } catch (e) { console.error("albums fetch error", e); }
+      try { await fetchAll("sharedAlbums", "Shared · "); } catch (e) { console.error("sharedAlbums fetch error", e); }
+      return out;
     },
     getDeltaChanges: async (cursor): Promise<DeltaResult> => {
       // Google Photos has no delta; fall back to bounded list with checkpoint.

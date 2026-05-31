@@ -22,7 +22,7 @@ type ConsentState = { provider: Provider } | null;
 type ManageState = { provider: Provider; accountId: string } | null;
 type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
 type DisconnectState = { accountId: string; providerName: string } | null;
-type SourceContainer = { id: string; name?: string };
+type SourceContainer = { id: string; name?: string; path?: string };
 
 const BROWSABLE_PROVIDER_KINDS = new Set(["google_photos", "dropbox", "onedrive"]);
 
@@ -472,16 +472,32 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
             ) : rows.length ? (
               <div className="max-h-52 space-y-2 overflow-auto pr-1">
-                {rows.map((item) => (
-                  <label key={item.id} className="flex items-start gap-2 text-sm text-[color:var(--ink)]">
-                    <input
-                      type="checkbox"
-                      checked={!!draft[item.id]}
-                      onChange={() => toggleContainer(item)}
-                    />
-                    <span className="break-all">{item.name ?? item.id}</span>
-                  </label>
-                ))}
+                {rows.map((item) => {
+                  const path = item.path ?? "";
+                  // Compute depth from path ("/a/b" => 2). Root "/" stays at 0.
+                  const depth = path && path !== "/"
+                    ? Math.max(0, path.split("/").filter(Boolean).length - 1)
+                    : 0;
+                  return (
+                    <label
+                      key={item.id}
+                      className="flex items-start gap-2 text-sm text-[color:var(--ink)]"
+                      style={{ paddingLeft: `${depth * 16}px` }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!draft[item.id]}
+                        onChange={() => toggleContainer(item)}
+                      />
+                      <span className="break-all">
+                        {item.name ?? item.id}
+                        {item.path && item.path !== "/" && depth > 0 ? (
+                          <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
+                        ) : null}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-xs text-[color:var(--umber)]">

@@ -72,7 +72,7 @@ const CALLBACK_PATHS = [
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
-type ContainerRefOut = { id: string; name?: string };
+type ContainerRefOut = { id: string; name?: string; path?: string };
 
 async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
   const { data, error } = await svc.from("source_permissions")
@@ -136,7 +136,7 @@ async function listSelectableContainers(providerKind: string, sourceAccountId: s
       provider_kind: providerKind as any,
     }, getServiceClient());
     const albums = await connector.listAlbums();
-    return albums.map((album) => ({ id: album.id, name: album.name }));
+    return albums.map((album: any) => ({ id: album.id, name: album.name, path: album.path }));
   } catch (err) {
     console.error("listSelectableContainers failed", providerKind, sourceAccountId, err);
     return [];
