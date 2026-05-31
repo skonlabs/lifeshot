@@ -290,12 +290,12 @@ export function useSourceContainers(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
         return await api.sources<{
           containers: Array<{ id: string; name?: string }>;
           selected: Array<{ id: string; name?: string }>;
-        }>(`/${accountId}/containers`);
+        }>(`/${accountId}/containers`, { signal });
       } catch (error) {
         if (error instanceof ApiError && error.code === "not_found") {
           return { containers: [], selected: [] };
@@ -328,9 +328,9 @@ export function useSourceStatus(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-status", accountId],
     enabled: !!accountId,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await api.sources<TSourceStatus | null>(`/${accountId}/status`);
+        return await api.sources<TSourceStatus | null>(`/${accountId}/status`, { signal });
       } catch (error) {
         if (error instanceof ApiError && error.code === "not_found") {
           return null;
