@@ -177,7 +177,11 @@ export function useConnectSource() {
         state: string;
         upload_target: { bucket: string; prefix: string } | null;
       }>("/connect", { method: "POST", body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+    onSuccess: (_data, accountId) => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      qc.removeQueries({ queryKey: ["source-status", accountId] });
+      qc.removeQueries({ queryKey: ["source-containers", accountId] });
+    },
   });
 }
 
