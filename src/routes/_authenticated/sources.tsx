@@ -226,7 +226,7 @@ function Sources() {
         ) : accounts.data?.accounts?.length ? (
           <ul className="space-y-2">
             {accounts.data.accounts.map((a) => (
-              <SourceRow key={a.id} a={a} onSync={() => sync.mutate(a.id)} onDisconnect={() => {
+              <SourceRow key={a.id} a={a} provider={providers.data?.providers?.find(p => p.kind === a.provider_kind)} onSync={() => sync.mutate(a.id)} onDisconnect={() => {
                 if (confirm("Disconnect this source? Indexed memories will be removed.")) disconnect.mutate(a.id, {
                   onSuccess: () => toast.success("Source disconnected."),
                   onError: (e) => toast.error((e as Error).message || "Disconnect failed."),
@@ -541,6 +541,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
 function SourceRow({ a, onSync, onDisconnect }: {
   a: { id: string; provider_kind: string; status: string; display_label: string | null; asset_count: number; last_sync_at: string | null };
   onSync: () => void; onDisconnect: () => void;
+  provider?: { name: string; kind: string };
 }) {
   const status = useSourceStatus(a.id);
   const s = status.data;
@@ -549,11 +550,16 @@ function SourceRow({ a, onSync, onDisconnect }: {
   return (
     <li className="hairline rounded-md border bg-[color:var(--paper)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-medium text-[color:var(--ink)]">{a.display_label ?? a.provider_kind}</div>
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[color:var(--paper-2)] text-[color:var(--ink)]">
+            <ProviderIcon kind={a.provider_kind} className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+          <div className="font-medium text-[color:var(--ink)]">{provider?.name ?? a.display_label ?? a.provider_kind}</div>
           <div className="text-xs text-[color:var(--umber)]">
             {a.asset_count.toLocaleString()} indexed · <span className={running ? "text-emerald-700" : ""}>{a.status}</span>
             {a.last_sync_at && ` · synced ${new Date(a.last_sync_at).toLocaleString()}`}
+          </div>
           </div>
         </div>
         <div className="flex gap-2">
