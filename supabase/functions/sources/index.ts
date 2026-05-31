@@ -120,13 +120,13 @@ async function setSelectedContainers(svc: ReturnType<typeof getServiceClient>, s
   if (insertError) throw new ApiError("internal", insertError.message);
 }
 
-async function listSelectableContainers(providerKind: string, sourceAccountId: string): Promise<ContainerRefOut[]> {
+async function listSelectableContainers(providerKind: string, sourceAccountId: string, userId: string): Promise<ContainerRefOut[]> {
   if (providerKind === "google_photos") {
-    const connector = (await import("../_sources/registry.ts")).getConnector(
-      providerKind as Parameters<typeof import("../_sources/registry.ts").getConnector>[0],
-      { source_account_id: sourceAccountId, user_id: "", provider_kind: providerKind as any },
-      getServiceClient(),
-    );
+    const connector = getConnector(providerKind as any, {
+      source_account_id: sourceAccountId,
+      user_id: userId,
+      provider_kind: providerKind as any,
+    }, getServiceClient());
     const albums = await connector.listAlbums();
     return albums.map((album) => ({ id: album.id, name: album.name }));
   }
@@ -547,10 +547,32 @@ app.delete("/v1/:id", async (c) => {
   // Ownership check via user client (RLS)
   const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
-  // Service-role cascade
   const svc = getServiceClient();
-  const { error } = await svc.rpc("disconnect_source", { _source_account_id: id });
-  if (error) throw new ApiError("internal", error.message);
+  const { data: refs, error: refsError } = await svc.from("asset_source_refs").select("asset_id").eq("source_account_id", id);
+  if (refsError) throw new ApiError("internal", refsError.message);
+  const { error: accountError } = await svc.from("source_accounts").update({ status: "disconnected", disconnected_at: new Date().toISOString() }).eq("id", id);
+  if (accountError) throw new ApiError("internal", accountError.message);
+  const { error: tokenError } = await svc.from("source_tokens").delete().eq("source_account_id", id);
+  if (tokenError) throw new ApiError("internal", tokenError.message);
+  const { error: permsError } = await svc.from("source_permissions").delete().eq("source_account_id", id);
+  if (permsError) throw new ApiError("internal", permsError.message);
+  const { error: capsError } = await svc.from("source_capabilities").delete().eq("source_account_id", id);
+  if (capsError) throw new ApiError("internal", capsError.message);
+  const { error: cursorError } = await svc.from("source_sync_cursors").delete().eq("source_account_id", id);
+  if (cursorError) throw new ApiError("internal", cursorError.message);
+  const { error: refDeleteError } = await svc.from("asset_source_refs").delete().eq("source_account_id", id);
+  if (refDeleteError) throw new ApiError("internal", refDeleteError.message);
+  const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
+  if (assetIds.length) {
+    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs").select("asset_id").in("asset_id", assetIds);
+    if (remainingError) throw new ApiError("internal", remainingError.message);
+    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+    if (orphanedIds.length) {
+      const { error: assetError } = await svc.from("assets").update({ deleted_state: "soft_deleted" }).in("id", orphanedIds);
+      if (assetError) throw new ApiError("internal", assetError.message);
+    }
+  }
   await cache.invalidateUser(uid);
   emitEvent(c, "sources.disconnected", { id });
   return c.json({ status: "disconnecting", account_id: id }, 202);
