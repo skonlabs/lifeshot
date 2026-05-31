@@ -117,6 +117,20 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
         const state = cursor ? JSON.parse(cursor) as { albumIndex?: number; pageToken?: string | null } : { albumIndex: 0, pageToken: null };
         const albumIndex = Math.max(0, Math.min(selectedAlbums.length - 1, state.albumIndex ?? 0));
         const currentAlbum = selectedAlbums[albumIndex];
+
+        if (currentAlbum.id === "__all__") {
+          const params = new URLSearchParams({ pageSize: "100" });
+          if (state.pageToken) params.set("pageToken", state.pageToken);
+          const r = await call(`/mediaItems?${params.toString()}`);
+          const body = await r.json() as { mediaItems?: any[]; nextPageToken?: string };
+          const nextCursor = body.nextPageToken
+            ? JSON.stringify({ albumIndex, pageToken: body.nextPageToken })
+            : albumIndex < selectedAlbums.length - 1
+              ? JSON.stringify({ albumIndex: albumIndex + 1, pageToken: null })
+              : null;
+          return { items: (body.mediaItems ?? []).map(mapItem), nextCursor } satisfies PageResult;
+        }
+
         const r = await call("/mediaItems:search", {
           method: "POST",
           body: JSON.stringify({
