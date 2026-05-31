@@ -408,17 +408,24 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const containers = useSourceContainers(state?.accountId);
   const updateContainers = useUpdateSourceContainers();
   const selected = containers.data?.selected ?? [];
-  const allContainers = containers.data?.containers ?? [];
   const [draft, setDraft] = useState<Record<string, SourceContainer>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!state) {
       setDraft({});
+      setExpanded({});
       return;
     }
     const next = Object.fromEntries(selected.map((item) => [item.id, item]));
     setDraft(next);
   }, [state, containers.data?.selected]);
+
+  const rootItems = containers.data?.containers ?? [];
+
+  const toggleExpanded = (item: SourceContainer) => {
+    setExpanded((prev) => ({ ...prev, [item.id]: !prev[item.id] }));
+  };
 
   const toggleContainer = (item: SourceContainer) => {
     setDraft((prev) => {
@@ -430,12 +437,6 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
       return { ...prev, [item.id]: item };
     });
   };
-
-  // Union of discovered + previously-selected entries so saved selections
-  // still render even if the provider temporarily omits them.
-  const discoveredIds = new Set(allContainers.map((c) => c.id));
-  const extraSelected = Object.values(draft).filter((c) => !discoveredIds.has(c.id));
-  const rows: SourceContainer[] = [...allContainers, ...extraSelected];
   const expectsBrowserTree = !!state && BROWSABLE_PROVIDER_KINDS.has(state.provider.kind);
   const accountMissing = !!state && !containers.isLoading && !containers.data && !containers.error;
   const reason = (containers.data as { reason?: string | null } | undefined)?.reason ?? null;
@@ -470,20 +471,24 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               <p className="text-xs text-[color:var(--umber)]">This source is no longer connected.</p>
             ) : containers.isLoading ? (
               <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
-            ) : rows.length ? (
-              <div className="max-h-52 space-y-2 overflow-auto pr-1">
-                {rows.map((item) => {
-                  const path = item.path ?? "";
-                  // Compute depth from path ("/a/b" => 2). Root "/" stays at 0.
-                  const depth = path && path !== "/"
-                    ? Math.max(0, path.split("/").filter(Boolean).length - 1)
-                    : 0;
-                  return (
-                    <label
-                      key={item.id}
-                      className="flex items-start gap-2 text-sm text-[color:var(--ink)]"
-                      style={{ paddingLeft: `${depth * 16}px` }}
-                    >
+            ) : (rootItems.length || Object.keys(draft).length) ? (
+              <div className="max-h-72 space-y-1 overflow-auto pr-1">
+                {rootItems.map((item) => (
+                  <ContainerTreeNode
+                    key={item.id}
+                    accountId={state?.accountId}
+                    item={item}
+                    depth={0}
+                    expanded={expanded}
+                    draft={draft}
+                    onToggleExpanded={toggleExpanded}
+                    onToggleSelected={toggleContainer}
+                  />
+                ))}
+                {Object.values(draft)
+                  .filter((item) => !rootItems.some((rootItem) => rootItem.id === item.id))
+                  .map((item) => (
+                    <label key={item.id} className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]">
                       <input
                         type="checkbox"
                         checked={!!draft[item.id]}
@@ -491,13 +496,10 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
                       />
                       <span className="break-all">
                         {item.name ?? item.id}
-                        {item.path && item.path !== "/" && depth > 0 ? (
-                          <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
-                        ) : null}
+                        <span className="ml-2 text-xs text-[color:var(--umber)]">Saved selection</span>
                       </span>
                     </label>
-                  );
-                })}
+                  ))}
               </div>
             ) : (
               <p className="text-xs text-[color:var(--umber)]">
