@@ -139,37 +139,83 @@ app.get("/callback", async (c) => {
   }));
   const svc = getServiceClient();
   const { data: st } = await svc.from("api_oauth_states").select("*").eq("state", state).maybeSingle();
-  if (!st) return c.redirect(`${ENV.APP_REDIRECT_URL}/connect/error?reason=invalid_state`);
+  if (!st) return c.redirect(`${ENV.APP_REDIRECT_URL}/sources?error=invalid_state`);
   await svc.from("api_oauth_states").delete().eq("state", state);
-  if (error || !code) return c.redirect(`${st.redirect_uri ?? ENV.APP_REDIRECT_URL}/connect/error?reason=${error ?? "no_code"}`);
+  const base = st.redirect_uri ?? ENV.APP_REDIRECT_URL;
+  if (error || !code) return c.redirect(`${base}/sources?error=${error ?? "no_code"}`);
 
-  // Token exchange is provider-specific; we record a placeholder encrypted token.
-  // Real token exchange wired in connector prompt. For now we store the auth code
-  // as a stub so the flow is end-to-end testable.
+  // Look up the provider to know how to exchange the auth code.
+  const { data: provider } = await svc.from("source_providers")
+    .select("kind, oauth_config, default_capabilities").eq("id", st.provider_id).single();
+  if (!provider) return c.redirect(`${base}/sources?error=unknown_provider`);
+
+  // Provider-specific token exchange. Google Photos is the primary supported
+  // provider; other providers fall back to placeholder so the connection row
+  // exists and can be re-authed later.
+  let access_token: string | null = null;
+  let refresh_token: string | null = null;
+  let expires_at: string | null = null;
+
+  try {
+    if (provider.kind === "google_photos") {
+      const cid = Deno.env.get("GOOGLE_CLIENT_ID");
+      const cs = Deno.env.get("GOOGLE_CLIENT_SECRET");
+      if (!cid || !cs) return c.redirect(`${base}/sources?error=oauth_not_configured`);
+      const r = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: cid,
+          client_secret: cs,
+          redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/callback`,
+          grant_type: "authorization_code",
+        }),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        return c.redirect(`${base}/sources?error=token_exchange_failed&detail=${encodeURIComponent(txt.slice(0, 120))}`);
+      }
+      const j = await r.json() as { access_token: string; refresh_token?: string; expires_in?: number };
+      access_token = j.access_token;
+      refresh_token = j.refresh_token ?? null;
+      expires_at = j.expires_in
+        ? new Date(Date.now() + (j.expires_in - 60) * 1000).toISOString()
+        : null;
+    }
+  } catch (e) {
+    return c.redirect(`${base}/sources?error=token_exchange_threw&detail=${encodeURIComponent((e as Error).message.slice(0, 120))}`);
+  }
+
   const { data: account, error: accErr } = await svc.from("source_accounts").insert({
-    user_id: st.user_id, provider_id: st.provider_id, status: "active",
-    external_account_id: `pending_${state.slice(0, 8)}`,
-  }).select().single();
-  if (accErr) return c.redirect(`${st.redirect_uri}/connect/error?reason=account_create_failed`);
+    user_id: st.user_id,
+    provider_id: st.provider_id,
+    status: "active",
+    external_account_id: `acct_${state.slice(0, 8)}`,
+    access_token,
+    refresh_token,
+    expires_at,
+  } as Record<string, unknown>).select().single();
+  if (accErr) return c.redirect(`${base}/sources?error=account_create_failed&detail=${encodeURIComponent(accErr.message.slice(0, 120))}`);
 
-  await svc.from("source_tokens").insert({
-    source_account_id: account.id,
-    access_token_encrypted: `STUB_${btoa(code)}`,
-  });
+  if (access_token) {
+    await svc.from("source_tokens").insert({
+      source_account_id: account.id,
+      access_token_encrypted: access_token, // TODO: encrypt at rest
+    });
+  }
   await svc.from("source_permissions").insert({
     source_account_id: account.id, can_cache_thumbnail: false, can_cache_preview: false, ai_allowed: false,
   });
 
-  // Snapshot capability
-  const { data: provider } = await svc.from("source_providers").select("default_capabilities").eq("id", st.provider_id).single();
   await svc.from("source_capabilities").insert({
     source_account_id: account.id, capability: provider?.default_capabilities ?? {},
   });
 
-  await jobEnqueuer.enqueue("source.initial_sync",
-    { source_account_id: account.id }, { userId: st.user_id, priority: 3 });
+  await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: account.id, mode: "initial" }, { userId: st.user_id, priority: 3 });
 
-  return c.redirect(`${st.redirect_uri}/connect/success?account=${account.id}`);
+  return c.redirect(`${base}/sources?connected=${account.id}`);
 });
 
 app.post("/:id/sync", async (c) => {
@@ -178,8 +224,8 @@ app.post("/:id/sync", async (c) => {
   await enforceRateLimit(uid, "general");
   const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
-  const job = await jobEnqueuer.enqueue("source.incremental_sync",
-    { source_account_id: id }, { userId: uid, priority: 5 });
+  const job = await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   emitEvent(c, "sources.sync_enqueued", { id });
   return c.json({ job_id: job.id }, 202);
 });

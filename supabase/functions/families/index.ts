@@ -48,7 +48,7 @@ app.post("/invite", async (c) => {
     created_by: uid,
   }).select().single();
   if (error) throw new ApiError("internal", error.message);
-  await jobEnqueuer.enqueue("family.invite_email",
+  await jobEnqueuer.enqueue("sendInvitationEmail",
     { invitation_id: data!.id, email: body.email, token }, { userId: uid });
   return c.json({ invitation: { id: data!.id, email: data!.email, role: data!.role } });
 });

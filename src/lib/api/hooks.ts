@@ -191,7 +191,15 @@ export function useSourceStatus(accountId: string | undefined) {
     queryKey: ["source-status", accountId],
     enabled: !!accountId,
     queryFn: () => api.sources<TSourceStatus>(`/${accountId}/status`),
-    refetchInterval: 5_000,
+    // Only poll while a job is actively running. Once it completes/fails,
+    // stop hammering the backend.
+    refetchInterval: (q) => {
+      const s = (q.state.data as TSourceStatus | undefined);
+      const status = s?.last_job?.status;
+      const accStatus = s?.status;
+      const running = status === "running" || status === "pending" || accStatus === "syncing";
+      return running ? 5_000 : false;
+    },
   });
 }
 

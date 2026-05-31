@@ -1,8 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { usePlaces } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
-import { MapPin } from "lucide-react";
+import { ChevronRight, MapPin } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/places")({ component: Places });
 
@@ -47,15 +47,24 @@ function Places() {
             {places.length === 0 ? (
               <li className="text-sm text-[color:var(--umber)]">No places detected yet.</li>
             ) : places.map((p) => (
-              <li key={p.id} className="hairline flex items-center justify-between rounded-md border bg-[color:var(--paper)] px-3 py-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <MapPin className="h-3.5 w-3.5 shrink-0 text-[color:var(--umber)]" />
-                  <div className="min-w-0">
-                    <div className="truncate font-medium text-[color:var(--ink)]">{p.name}</div>
-                    <div className="text-[11px] text-[color:var(--umber)]">{p.lat?.toFixed(2) ?? "—"}, {p.lng?.toFixed(2) ?? "—"}</div>
+              <li key={p.id}>
+                <Link
+                  to="/search"
+                  search={{ q: p.name }}
+                  className="hairline group flex items-center justify-between rounded-md border bg-[color:var(--paper)] px-3 py-2 hover:bg-[color:var(--paper-2)]"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <MapPin className="h-3.5 w-3.5 shrink-0 text-[color:var(--umber)]" />
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-[color:var(--ink)]">{p.name}</div>
+                      <div className="text-[11px] text-[color:var(--umber)]">{p.lat?.toFixed(2) ?? "—"}, {p.lng?.toFixed(2) ?? "—"}</div>
+                    </div>
                   </div>
-                </div>
-                <div className="text-xs tabular-nums text-[color:var(--umber)]">{p.asset_count}</div>
+                  <div className="flex items-center gap-2 text-xs tabular-nums text-[color:var(--umber)]">
+                    {p.asset_count}
+                    <ChevronRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                  </div>
+                </Link>
               </li>
             ))}
           </ul>

@@ -1,6 +1,24 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAsset, useAssetSources } from "@/lib/api/hooks";
-import { ArrowLeft, Layers } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink, Layers } from "lucide-react";
+
+const FIELD_LABELS: Record<string, string> = {
+  capture_time: "Captured",
+  created_at: "Indexed",
+  media_type: "Type",
+  mime_type: "Format",
+  width: "Width",
+  height: "Height",
+  duration_ms: "Duration",
+  device_make: "Device",
+  device_model: "Model",
+  checksum_hash: "Checksum",
+  file_size: "Size",
+};
+
+function humanize(key: string) {
+  return FIELD_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export const Route = createFileRoute("/_authenticated/asset/$id")({ component: AssetDetail });
 
@@ -15,6 +33,11 @@ function AssetDetail() {
   const a = asset.data?.asset as Record<string, unknown> | undefined;
 
   const hiRes = d?.next_quality_url ?? d?.thumbnail_url ?? null;
+  const srcs = (sources.data?.sources ?? []) as Array<{
+    id: string; provider_kind: string | null; provider_name: string | null;
+    label: string | null; provider_url: string | null; is_primary: boolean;
+  }>;
+  const primarySource = srcs.find((s) => s.is_primary && s.provider_url) ?? srcs.find((s) => s.provider_url);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -34,6 +57,20 @@ function AssetDetail() {
             {hiRes && <img src={hiRes} alt="" className="h-auto w-full object-contain" />}
           </figure>
           <aside className="space-y-6">
+            <section className="flex flex-wrap gap-2">
+              {primarySource?.provider_url && (
+                <a href={primarySource.provider_url} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--ink)] px-3 py-1.5 text-xs font-medium text-[color:var(--paper)] hover:bg-[color:var(--umber)]">
+                  <ExternalLink className="h-3 w-3" /> Open in {primarySource.provider_name ?? primarySource.provider_kind ?? "source"}
+                </a>
+              )}
+              {hiRes && (
+                <a href={hiRes} download
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs text-[color:var(--ink)] hover:bg-[color:var(--paper-2)]">
+                  <Download className="h-3 w-3" /> Download preview
+                </a>
+              )}
+            </section>
             <section>
               <div className="text-archive-label mb-3">Metadata</div>
               <dl className="hairline divide-y divide-[color:var(--border)] rounded-md border bg-[color:var(--paper)] text-sm">
@@ -42,7 +79,7 @@ function AssetDetail() {
                   .slice(0, 14)
                   .map(([k, v]) => (
                     <div key={k} className="flex justify-between gap-3 px-4 py-2">
-                      <dt className="text-[color:var(--umber)]">{k}</dt>
+                      <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
                       <dd className="truncate text-right text-[color:var(--ink)]">{String(v ?? "—")}</dd>
                     </div>
                   ))}
@@ -52,11 +89,11 @@ function AssetDetail() {
               <div className="text-archive-label mb-3 flex items-center gap-1"><Layers className="h-3 w-3" /> Sources</div>
               {sources.isLoading ? (
                 <p className="text-sm text-[color:var(--umber)]">Loading…</p>
-              ) : sources.data?.sources?.length ? (
+              ) : srcs.length ? (
                 <ul className="flex flex-wrap gap-2">
-                  {sources.data.sources.map((s, i) => (
-                    <li key={i} className="rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-[11px] uppercase tracking-wider text-[color:var(--umber)]">
-                      {String((s as Record<string, unknown>).provider_kind ?? "source")}
+                  {srcs.map((s) => (
+                    <li key={s.id} className="rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-[11px] uppercase tracking-wider text-[color:var(--umber)]">
+                      {s.label ?? s.provider_name ?? s.provider_kind ?? "source"}
                     </li>
                   ))}
                 </ul>

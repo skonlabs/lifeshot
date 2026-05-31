@@ -53,10 +53,10 @@ function Family() {
         <section>
           <div className="text-archive-label mb-3">Members of {detail.data.family.name}</div>
           <ul className="hairline divide-y divide-[color:var(--border)] rounded-md border bg-[color:var(--paper)]">
-            {detail.data.members.map((m) => (
+            {detail.data.members.map((m: any) => (
               <li key={m.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div>
-                  <div className="font-medium text-[color:var(--ink)]">{m.display_name ?? m.user_id.slice(0,8)}</div>
+                  <div className="font-medium text-[color:var(--ink)]">{m.profile?.display_name ?? m.display_name ?? `Member ${m.user_id.slice(0,8)}`}</div>
                   <div className="text-[11px] uppercase tracking-wider text-[color:var(--umber)]">{m.role} · {m.status}</div>
                 </div>
                 <div className="flex gap-2">

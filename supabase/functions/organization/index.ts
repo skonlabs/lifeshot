@@ -137,10 +137,17 @@ app.post("/corrections", async (c) => {
     user_id: uid, target_type: body.target_type, target_id: body.target_id, correction: body.correction,
   }).select("id").single();
   if (error) throw new ApiError("internal", error.message);
-  const job = await jobEnqueuer.enqueue(`recompute.${body.target_type}`,
-    { correction_id: data!.id, target_id: body.target_id, correction: body.correction },
-    { userId: uid });
-  const out = { id: data!.id, job_id: job.id };
+  // Translate the correction into a downstream re-index job. For people we
+  // re-run face clustering; for other entities we just record the correction
+  // (search reindex picks up the changes on next pipeline pass).
+  let job_id: string | null = null;
+  if (body.target_type === "person") {
+    const job = await jobEnqueuer.enqueue("clusterPeople",
+      { user_id: uid, target_person_id: body.target_id, correction: body.correction },
+      { userId: uid });
+    job_id = job.id;
+  }
+  const out = { id: data!.id, job_id };
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
