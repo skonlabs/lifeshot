@@ -248,7 +248,7 @@ app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("source_accounts").select(`
-    id, user_id, provider_id, display_label, status, connected_at, disconnected_at,
+    id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
   `).order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
