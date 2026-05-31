@@ -154,7 +154,7 @@ function Sources() {
       return;
     }
 
-    setConsent({ provider });
+    void startConnect(provider);
   }, [providers.data?.providers, search?.connect_provider, search?.oauth_bridge]);
 
   // Map provider_kind → first connected account so we can show a "Connected" badge
@@ -188,13 +188,33 @@ function Sources() {
     const useTopLevelRedirect = search?.oauth_bridge === "1";
 
     if (!useTopLevelRedirect && provider.kind === "google_photos") {
-      const standaloneUrl = getStandalonePreviewConnectUrl(provider.id);
-      if (standaloneUrl) {
-        const bridgeWindow = window.open(standaloneUrl, "_blank", "noopener,noreferrer");
-        if (bridgeWindow) {
-          toast.info("Google Photos opens in a standalone tab because Google blocks embedded preview auth.");
+      const bridgeWindow = window.open("about:blank", "pmp_google_oauth_bridge");
+      if (!bridgeWindow) {
+        toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
+        return;
+      }
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const accessToken = data.session?.access_token;
+        const refreshToken = data.session?.refresh_token;
+        const bridgeUrl = accessToken && refreshToken
+          ? getStandalonePreviewBridgeUrl(provider.id, accessToken, refreshToken)
+          : null;
+
+        if (bridgeUrl) {
+          bridgeWindow.location.href = bridgeUrl;
+          toast.info("Google Photos opens in a standalone window because Google blocks embedded preview auth.");
           return;
         }
+
+        bridgeWindow.close();
+        toast.error("Your session expired. Sign in again, then reconnect Google Photos.");
+        return;
+      } catch {
+        try { bridgeWindow.close(); } catch { /* ignore */ }
+        toast.error("Unable to prepare Google Photos sign-in.");
+        return;
       }
     }
 
