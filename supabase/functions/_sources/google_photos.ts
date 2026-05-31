@@ -32,29 +32,31 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
   // forward decls so getDeltaChanges can call listAssets without `this`
   let listAssetsRef: (cursor: string | null) => Promise<PageResult>;
   async function getAccessToken(): Promise<string> {
-    const { data, error } = await supabase.from("source_accounts")
-      .select("access_token, refresh_token, expires_at")
-      .eq("id", ctx.source_account_id).single();
-    if (error || !data) throw new ConnectorAuthError("source account not found");
+    const { data, error } = await supabase.from("source_tokens")
+      .select("access_token_encrypted, refresh_token_encrypted, expires_at")
+      .eq("source_account_id", ctx.source_account_id).single();
+    if (error || !data) throw new ConnectorAuthError("source tokens not found");
     if (data.expires_at && new Date(data.expires_at).getTime() < Date.now() + 60_000) {
       // refresh
       const cid = Deno.env.get("GOOGLE_CLIENT_ID"); const cs = Deno.env.get("GOOGLE_CLIENT_SECRET");
-      if (!cid || !cs || !data.refresh_token) throw new ConnectorAuthError("oauth refresh creds missing");
+      if (!cid || !cs || !data.refresh_token_encrypted) throw new ConnectorAuthError("oauth refresh creds missing");
       const r = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-          client_id: cid, client_secret: cs, refresh_token: data.refresh_token, grant_type: "refresh_token",
+          client_id: cid, client_secret: cs,
+          refresh_token: data.refresh_token_encrypted,
+          grant_type: "refresh_token",
         }),
       });
       if (!r.ok) throw new ConnectorAuthError(`token refresh failed: ${r.status}`);
       const j = await r.json() as { access_token: string; expires_in: number };
-      await supabase.from("source_accounts").update({
-        access_token: j.access_token,
+      await supabase.from("source_tokens").update({
+        access_token_encrypted: j.access_token,
         expires_at: new Date(Date.now() + (j.expires_in - 60) * 1000).toISOString(),
-      }).eq("id", ctx.source_account_id);
+      }).eq("source_account_id", ctx.source_account_id);
       return j.access_token;
     }
-    return data.access_token;
+    return data.access_token_encrypted;
   }
 
   async function call(path: string, init: RequestInit = {}): Promise<Response> {
@@ -141,11 +143,12 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       await supabase.from("source_accounts").update({ status: "disconnected" }).eq("id", ctx.source_account_id);
     },
     revoke: async () => {
-      const { data } = await supabase.from("source_accounts").select("access_token").eq("id", ctx.source_account_id).single();
-      if (data?.access_token) {
-        await fetch(`https://oauth2.googleapis.com/revoke?token=${data.access_token}`, { method: "POST" });
+      const { data } = await supabase.from("source_tokens").select("access_token_encrypted").eq("source_account_id", ctx.source_account_id).single();
+      if (data?.access_token_encrypted) {
+        await fetch(`https://oauth2.googleapis.com/revoke?token=${data.access_token_encrypted}`, { method: "POST" });
       }
-      await supabase.from("source_accounts").update({ access_token: null, refresh_token: null, status: "revoked" }).eq("id", ctx.source_account_id);
+      await supabase.from("source_tokens").update({ access_token_encrypted: "", refresh_token_encrypted: null }).eq("source_account_id", ctx.source_account_id);
+      await supabase.from("source_accounts").update({ status: "revoked" }).eq("id", ctx.source_account_id);
     },
   };
   listAssetsRef = conn.listAssets;

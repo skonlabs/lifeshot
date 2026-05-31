@@ -192,9 +192,6 @@ app.get("/callback", async (c) => {
     provider_id: st.provider_id,
     status: "active",
     external_account_id: `acct_${state.slice(0, 8)}`,
-    access_token,
-    refresh_token,
-    expires_at,
   } as Record<string, unknown>).select().single();
   if (accErr) return c.redirect(`${base}/sources?error=account_create_failed&detail=${encodeURIComponent(accErr.message.slice(0, 120))}`);
 
@@ -202,6 +199,14 @@ app.get("/callback", async (c) => {
     await svc.from("source_tokens").insert({
       source_account_id: account.id,
       access_token_encrypted: access_token, // TODO: encrypt at rest
+      refresh_token_encrypted: refresh_token,
+      expires_at,
+    });
+  } else {
+    // Placeholder so the FK row exists (non-OAuth or pending providers).
+    await svc.from("source_tokens").insert({
+      source_account_id: account.id,
+      access_token_encrypted: "",
     });
   }
   await svc.from("source_permissions").insert({
