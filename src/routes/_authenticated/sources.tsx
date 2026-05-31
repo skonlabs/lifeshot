@@ -89,14 +89,6 @@ function Sources() {
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<DisconnectState>(null);
 
-  useEffect(() => {
-    if (!manage) return;
-    const stillExists = accounts.data?.accounts?.some((account) => account.id === manage.accountId);
-    if (accounts.data && !stillExists) {
-      setManage(null);
-    }
-  }, [accounts.data, manage]);
-
   function requestDisconnect(accountId: string, providerName: string) {
     setDisconnectConfirm({ accountId, providerName });
   }
