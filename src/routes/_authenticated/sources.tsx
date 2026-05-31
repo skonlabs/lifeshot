@@ -130,7 +130,7 @@ function Sources() {
         const detail = data.detail ? `: ${decodeURIComponent(data.detail)}` : "";
         toast.error(`Connection failed (${data.error}${detail})`);
       } else {
-        toast.success("Source connected. Indexing started.");
+        toast.success("Source connected. Select folders to start indexing.");
         if (data.connected && data.provider) {
           const provider = providers.data?.providers?.find((item) => item.kind === data.provider);
           if (provider) {
@@ -153,7 +153,7 @@ function Sources() {
       const detail = search.detail ? `: ${decodeURIComponent(search.detail)}` : "";
       toast.error(`Connection failed (${search.error}${detail})`);
     } else if (search?.connected) {
-      toast.success("Source connected. Indexing started.");
+      toast.success("Source connected. Select folders to start indexing.");
       if (search.provider) {
         const provider = providers.data?.providers?.find((item) => item.kind === search.provider);
         if (provider) {
