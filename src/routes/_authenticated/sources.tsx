@@ -81,7 +81,7 @@ function Sources() {
     try {
       window.opener.postMessage(
         { type: "pmp:oauth", error: search?.error ?? null, detail: search?.detail ?? null },
-        window.location.origin,
+        "*",
       );
     } catch { /* ignore */ }
     window.close();
@@ -90,7 +90,6 @@ function Sources() {
   // Listen for OAuth result postMessage from the popup.
   useEffect(() => {
     function handler(ev: MessageEvent) {
-      if (ev.origin !== window.location.origin) return;
       const data = ev.data as { type?: string; error?: string | null; detail?: string | null } | null;
       if (!data || data.type !== "pmp:oauth") return;
       if (data.error) {
