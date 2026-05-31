@@ -14,6 +14,15 @@ const ConnectIn = z.object({
   redirect_uri: z.string().url().max(2048).optional(),
 }).strict();
 
+const ContainerRef = z.object({
+  id: z.string().min(1).max(512),
+  name: z.string().min(1).max(512).optional(),
+}).strict();
+
+const UpdateContainersIn = z.object({
+  containers: z.array(ContainerRef).max(200),
+}).strict();
+
 const app = createApi("/sources");
 
 // Hardcoded OAuth metadata for known providers. We do NOT rely on
@@ -60,6 +69,68 @@ const CALLBACK_PATHS = [
   "/functions/v1/sources/v1/callback",
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
+
+type ContainerRefOut = { id: string; name?: string };
+
+async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
+  const { data, error } = await svc.from("source_permissions")
+    .select("scopes")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  const scopes = Array.isArray(data?.scopes) ? data.scopes : [];
+  const selected = scopes.find((entry: unknown) => {
+    return !!entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers";
+  }) as { containers?: ContainerRefOut[] } | undefined;
+  return Array.isArray(selected?.containers)
+    ? selected!.containers.filter((item) => item && typeof item.id === "string")
+    : [];
+}
+
+async function setSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string, containers: ContainerRefOut[]) {
+  const { data, error } = await svc.from("source_permissions")
+    .select("id, scopes")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+
+  const nextScopes = (Array.isArray(data?.scopes) ? data.scopes : [])
+    .filter((entry: unknown) => !(entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers"));
+
+  if (containers.length) {
+    nextScopes.push({ type: "selected_containers", containers });
+  }
+
+  if (data?.id) {
+    const { error: updateError } = await svc.from("source_permissions")
+      .update({ scopes: nextScopes })
+      .eq("id", data.id);
+    if (updateError) throw new ApiError("internal", updateError.message);
+    return;
+  }
+
+  const { error: insertError } = await svc.from("source_permissions").insert({
+    source_account_id: sourceAccountId,
+    can_cache_thumbnail: false,
+    can_cache_preview: false,
+    ai_allowed: false,
+    scopes: nextScopes,
+  });
+  if (insertError) throw new ApiError("internal", insertError.message);
+}
+
+async function listSelectableContainers(providerKind: string, sourceAccountId: string): Promise<ContainerRefOut[]> {
+  if (providerKind === "google_photos") {
+    const connector = (await import("../_sources/registry.ts")).getConnector(
+      providerKind as Parameters<typeof import("../_sources/registry.ts").getConnector>[0],
+      { source_account_id: sourceAccountId, user_id: "", provider_kind: providerKind as any },
+      getServiceClient(),
+    );
+    const albums = await connector.listAlbums();
+    return albums.map((album) => ({ id: album.id, name: album.name }));
+  }
+  return [];
+}
 
 // Providers list (public-ish: seeded reference data)
 app.get("/v1/providers", async (c) => {
