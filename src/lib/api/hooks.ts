@@ -23,7 +23,6 @@ import type {
   TSourceStatus,
 } from "@core/api";
 import { ApiError, api } from "./client";
-import { supabase } from "@/lib/supabase";
 
 type SourceAccountsResponse = {
   accounts: Array<{
@@ -233,42 +232,9 @@ export function useDisconnectSource() {
       return { previousAccounts };
     },
     mutationFn: async (accountId: string) => {
-      const { data: refs, error: refsError } = await supabase
-        .from("asset_source_refs")
-        .select("asset_id")
-        .eq("source_account_id", accountId);
-      if (refsError) throw refsError;
-
-      const assetIds = Array.from(
-        new Set((refs ?? []).map((row) => row.asset_id).filter((id): id is string => !!id)),
-      );
-
-      const { error: deleteError } = await supabase
-        .from("source_accounts")
-        .delete()
-        .eq("id", accountId);
-      if (deleteError) throw deleteError;
-
-      if (assetIds.length) {
-        const { data: remaining, error: remainingError } = await supabase
-          .from("asset_source_refs")
-          .select("asset_id")
-          .in("asset_id", assetIds);
-        if (remainingError) throw remainingError;
-
-        const remainingIds = new Set((remaining ?? []).map((row) => row.asset_id));
-        const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
-
-        if (orphanedIds.length) {
-          const { error: assetError } = await supabase
-            .from("assets")
-            .update({ deleted_state: "soft_deleted" })
-            .in("id", orphanedIds);
-          if (assetError) throw assetError;
-        }
-      }
-
-      return { status: "disconnected", account_id: accountId, direct: true };
+      return api.sources<{ status: string; account_id: string }>(`/${accountId}`, {
+        method: "DELETE",
+      });
     },
     onError: (_error, _accountId, context) => {
       if (context?.previousAccounts) {

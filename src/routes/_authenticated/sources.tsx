@@ -89,6 +89,18 @@ function Sources() {
   const [configMissing, setConfigMissing] = useState<ConfigMissingState>(null);
   const [disconnectConfirm, setDisconnectConfirm] = useState<DisconnectState>(null);
 
+  useEffect(() => {
+    if (!consent?.provider || manage) return;
+    const matching = (accounts.data?.accounts ?? []).find(
+      (account) => account.provider_kind === consent.provider.kind && account.status === "active",
+    );
+    if (matching) {
+      setConsent(null);
+      setManage({ provider: consent.provider, accountId: matching.id });
+      void qc.invalidateQueries({ queryKey: ["source-containers", matching.id] });
+    }
+  }, [accounts.data?.accounts, consent, manage, qc]);
+
   function requestDisconnect(accountId: string, providerName: string) {
     setDisconnectConfirm({ accountId, providerName });
   }
@@ -134,6 +146,7 @@ function Sources() {
           const provider = providers.data?.providers?.find((item) => item.kind === data.provider);
           if (provider) {
             setManage({ provider, accountId: data.connected });
+            void qc.invalidateQueries({ queryKey: ["source-containers", data.connected] });
           }
         }
       }
@@ -156,6 +169,7 @@ function Sources() {
         const provider = providers.data?.providers?.find((item) => item.kind === search.provider);
         if (provider) {
           setManage({ provider, accountId: search.connected });
+          void qc.invalidateQueries({ queryKey: ["source-containers", search.connected] });
         }
       }
     }
@@ -165,7 +179,7 @@ function Sources() {
   // and switch the card from a Connect button to a Manage button.
   const connectedByKind = new Map<string, { id: string; status: string; asset_count: number }>();
   for (const a of accounts.data?.accounts ?? []) {
-    if (!connectedByKind.has(a.provider_kind)) {
+    if (a.status === "active" && !connectedByKind.has(a.provider_kind)) {
       connectedByKind.set(a.provider_kind, { id: a.id, status: a.status, asset_count: a.asset_count });
     }
   }
@@ -229,7 +243,13 @@ function Sources() {
         redirect_uri: redirectUrl.toString(),
       });
       if (out.authorize_url) {
-        popup.location.href = out.authorize_url;
+        const authorizeUrl = new URL(out.authorize_url);
+        if (["dropbox", "google_photos", "onedrive"].includes(provider.kind)) {
+          authorizeUrl.searchParams.set("prompt", "consent");
+          authorizeUrl.searchParams.set("force_reapprove", "true");
+          authorizeUrl.searchParams.set("force_reauthentication", "true");
+        }
+        popup.location.href = authorizeUrl.toString();
         return;
       }
       popup?.close();
@@ -435,7 +455,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
         <DialogHeader>
           <DialogTitle>{state?.provider.name}</DialogTitle>
           <DialogDescription>
-            This source is connected. You can re-sync, re-authenticate, or disconnect it.
+            Choose which folders or albums should be indexed for this source.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
