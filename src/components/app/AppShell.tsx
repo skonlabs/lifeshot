@@ -49,7 +49,7 @@ export function AppShell() {
           <div className="grid h-9 w-9 place-items-center rounded-md border border-[color:var(--umber)]/30 bg-[color:var(--paper)] text-[color:var(--ink)] shadow-sm transition-transform group-hover:rotate-[-2deg]">
             <span className="font-serif-display text-lg leading-none">L</span>
           </div>
-          <span className="text-archive-label !text-[8px] !tracking-[0.22em]">PMP</span>
+          <span className="text-archive-label !text-[8px] !tracking-[0.22em]">LifeShot</span>
         </Link>
         <nav className="flex flex-1 flex-col items-center gap-1.5 pt-8">
           {LENSES.map((l) => (
@@ -136,7 +136,7 @@ export function AppShell() {
         </main>
 
         <footer className="hairline-t mx-auto w-full max-w-[1400px] px-6 py-4 text-[11px] text-[color:var(--umber)]">
-          <span className="text-archive-label">PMP · personal memory platform</span>
+          <span className="text-archive-label">LifeShot · personal memory platform</span>
           <span className="ml-3">We index, we never move. Originals stay in your sources.</span>
         </footer>
       </div>
