@@ -160,10 +160,11 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       // Google base URL is short-lived (~60min).
       return { url: `${it.baseUrl}=d`, expiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString() };
     },
-    listAlbums: async () => {
+    listAlbums: async (parentId) => {
+      if (parentId && parentId !== "root") return [];
       const out: AssetAlbumRef[] = [];
       // Synthetic "everything" container so users can opt in to the full library.
-      out.push({ id: "__all__", name: "All photos & videos (entire library)" } as any);
+      out.push({ id: "__all__", name: "All photos & videos (entire library)", path: "/", selectable: true, has_children: false } as any);
       const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string) => {
         let pageToken: string | undefined;
         let safety = 0;
@@ -181,7 +182,13 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
             if (!a?.id) continue;
             const title = a.title ?? "(untitled)";
             const count = a.mediaItemsCount ? ` · ${a.mediaItemsCount}` : "";
-            out.push({ id: a.id, name: `${label}${title}${count}` } as any);
+            out.push({
+              id: a.id,
+              name: `${label}${title}${count}`,
+              path: `/${label ? "Shared/" : "Albums/"}${title}`,
+              selectable: true,
+              has_children: false,
+            } as any);
           }
           pageToken = j.nextPageToken;
         } while (pageToken && ++safety < 40);
