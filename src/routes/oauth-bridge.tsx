@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
@@ -14,7 +14,6 @@ export const Route = createFileRoute("/oauth-bridge")({
 });
 
 function OAuthBridge() {
-  const navigate = useNavigate();
   const search = Route.useSearch();
   const [status, setStatus] = useState("Preparing secure sign-in…");
 
@@ -50,21 +49,17 @@ function OAuthBridge() {
       }
 
       setStatus("Opening Google Photos…");
-      navigate({
-        to: "/sources",
-        search: {
-          connect_provider: search.connect_provider,
-          oauth_bridge: "1",
-        },
-        replace: true,
-      });
+      const nextUrl = new URL("/sources", window.location.origin);
+      nextUrl.searchParams.set("connect_provider", search.connect_provider);
+      nextUrl.searchParams.set("oauth_bridge", "1");
+      window.location.replace(nextUrl.toString());
     }
 
     void run();
     return () => {
       cancelled = true;
     };
-  }, [navigate, search.connect_provider, tokens.accessToken, tokens.refreshToken]);
+  }, [search.connect_provider, tokens.accessToken, tokens.refreshToken]);
 
   return (
     <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">

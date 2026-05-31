@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SignUpRouteImport } from './routes/sign-up'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as OauthPopupRouteImport } from './routes/oauth-popup'
+import { Route as OauthBridgeRouteImport } from './routes/oauth-bridge'
 import { Route as CallbackRouteImport } from './routes/callback'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
@@ -45,6 +46,11 @@ const SignInRoute = SignInRouteImport.update({
 const OauthPopupRoute = OauthPopupRouteImport.update({
   id: '/oauth-popup',
   path: '/oauth-popup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OauthBridgeRoute = OauthBridgeRouteImport.update({
+  id: '/oauth-bridge',
+  path: '/oauth-bridge',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CallbackRoute = CallbackRouteImport.update({
@@ -147,6 +153,7 @@ const AuthenticatedAssetIdRoute = AuthenticatedAssetIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
   '/oauth-popup': typeof OauthPopupRoute
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
@@ -170,6 +177,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
   '/oauth-popup': typeof OauthPopupRoute
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
@@ -195,6 +203,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
   '/oauth-popup': typeof OauthPopupRoute
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
@@ -220,6 +229,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/callback'
+    | '/oauth-bridge'
     | '/oauth-popup'
     | '/sign-in'
     | '/sign-up'
@@ -243,6 +253,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/callback'
+    | '/oauth-bridge'
     | '/oauth-popup'
     | '/sign-in'
     | '/sign-up'
@@ -267,6 +278,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/callback'
+    | '/oauth-bridge'
     | '/oauth-popup'
     | '/sign-in'
     | '/sign-up'
@@ -292,6 +304,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   CallbackRoute: typeof CallbackRoute
+  OauthBridgeRoute: typeof OauthBridgeRoute
   OauthPopupRoute: typeof OauthPopupRoute
   SignInRoute: typeof SignInRoute
   SignUpRoute: typeof SignUpRoute
@@ -319,6 +332,13 @@ declare module '@tanstack/react-router' {
       path: '/oauth-popup'
       fullPath: '/oauth-popup'
       preLoaderRoute: typeof OauthPopupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oauth-bridge': {
+      id: '/oauth-bridge'
+      path: '/oauth-bridge'
+      fullPath: '/oauth-bridge'
+      preLoaderRoute: typeof OauthBridgeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/callback': {
@@ -519,6 +539,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   CallbackRoute: CallbackRoute,
+  OauthBridgeRoute: OauthBridgeRoute,
   OauthPopupRoute: OauthPopupRoute,
   SignInRoute: SignInRoute,
   SignUpRoute: SignUpRoute,
