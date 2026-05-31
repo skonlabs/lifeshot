@@ -182,36 +182,57 @@ function Sources() {
 
   async function startConnect(provider: Provider) {
     setConsent(null);
+    const useTopLevelRedirect = search?.oauth_bridge === "1";
+
+    if (!useTopLevelRedirect && provider.kind === "google_photos") {
+      const standaloneUrl = getStandalonePreviewConnectUrl(provider.id);
+      if (standaloneUrl) {
+        const bridgeWindow = window.open(standaloneUrl, "_blank", "noopener,noreferrer");
+        if (bridgeWindow) {
+          toast.info("Google Photos opens in a standalone tab because Google blocks embedded preview auth.");
+          return;
+        }
+      }
+    }
+
     // Open the popup synchronously inside the click handler so browsers don't
     // block it. We point it at a blank page and navigate it once we have the
     // authorize URL from the server.
-    const w = 560, h = 720;
-    const hostWindow = (() => {
-      try {
-        void window.top?.location?.origin;
-        return window.top ?? window;
-      } catch {
-        return window;
+    let popup: Window | null = null;
+    if (!useTopLevelRedirect) {
+      const w = 560, h = 720;
+      const hostWindow = (() => {
+        try {
+          void window.top?.location?.origin;
+          return window.top ?? window;
+        } catch {
+          return window;
+        }
+      })();
+      const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
+      const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
+      popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
+      if (!popup) {
+        toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
+        return;
       }
-    })();
-    const y = hostWindow.outerHeight ? Math.max(0, ((hostWindow.outerHeight - h) / 2) + (hostWindow.screenY ?? 0)) : 100;
-    const x = hostWindow.outerWidth ? Math.max(0, ((hostWindow.outerWidth - w) / 2) + (hostWindow.screenX ?? 0)) : 100;
-    const popup = window.open("about:blank", "pmp_oauth", `width=${w},height=${h},left=${x},top=${y}`);
-    if (!popup) {
-      toast.error("Popup was blocked. Allow pop-ups for this site and try again.");
-      return;
+      popupRef.current = popup;
     }
-    popupRef.current = popup;
+
     try {
       const out = await connect.mutateAsync({
         provider_id: provider.id,
         redirect_uri: `${window.location.origin}/oauth-popup`,
       });
       if (out.authorize_url) {
-        popup.location.href = out.authorize_url;
+        if (useTopLevelRedirect) {
+          window.location.assign(out.authorize_url);
+        } else {
+          popup!.location.href = out.authorize_url;
+        }
         return;
       }
-      popup.close();
+      popup?.close();
       popupRef.current = null;
       if (provider.kind === "export_import" && out.upload_target && out.session_token) {
         setUpload({ accountId: out.session_token, prefix: out.upload_target.prefix });
@@ -220,7 +241,7 @@ function Sources() {
       // Defensive: server should always return one of the above.
       toast.error(`${provider.name} did not return a connection URL. Please try again.`);
     } catch (e) {
-      try { popup.close(); } catch { /* ignore */ }
+      try { popup?.close(); } catch { /* ignore */ }
       popupRef.current = null;
       const msg = (e as Error).message ?? "";
       // Server error when OAuth env keys are missing — show a config dialog
