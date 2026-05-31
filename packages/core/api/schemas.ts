@@ -20,6 +20,7 @@ export const UserProfileOut = z.object({
   timezone: z.string(),
   tier: z.string(),
   email: z.string().nullable(),
+  onboarding_state: z.record(z.unknown()).default({}),
   families: z.array(z.object({
     family_id: z.string().uuid(), name: z.string(), role: z.string(),
   })),
@@ -29,6 +30,7 @@ export const PatchMe = z.object({
   avatar_url: z.string().url().max(2048).optional(),
   locale: z.string().min(2).max(20).optional(),
   timezone: z.string().min(1).max(80).optional(),
+  onboarding_state: z.record(z.unknown()).optional(),
 }).strict();
 
 export const PrivacySettings = z.object({

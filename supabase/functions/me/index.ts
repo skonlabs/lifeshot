@@ -10,6 +10,7 @@ const PatchMe = z.object({
   avatar_url: z.string().url().max(2048).optional(),
   locale: z.string().min(2).max(20).optional(),
   timezone: z.string().min(1).max(80).optional(),
+  onboarding_state: z.record(z.unknown()).optional(),
 }).strict();
 
 const PatchPrivacy = z.object({
@@ -36,6 +37,7 @@ app.get("/me", async (c) => {
     locale: profile?.locale ?? "en",
     timezone: profile?.timezone ?? "UTC",
     tier: profile?.tier ?? "free",
+    onboarding_state: profile?.onboarding_state ?? {},
     email: c.get("userEmail"),
     families: (fams ?? []).map((m: any) => ({
       family_id: m.family_id, role: m.role,

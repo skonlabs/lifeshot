@@ -14,7 +14,7 @@ interface Descriptor {
   hydration_status: "pending" | "ready";
 }
 
-export function AssetCell({ d, style }: { d: Descriptor; style?: React.CSSProperties }) {
+export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: React.CSSProperties; disableLink?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -32,13 +32,8 @@ export function AssetCell({ d, style }: { d: Descriptor; style?: React.CSSProper
     }
   }, [d.blurhash]);
 
-  return (
-    <Link
-      to="/asset/$id"
-      params={{ id: d.asset_id }}
-      className="group relative block overflow-hidden rounded-md bg-muted"
-      style={{ backgroundColor: d.dominant_color ?? undefined, ...style }}
-    >
+  const inner = (
+    <>
       {d.blurhash && (
         <canvas
           ref={canvasRef}
@@ -65,6 +60,26 @@ export function AssetCell({ d, style }: { d: Descriptor; style?: React.CSSProper
       {d.hydration_status === "pending" && (
         <span className="absolute left-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-white/70" />
       )}
+    </>
+  );
+  if (disableLink) {
+    return (
+      <div
+        className="group relative block h-full w-full overflow-hidden rounded-md bg-muted"
+        style={{ backgroundColor: d.dominant_color ?? undefined, ...style }}
+      >
+        {inner}
+      </div>
+    );
+  }
+  return (
+    <Link
+      to="/asset/$id"
+      params={{ id: d.asset_id }}
+      className="group relative block overflow-hidden rounded-md bg-muted"
+      style={{ backgroundColor: d.dominant_color ?? undefined, ...style }}
+    >
+      {inner}
     </Link>
   );
 }
