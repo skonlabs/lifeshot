@@ -179,11 +179,11 @@ function Sources() {
                         {p.name}
                         {connected && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700">Connected</span>}
                       </div>
-                      <div className="truncate text-xs text-[color:var(--umber)]">
-                        {connected
-                          ? `${connected.asset_count.toLocaleString()} indexed · ${connected.status}`
-                          : `${p.kind} · ${p.priority}${UNSUPPORTED_PROVIDER_KINDS.has(p.kind) ? " · no public API" : ON_DEVICE_PROVIDER_KINDS.has(p.kind) ? " · needs PMP agent" : ""}`}
-                      </div>
+                      {connected && (
+                        <div className="truncate text-xs text-[color:var(--umber)]">
+                          {connected.asset_count.toLocaleString()} indexed · {connected.status}
+                        </div>
+                      )}
                     </div>
                   </div>
                   {connected && <Settings2 className="h-4 w-4 shrink-0 text-[color:var(--umber)]" strokeWidth={1.5} />}
