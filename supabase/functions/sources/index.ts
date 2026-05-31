@@ -287,6 +287,32 @@ app.post("/:id/sync", async (c) => {
   return c.json({ job_id: job.id }, 202);
 });
 
+// After client-side upload to the source_uploads storage bucket, scan the
+// folder for this account and enqueue an import job. Returns counts.
+app.post("/:id/import-uploaded", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc } = await supa.from("source_accounts")
+    .select("id, provider:source_providers(kind)").eq("id", id).maybeSingle();
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+  if ((acc as any).provider?.kind !== "export_import") {
+    throw new ApiError("failed_precondition", "This account does not accept uploads");
+  }
+  const svc = getServiceClient();
+  const prefix = `${uid}/${id}`;
+  const { data: files, error } = await svc.storage.from("source_uploads").list(prefix, {
+    limit: 1000, sortBy: { column: "name", order: "asc" },
+  });
+  if (error) throw new ApiError("internal", error.message);
+  const fileCount = (files ?? []).filter((f) => f.name && !f.name.endsWith("/")).length;
+  const job = await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
+    { userId: uid, priority: 4 });
+  emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
+  return c.json({ job_id: job.id, queued_files: fileCount }, 202);
+});
+
 app.delete("/:id", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
