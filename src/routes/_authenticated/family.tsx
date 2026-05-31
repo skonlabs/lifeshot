@@ -13,9 +13,8 @@ function Family() {
   const invite = useInviteToFamily();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [familyId, setFamilyId] = useState("");
   const list = families.data?.families ?? [];
-
+  const [familyId, setFamilyId] = useState<string>("");
   useEffect(() => {
     if (!familyId && list[0]) setFamilyId(list[0].id);
   }, [familyId, list]);
