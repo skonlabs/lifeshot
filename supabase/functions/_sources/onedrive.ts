@@ -45,11 +45,35 @@ function inferMimeType(name: string): string | undefined {
     webp: "image/webp",
     heic: "image/heic",
     heif: "image/heif",
+    bmp: "image/bmp",
+    tif: "image/tiff",
+    tiff: "image/tiff",
+    svg: "image/svg+xml",
     mp4: "video/mp4",
     mov: "video/quicktime",
     m4v: "video/x-m4v",
     avi: "video/x-msvideo",
     webm: "video/webm",
+    mkv: "video/x-matroska",
+    mp3: "audio/mpeg",
+    m4a: "audio/mp4",
+    wav: "audio/wav",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    ogg: "audio/ogg",
+    pdf: "application/pdf",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    txt: "text/plain",
+    rtf: "application/rtf",
+    csv: "text/csv",
+    md: "text/markdown",
+    json: "application/json",
+    xml: "application/xml",
   };
   return map[ext];
 }
@@ -67,8 +91,8 @@ function inferFileKind(name: string, mimeType?: string): "photo" | "video" | "do
 }
 
 function isSupportedMedia(name: string, mimeType?: string): boolean {
-  const mime = mimeType ?? inferMimeType(name);
-  return !!mime && (mime.startsWith("image/") || mime.startsWith("video/"));
+  const kind = inferFileKind(name, mimeType);
+  return kind === "photo" || kind === "video" || kind === "audio" || kind === "document";
 }
 
 export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
@@ -135,12 +159,15 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
   }
 
   function mapItem(item: any): AssetRecord | null {
-    if (!item.file && !item.photo && !item.video) return null;
+    if (!item.file && !item.photo && !item.video && !item.audio) return null;
     const mimeType = item.file?.mimeType ?? inferMimeType(item.name);
     if (!isSupportedMedia(item.name, mimeType)) return null;
+    const kind = inferFileKind(item.name, mimeType);
+    const mediaTypeOut: "image" | "video" | "audio" | "document" =
+      kind === "photo" ? "image" : kind === "video" ? "video" : kind === "audio" ? "audio" : "document";
     return {
       provider_asset_id: item.id,
-      media_type: mimeType?.startsWith("video/") ? "video" : "image",
+      media_type: mediaTypeOut,
       mime_type: mimeType,
       capture_time: item.photo?.takenDateTime ?? item.createdDateTime,
       upload_time: item.createdDateTime,
