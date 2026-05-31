@@ -14,7 +14,7 @@ const ConnectIn = z.object({
   redirect_uri: z.string().url().max(2048).optional(),
 }).strict();
 
-const app = createApi("/sources/v1");
+const app = createApi("/sources");
 
 // Hardcoded OAuth metadata for known providers. We do NOT rely on
 // source_providers.oauth_config being seeded — if a row is missing the
@@ -61,8 +61,8 @@ const CALLBACK_PATHS = [
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
-// Providers list (public-ish: providers seeded reference data)
-app.get("/providers", async (c) => {
+// Providers list (public-ish: seeded reference data)
+app.get("/v1/providers", async (c) => {
   const cached = await cache.get<unknown>(c, keys.providers());
   if (cached) return c.json({ providers: cached, cache: { hit: true } });
   const s = getServiceClient();
@@ -78,10 +78,10 @@ app.get("/providers", async (c) => {
   return c.json({ providers, cache: { hit: false } });
 });
 
-// All routes below require auth
-app.use("*", (await import("../_shared/auth.ts")).withAuth);
+// Authenticated API routes live under /v1/*; OAuth callback stays public.
+app.use("/v1/*", (await import("../_shared/auth.ts")).withAuth);
 
-app.get("/accounts", async (c) => {
+app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("source_accounts").select(`
@@ -107,7 +107,7 @@ app.get("/accounts", async (c) => {
   });
 });
 
-app.get("/:id/status", async (c) => {
+app.get("/v1/:id/status", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
@@ -132,7 +132,7 @@ app.get("/:id/status", async (c) => {
   });
 });
 
-app.post("/connect", async (c) => {
+app.post("/v1/connect", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "connect");
   const body = await parseBody(c, ConnectIn);
@@ -337,7 +337,7 @@ async function handleOAuthCallback(c: Context) {
 app.get("/callback", handleOAuthCallback);
 app.get("/v1/callback", handleOAuthCallback);
 
-app.post("/:id/sync", async (c) => {
+app.post("/v1/:id/sync", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
@@ -351,7 +351,7 @@ app.post("/:id/sync", async (c) => {
 
 // After client-side upload to the source_uploads storage bucket, scan the
 // folder for this account and enqueue an import job. Returns counts.
-app.post("/:id/import-uploaded", async (c) => {
+app.post("/v1/:id/import-uploaded", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
@@ -375,7 +375,7 @@ app.post("/:id/import-uploaded", async (c) => {
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
-app.delete("/:id", async (c) => {
+app.delete("/v1/:id", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "delete");
