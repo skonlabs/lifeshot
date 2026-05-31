@@ -20,18 +20,16 @@ app.get("/events", async (c) => {
   const { limit } = parseQuery(c, ListPage);
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("events")
-    .select("id, title, start_time, end_time, confidence, cover_asset_id")
+    .select("id, title, start_time, end_time, confidence")
     .order("start_time", { ascending: false }).limit(limit);
   if (error) throw new ApiError("internal", error.message);
   const events = data ?? [];
-  // Hydrate cover thumbnail: prefer cover_asset_id else first event_asset.
+  // Hydrate cover thumbnail from first asset in event_assets.
   const ids = events.map((e: any) => e.id);
   const coverMap: Record<string, string> = {};
-  for (const e of events) if (e.cover_asset_id) coverMap[e.id] = e.cover_asset_id;
-  const needCover = ids.filter((id: string) => !coverMap[id]);
-  if (needCover.length) {
+  if (ids.length) {
     const { data: ea } = await supa.from("event_assets")
-      .select("event_id, asset_id").in("event_id", needCover);
+      .select("event_id, asset_id").in("event_id", ids);
     for (const row of ea ?? []) if (!coverMap[row.event_id]) coverMap[row.event_id] = row.asset_id;
   }
   const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
@@ -203,7 +201,7 @@ app.post("/assets/bulk", async (c) => {
   }
   let affected = 0;
   if (body.action === "trash" || body.action === "restore") {
-    const next = body.action === "trash" ? "trashed" : "active";
+    const next = body.action === "trash" ? "soft_deleted" : "active";
     const { data, error } = await supa.from("assets")
       .update({ deleted_state: next })
       .in("id", body.asset_ids)
