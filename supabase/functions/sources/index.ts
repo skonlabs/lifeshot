@@ -25,7 +25,7 @@ const UpdateContainersIn = z.object({
 }).strict();
 
 const app = createApi("/sources");
-// Redeploy marker: ensures /v1/:id/containers route is published.
+// Redeploy marker v3: /v1/:id/containers + /v1/:id/folders alias published.
 
 // Hardcoded OAuth metadata for known providers. We do NOT rely on
 // source_providers.oauth_config being seeded — if a row is missing the
@@ -234,14 +234,33 @@ app.get("/v1/:id/containers", async (c) => {
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
   const { data: acc, error } = await supa.from("source_accounts")
-    .select("id, user_id, provider_kind")
+    .select("id, user_id, provider:source_providers(kind)")
     .eq("id", id)
     .maybeSingle();
   if (error) throw new ApiError("internal", error.message);
   if (!acc) throw new ApiError("not_found", "Source account not found");
 
   const svc = getServiceClient();
-  const containers = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const kind = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
+  const containers = await listSelectableContainers(kind, acc.id, acc.user_id);
+  const selected = await getSelectedContainers(svc, acc.id);
+  return c.json({ containers, selected });
+});
+
+// Alias kept for compatibility with older clients/builds.
+app.get("/v1/:id/folders", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc, error } = await supa.from("source_accounts")
+    .select("id, user_id, provider:source_providers(kind)")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+  const svc = getServiceClient();
+  const kind = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
+  const containers = await listSelectableContainers(kind, acc.id, acc.user_id);
   const selected = await getSelectedContainers(svc, acc.id);
   return c.json({ containers, selected });
 });
@@ -252,14 +271,15 @@ app.patch("/v1/:id/containers", async (c) => {
   const body = await parseBody(c, UpdateContainersIn);
   await enforceRateLimit(uid, "general");
   const { data: acc, error } = await supa.from("source_accounts")
-    .select("id, user_id, provider_kind, status")
+    .select("id, user_id, status, provider:source_providers(kind)")
     .eq("id", id)
     .maybeSingle();
   if (error) throw new ApiError("internal", error.message);
   if (!acc) throw new ApiError("not_found", "Source account not found");
 
   const svc = getServiceClient();
-  const allowed = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const kindP = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
+  const allowed = await listSelectableContainers(kindP, acc.id, acc.user_id);
   const allowedIds = new Set(allowed.map((item) => item.id));
   const normalized = body.containers
     .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
