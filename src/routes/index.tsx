@@ -103,68 +103,136 @@ function TopNav() {
 function Hero() {
   return (
     <section className="relative overflow-hidden">
-      <div className="surface-paper grain">
-        <div className="mx-auto grid max-w-7xl gap-10 px-6 py-20 lg:grid-cols-[1.15fr_1fr] lg:gap-14 lg:py-32">
-          <div>
-            <div className="text-archive-label">Vol. I · The Personal Memory Platform</div>
-            <h1 className="mt-5 font-serif-display text-[clamp(2.75rem,6vw,5.25rem)] leading-[0.98] text-[color:var(--ink)]">
-              A lifetime of memories,
-              <br />
-              <span className="not-italic font-display font-medium">finally in one place —</span>
-              <br />
-              <span>without moving a single file.</span>
-            </h1>
-            <p className="mt-7 max-w-xl text-base leading-relaxed text-[color:var(--umber)]">
-              Your memories live across phones, cloud drives, chat apps, old laptops, family
-              members, and paper archives. LifeShot is the first platform that <em>indexes them
-              where they are</em> — making your whole life searchable, organized, preserved,
-              and narratable. We never copy your files.
-            </p>
-            <div className="mt-9 flex flex-wrap items-center gap-3">
-              <Link to="/sign-up" className="inline-flex items-center gap-2 rounded-full bg-[color:var(--ink)] px-5 py-3 text-sm font-medium text-[color:var(--paper)] hover:opacity-90">
-                Start your archive <ArrowUpRight className="h-4 w-4" />
-              </Link>
-              <a href="#how" className="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--paper-2)] px-5 py-3 text-sm font-medium text-[color:var(--ink)] hover:bg-[color:var(--paper)]">
-                See how it works
-              </a>
+      <div className="surface-paper grain relative">
+        {/* Atmospheric backdrop */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-0">
+          <div
+            className="absolute -top-32 left-1/2 h-[720px] w-[720px] -translate-x-1/2 rounded-full opacity-60 blur-3xl"
+            style={{ background: "radial-gradient(closest-side, color-mix(in oklab, var(--clay) 55%, transparent), transparent)" }}
+          />
+          <div
+            className="absolute -bottom-40 -right-24 h-[520px] w-[520px] rounded-full opacity-40 blur-3xl"
+            style={{ background: "radial-gradient(closest-side, color-mix(in oklab, var(--gold) 50%, transparent), transparent)" }}
+          />
+          <svg aria-hidden className="absolute inset-x-0 top-0 h-full w-full opacity-[0.07]">
+            <defs>
+              <pattern id="hero-grid" width="56" height="56" patternUnits="userSpaceOnUse">
+                <path d="M56 0H0V56" fill="none" stroke="currentColor" strokeWidth="0.5" />
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#hero-grid)" className="text-[color:var(--umber)]" />
+          </svg>
+        </div>
+
+        <div className="relative mx-auto max-w-7xl px-6 pb-24 pt-24 lg:pb-32 lg:pt-32">
+          {/* Top meta row */}
+          <div className="flex items-center justify-between gap-4 text-[11px] uppercase tracking-[0.22em] text-[color:var(--umber)]">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--gold)]" />
+              Vol. I · The Personal Memory Platform
             </div>
-            <p className="mt-5 text-[11px] uppercase tracking-[0.2em] text-[color:var(--umber)]">
-              Private beta · End-to-end encrypted · Originals stay where they are
-            </p>
+            <div className="hidden md:block">Est. 2026 · Index-in-place</div>
           </div>
 
-          {/* Memory Ledger */}
-          <aside className="hairline relative rounded-lg border bg-[color:var(--paper)] p-6 shadow-[0_30px_60px_-30px_rgba(60,40,20,0.25)]">
-            <div className="flex items-center justify-between border-b border-[color:var(--border)] pb-3">
-              <span className="text-archive-label">memory ledger · today</span>
-              <span className="font-serif-display text-sm italic text-[color:var(--umber)]">— curated for you</span>
+          <div className="ink-rule mt-6" />
+
+          {/* Centerpiece headline */}
+          <div className="relative mt-10 grid grid-cols-12 items-end gap-y-10">
+            <div className="col-span-12 lg:col-span-9">
+              <h1 className="font-serif-display text-[clamp(3rem,9vw,8.5rem)] leading-[0.92] tracking-[-0.02em] text-[color:var(--ink)]">
+                <span className="block">A lifetime of</span>
+                <span className="relative block">
+                  <span className="italic">memories,</span>
+                  <svg aria-hidden viewBox="0 0 600 18" preserveAspectRatio="none" className="absolute -bottom-3 left-0 h-[10px] w-[58%] text-[color:var(--gold)]">
+                    <path d="M2 12 Q 150 2 300 8 T 598 6" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span className="mt-2 block font-display text-[clamp(1.5rem,3.2vw,2.75rem)] font-light not-italic leading-[1.1] tracking-[-0.01em] text-[color:var(--umber)]">
+                  finally in one place — <span className="text-[color:var(--ink)]">without moving a single file.</span>
+                </span>
+              </h1>
             </div>
-            <ul className="mt-4 space-y-4 text-sm">
-              {[
-                { icon: Smartphone, when: "1998 · Aug 14", what: "Grandparents' anniversary on the porch", where: "iPhone backup → indexed" },
-                { icon: Cloud, when: "2007 · Mar", what: "A roll of film from Lisbon, rediscovered", where: "Google Photos · 142 frames" },
-                { icon: MessageCircle, when: "2014 · Jul 03", what: '"Happy birthday Dad" — WhatsApp voice note', where: "Linked to Person: Marco" },
-                { icon: HardDrive, when: "2019 · Dec 24", what: "Christmas videos from the old hard drive", where: "External SSD · 11.4 GB" },
-                { icon: FileText, when: "2024 · Feb", what: "Lease, X-ray, and tax PDFs auto-filed", where: "Documents lens" },
-              ].map((row, i) => (
-                <li key={i} className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
-                    <row.icon className="h-3.5 w-3.5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] uppercase tracking-wider text-[color:var(--umber)]">{row.when}</div>
-                    <div className="truncate font-medium text-[color:var(--ink)]">{row.what}</div>
-                    <div className="truncate text-xs text-[color:var(--umber)]">{row.where}</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="ink-rule mt-5" />
-            <div className="mt-4 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-[color:var(--umber)]">
-              <span>247,318 memories indexed</span>
-              <span>9 sources · 0 copied</span>
+
+            {/* Vertical archive marker */}
+            <div className="hidden lg:col-span-3 lg:flex lg:flex-col lg:items-end lg:justify-end lg:gap-4">
+              <div className="flex items-center gap-3">
+                <div className="h-px w-12 bg-[color:var(--umber)]/40" />
+                <span className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--umber)]">since you<br/>were born</span>
+              </div>
+              <div className="font-serif-display text-6xl italic leading-none text-[color:var(--ink)]">∞</div>
             </div>
-          </aside>
+          </div>
+
+          {/* Sub copy + CTA row */}
+          <div className="mt-14 grid grid-cols-12 gap-8">
+            <div className="col-span-12 lg:col-span-7">
+              <p className="max-w-2xl text-lg leading-relaxed text-[color:var(--ink)]/80">
+                Your memories live across phones, cloud drives, chat apps, old laptops, family
+                members, and paper archives. LifeShot is the first platform that
+                <span className="font-serif-display italic"> indexes them where they are</span> —
+                making your whole life searchable, organized, preserved, and narratable.
+              </p>
+              <div className="mt-8 flex flex-wrap items-center gap-3">
+                <Link to="/sign-up" className="group inline-flex items-center gap-2 rounded-full bg-[color:var(--ink)] px-6 py-3.5 text-sm font-medium text-[color:var(--paper)] shadow-[0_18px_40px_-20px_rgba(60,40,20,0.6)] transition hover:opacity-90">
+                  Start your archive
+                  <ArrowUpRight className="h-4 w-4 transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                </Link>
+                <a href="#how" className="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--paper)]/70 px-6 py-3.5 text-sm font-medium text-[color:var(--ink)] backdrop-blur hover:bg-[color:var(--paper-2)]">
+                  See how it works
+                </a>
+              </div>
+              <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-[11px] uppercase tracking-[0.2em] text-[color:var(--umber)]">
+                <span className="inline-flex items-center gap-2"><Lock className="h-3 w-3" /> End-to-end encrypted</span>
+                <span className="inline-flex items-center gap-2"><Shield className="h-3 w-3" /> Originals never move</span>
+                <span className="inline-flex items-center gap-2"><Sparkles className="h-3 w-3" /> Opt-in AI</span>
+              </div>
+            </div>
+
+            {/* Counter card */}
+            <div className="col-span-12 lg:col-span-5">
+              <div className="hairline relative rounded-xl border bg-[color:var(--paper)]/80 p-5 backdrop-blur shadow-[0_30px_60px_-30px_rgba(60,40,20,0.25)]">
+                <div className="flex items-center justify-between border-b border-[color:var(--border)] pb-3">
+                  <span className="text-archive-label">live index · sample archive</span>
+                  <span className="font-serif-display text-sm italic text-[color:var(--umber)]">est. 1998</span>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+                  <div>
+                    <div className="font-serif-display text-3xl text-[color:var(--ink)]">247k</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--umber)]">memories</div>
+                  </div>
+                  <div className="border-x border-[color:var(--border)]">
+                    <div className="font-serif-display text-3xl text-[color:var(--ink)]">9</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--umber)]">sources</div>
+                  </div>
+                  <div>
+                    <div className="font-serif-display text-3xl text-[color:var(--ink)]">0</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--umber)]">copied</div>
+                  </div>
+                </div>
+                <div className="ink-rule my-4" />
+                <ul className="space-y-3 text-sm">
+                  {[
+                    { icon: Smartphone, when: "1998 · Aug 14", what: "Grandparents' anniversary, porch light", where: "iPhone backup" },
+                    { icon: Cloud, when: "2007 · Mar", what: "A roll of film from Lisbon", where: "Google Photos · 142 frames" },
+                    { icon: MessageCircle, when: "2014 · Jul 03", what: '"Happy birthday Dad" — voice note', where: "WhatsApp · Person: Marco" },
+                    { icon: HardDrive, when: "2019 · Dec 24", what: "Christmas videos, old hard drive", where: "External SSD · 11.4 GB" },
+                  ].map((row, i) => (
+                    <li key={i} className="group flex items-start gap-3">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)] transition group-hover:bg-[color:var(--ink)] group-hover:text-[color:var(--paper)]">
+                        <row.icon className="h-3.5 w-3.5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--umber)]">{row.when}</div>
+                        <div className="truncate font-medium text-[color:var(--ink)]">{row.what}</div>
+                        <div className="truncate text-xs text-[color:var(--umber)]">{row.where}</div>
+                      </div>
+                      <span className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--gold)] opacity-0 transition group-hover:opacity-100">indexed</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
