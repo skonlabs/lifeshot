@@ -45,6 +45,19 @@ const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars:
   },
 };
 
+const MANUAL_FOLDER_HINT: Record<string, string> = {
+  desktop_folder: "e.g. /Users/you/Pictures/2024",
+  external_drive: "e.g. /Volumes/MyDrive/Photos",
+  nas: "e.g. //nas.local/photos/family",
+  local_ios: "e.g. Camera Roll, Favorites",
+  local_android: "e.g. DCIM/Camera, Pictures/Screenshots",
+  export_import: "e.g. summer-2024.zip, vacation-folder",
+};
+
+function manualHintFor(kind: string) {
+  return MANUAL_FOLDER_HINT[kind] ?? "Folder name or path";
+}
+
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
 const PROVIDER_EXPLAINERS: Record<string, string> = {
