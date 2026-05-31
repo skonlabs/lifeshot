@@ -17,6 +17,45 @@ const ConnectIn = z.object({
 
 const app = createApi("/sources/v1");
 
+// Hardcoded OAuth metadata for known providers. We do NOT rely on
+// source_providers.oauth_config being seeded — if a row is missing the
+// config (older DB state, failed migration), the connect endpoint still
+// works as long as the matching edge secret is set.
+type OAuthMeta = {
+  authorize_url: string;
+  token_url: string;
+  scope: string;
+  extra?: Record<string, string>;
+  clientIdEnv: string;
+  clientSecretEnv: string;
+};
+const OAUTH_META: Record<string, OAuthMeta> = {
+  google_photos: {
+    authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+    token_url: "https://oauth2.googleapis.com/token",
+    scope: "https://www.googleapis.com/auth/photoslibrary.readonly",
+    extra: { access_type: "offline", prompt: "consent" },
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+  },
+  dropbox: {
+    authorize_url: "https://www.dropbox.com/oauth2/authorize",
+    token_url: "https://api.dropboxapi.com/oauth2/token",
+    scope: "files.metadata.read files.content.read account_info.read",
+    extra: { token_access_type: "offline" },
+    clientIdEnv: "DROPBOX_APP_KEY",
+    clientSecretEnv: "DROPBOX_APP_SECRET",
+  },
+  onedrive: {
+    authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    scope: "offline_access Files.Read User.Read",
+    extra: { response_mode: "query", prompt: "consent" },
+    clientIdEnv: "MICROSOFT_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+  },
+};
+
 // Providers list (public-ish: providers seeded reference data)
 app.get("/providers", async (c) => {
   const cached = await cache.get<unknown>(c, keys.providers());
@@ -107,35 +146,27 @@ app.post("/connect", async (c) => {
     state, user_id: uid, provider_id: body.provider_id, redirect_uri: body.redirect_uri ?? ENV.APP_REDIRECT_URL,
   });
 
-  const oauth = provider.oauth_config ?? {};
   let authorize_url: string | null = null;
   let session_token: string | null = null;
   let upload_target: { bucket: string; prefix: string } | null = null;
 
-  // Resolve OAuth client id from per-provider edge secret (never from DB).
-  const envClientId =
-    provider.kind === "google_photos" ? Deno.env.get("GOOGLE_CLIENT_ID")
-    : provider.kind === "dropbox"     ? Deno.env.get("DROPBOX_APP_KEY")
-    : provider.kind === "onedrive"    ? Deno.env.get("MICROSOFT_CLIENT_ID")
-    : undefined;
-
-  if (oauth.authorize_url && envClientId) {
-    const u = new URL(oauth.authorize_url);
+  const meta = OAUTH_META[provider.kind];
+  if (meta) {
+    const clientId = Deno.env.get(meta.clientIdEnv);
+    if (!clientId) {
+      throw new ApiError(
+        "failed_precondition",
+        `${provider.name} is not configured. Set ${meta.clientIdEnv} and ${meta.clientSecretEnv} in edge function secrets.`,
+      );
+    }
+    const u = new URL(meta.authorize_url);
     u.searchParams.set("state", state);
     u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/callback`);
-    u.searchParams.set("client_id", envClientId);
-    if (oauth.scope) u.searchParams.set("scope", oauth.scope);
-    if (oauth.access_type) u.searchParams.set("access_type", oauth.access_type);
-    if (oauth.prompt) u.searchParams.set("prompt", oauth.prompt);
+    u.searchParams.set("client_id", clientId);
     u.searchParams.set("response_type", "code");
-    // Microsoft requires response_mode=query for code flow on common endpoint
-    if (provider.kind === "onedrive") u.searchParams.set("response_mode", "query");
-    // Dropbox needs token_access_type=offline to get a refresh token
-    if (provider.kind === "dropbox") u.searchParams.set("token_access_type", "offline");
+    u.searchParams.set("scope", meta.scope);
+    for (const [k, v] of Object.entries(meta.extra ?? {})) u.searchParams.set(k, v);
     authorize_url = u.toString();
-  } else if (oauth.authorize_url && !envClientId) {
-    throw new ApiError("failed_precondition",
-      `${provider.name} is not configured. Ask the admin to set the OAuth client credentials.`);
   } else if (provider.kind === "export_import") {
     // Create the account up front so the upload UI can target it
     const { data: account, error: accErr } = await svc.from("source_accounts").insert({
