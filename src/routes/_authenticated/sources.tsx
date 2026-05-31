@@ -793,9 +793,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
   const s = status.data;
   const pct = s ? Math.min(100, Math.round((s.progress.indexed / Math.max(1, s.progress.discovered)) * 100)) : null;
   const running = s?.last_job?.status === "running" || s?.status === "syncing";
-  const k = a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
-  const otherCombined = k.audio + k.other;
   return (
     <li className="hairline rounded-md border bg-[color:var(--paper)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -806,12 +804,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
           <div className="min-w-0">
           <div className="font-medium text-[color:var(--ink)]">{provider?.name ?? a.display_label ?? a.provider_kind}</div>
           <div className="text-xs text-[color:var(--umber)]">
-            {folders.toLocaleString()} folder{folders === 1 ? "" : "s"} ·{" "}
-            {k.photo.toLocaleString()} photo{k.photo === 1 ? "" : "s"} ·{" "}
-            {k.video.toLocaleString()} video{k.video === 1 ? "" : "s"} ·{" "}
-            {k.document.toLocaleString()} doc{k.document === 1 ? "" : "s"}
-            {otherCombined > 0 ? ` · ${otherCombined.toLocaleString()} other` : ""}
-            {" · "}
+            {folders.toLocaleString()} folder{folders === 1 ? "" : "s"} selected ·{" "}
             <span className="font-medium text-[color:var(--ink)]">{a.asset_count.toLocaleString()} indexed</span>
             {" · "}
             <span className={running ? "text-emerald-700" : ""}>{a.status}</span>
