@@ -673,20 +673,7 @@ app.post("/v1/:id/sync", async (c) => {
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   emitEvent(c, "sources.sync_enqueued", { id });
-  // Kick the worker drain immediately so the user doesn't wait for the
-  // 10s cron tick. Fire-and-forget — failures fall back to cron.
-  try {
-    const workerUrl = ENV.SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/worker/drain";
-    const workerSecret = Deno.env.get("WORKER_SECRET") ?? "";
-    // deno-lint-ignore no-explicit-any
-    const globalAny = globalThis as any;
-    const kick = fetch(workerUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-worker-secret": workerSecret },
-      body: "{}",
-    }).catch(() => undefined);
-    if (globalAny.EdgeRuntime?.waitUntil) globalAny.EdgeRuntime.waitUntil(kick);
-  } catch { /* ignore */ }
+  kickWorker();
   return c.json({ job_id: job.id }, 202);
 });
 
