@@ -13,6 +13,7 @@ import { supabase } from "@/lib/supabase";
 
 const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
 const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
+const SANDBOX_PREVIEW_SUFFIX = ".lovableproject.com";
 
 type Provider = { id: string; kind: string; name: string; priority: string };
 type ExplainerState = { provider: Provider; reason: string } | null;
@@ -56,6 +57,23 @@ const PROVIDER_EXPLAINERS: Record<string, string> = {
   nas: "NAS volumes require the PMP desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
 };
 
+function isSandboxPreviewHost(hostname: string) {
+  return hostname.endsWith(SANDBOX_PREVIEW_SUFFIX);
+}
+
+function getStandalonePreviewConnectUrl(providerId: string) {
+  if (typeof window === "undefined") return null;
+  const { hostname } = window.location;
+  if (!isSandboxPreviewHost(hostname)) return null;
+  const projectId = hostname.replace(SANDBOX_PREVIEW_SUFFIX, "");
+  if (!projectId) return null;
+
+  const url = new URL(`https://id-preview--${projectId}.lovable.app/sources`);
+  url.searchParams.set("connect_provider", providerId);
+  url.searchParams.set("oauth_bridge", "1");
+  return url.toString();
+}
+
 function Sources() {
   useSourceProgress();
   const search = useSearch({ strict: false }) as Record<string, string | undefined>;
@@ -66,6 +84,7 @@ function Sources() {
   const disconnect = useDisconnectSource();
   const qc = useQueryClient();
   const popupRef = useRef<Window | null>(null);
+  const autoConnectRef = useRef<string | null>(null);
   const [explainer, setExplainer] = useState<ExplainerState>(null);
   const [upload, setUpload] = useState<UploadState>(null);
   const [consent, setConsent] = useState<ConsentState>(null);
@@ -115,6 +134,25 @@ function Sources() {
       toast.success("Source connected. Indexing started.");
     }
   }, [search?.error, search?.detail, search?.connected]);
+
+  useEffect(() => {
+    const providerId = search?.connect_provider;
+    if (!providerId || search?.oauth_bridge !== "1") return;
+    if (!providers.data?.providers?.length) return;
+    if (autoConnectRef.current === providerId) return;
+
+    const provider = providers.data.providers.find((item) => item.id === providerId);
+    if (!provider) return;
+
+    autoConnectRef.current = providerId;
+    const existing = connectedByKind.get(provider.kind);
+    if (existing) {
+      setManage({ provider, accountId: existing.id });
+      return;
+    }
+
+    setConsent({ provider });
+  }, [providers.data?.providers, search?.connect_provider, search?.oauth_bridge]);
 
   // Map provider_kind → first connected account so we can show a "Connected" badge
   // and switch the card from a Connect button to a Manage button.
