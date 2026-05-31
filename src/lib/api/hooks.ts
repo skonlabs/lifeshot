@@ -24,6 +24,7 @@ import type {
 } from "@core/api";
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
+import { listSourceFolders } from "./folders.functions";
 
 type SourceAccountsResponse = {
   accounts: Array<{
@@ -291,32 +292,43 @@ export function useSourceContainers(accountId: string | undefined) {
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
     queryFn: async ({ signal }) => {
-      // Try the edge function first — it can list real folders/albums by
-      // using the stored OAuth tokens (server-only). If the endpoint is
-      // unavailable, fall back to reading just the user's saved selections
-      // from Supabase so the UI still works with manual entry.
+      void signal;
+      // 1) Always read the user's saved selections directly from Supabase.
+      const { data: permRow, error: dbErr } = await supabase
+        .from("source_permissions")
+        .select("scopes")
+        .eq("source_account_id", accountId!)
+        .maybeSingle();
+      if (dbErr) throw dbErr;
+      const scopes = Array.isArray(permRow?.scopes) ? (permRow!.scopes as unknown[]) : [];
+      const entry = scopes.find(
+        (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
+      ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
+      const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
+
+      // 2) Fetch the real folder/album list from the provider via a
+      //    TanStack server function. The server function reads OAuth
+            //    tokens server-side and calls the provider's listing API.
+      let containers: Array<{ id: string; name?: string }> = [];
+      let reason: string | null = null;
       try {
-        return await api.sources<{
-          containers: Array<{ id: string; name?: string }>;
-          selected: Array<{ id: string; name?: string }>;
-        }>(`/${accountId}/containers`, { signal });
-      } catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "not_found") {
-          throw error;
+        const { data: sess } = await supabase.auth.getSession();
+        const bearer = sess.session?.access_token;
+        if (bearer) {
+          const res = await listSourceFolders({
+            data: { accountId: accountId!, bearer },
+          });
+          if (res.ok) containers = res.folders;
+          else reason = res.reason;
+        } else {
+          reason = "no_session";
         }
-        const { data, error: dbErr } = await supabase
-          .from("source_permissions")
-          .select("scopes")
-          .eq("source_account_id", accountId!)
-          .maybeSingle();
-        if (dbErr) throw dbErr;
-        const scopes = Array.isArray(data?.scopes) ? (data!.scopes as unknown[]) : [];
-        const entry = scopes.find(
-          (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
-        ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
-        const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
-        return { containers: [] as Array<{ id: string; name?: string }>, selected };
+      } catch (e) {
+        // Never throw — UI should still render with selected list and a hint.
+        reason = "internal_error";
+        console.warn("listSourceFolders failed", e);
       }
+      return { containers, selected, reason };
     },
     staleTime: 30_000,
     retry: false,
