@@ -86,17 +86,16 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const rawPath = target.path ?? target.id;
     if (!rawPath) return "";
     if (rawPath === "/") return "";
-    if (rawPath.startsWith("/")) return rawPath.toLowerCase();
 
     try {
       const meta = await call("/files/get_metadata", {
-        path: target.id,
+        path: rawPath,
         include_media_info: false,
       });
       const canonical = (meta?.path_lower ?? meta?.path_display ?? rawPath) as string;
-      return canonical === "/" ? "" : canonical.toLowerCase();
+      return canonical === "/" ? "" : canonical;
     } catch {
-      return rawPath.toLowerCase();
+      return rawPath;
     }
   }
 
@@ -272,8 +271,9 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       for (const target of selectedFolders) {
         const canonicalPath = await resolveFolderPath(target as { id: string; name?: string; path?: string });
         const rootPath = canonicalPath ? canonicalPath : "/";
-        if (rootPath && !seenFolders.has(rootPath)) {
-          seenFolders.add(rootPath);
+        const rootKey = rootPath.toLowerCase();
+        if (rootPath && !seenFolders.has(rootKey)) {
+          seenFolders.add(rootKey);
           stats.folder_count += 1;
         }
 
@@ -290,8 +290,9 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
           for (const entry of (json.entries ?? [])) {
             if (entry[".tag"] === "folder") {
               const folderId = (entry.path_lower ?? entry.path_display ?? `/${entry.name}`) as string;
-              if (!seenFolders.has(folderId)) {
-                seenFolders.add(folderId);
+              const folderKey = folderId.toLowerCase();
+              if (!seenFolders.has(folderKey)) {
+                seenFolders.add(folderKey);
                 stats.folder_count += 1;
               }
               continue;
