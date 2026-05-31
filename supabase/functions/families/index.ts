@@ -36,7 +36,11 @@ app.post("/accept/:token", async (c) => {
     family_id: inv.family_id, user_id: uid, role: inv.role ?? "member", status: "active",
   }, { onConflict: "family_id,user_id" });
   if (mErr) throw new ApiError("internal", mErr.message);
-  await supa.from("family_invitations").update({ accepted_at: new Date().toISOString(), accepted_by: uid }).eq("id", inv.id);
+  await supa.from("family_invitations").update({
+    accepted_at: new Date().toISOString(),
+    accepted_by: uid,
+    status: "accepted",
+  }).eq("id", inv.id);
   return c.json({ family_id: inv.family_id });
 });
 
