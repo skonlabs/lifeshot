@@ -8,6 +8,7 @@ import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
+import { getConnector } from "../_sources/registry.ts";
 
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
@@ -168,12 +169,28 @@ app.get("/v1/accounts", async (c) => {
       .select("source_account_id", { count: "exact", head: false }).in("source_account_id", ids);
     (cs ?? []).forEach((r: any) => { counts[r.source_account_id] = (counts[r.source_account_id] ?? 0) + 1; });
   }
+  const scopesByAccount = new Map<string, ContainerRefOut[]>();
+  if (ids.length) {
+    const { data: perms, error: permsError } = await supa.from("source_permissions")
+      .select("source_account_id, scopes")
+      .in("source_account_id", ids);
+    if (permsError) throw new ApiError("internal", permsError.message);
+    for (const row of (perms ?? []) as Array<{ source_account_id: string; scopes?: unknown }>) {
+      const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+      const selected = scopes.find((entry: unknown) => {
+        return !!entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers";
+      }) as { containers?: ContainerRefOut[] } | undefined;
+      scopesByAccount.set(row.source_account_id, Array.isArray(selected?.containers) ? selected!.containers : []);
+    }
+  }
   return c.json({
     accounts: (data ?? []).map((r: any) => ({
       id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
       display_label: r.display_label, status: r.status,
       connected_at: r.connected_at, disconnected_at: r.disconnected_at,
       asset_count: counts[r.id] ?? 0, last_sync_at: null,
+      selected_container_count: scopesByAccount.get(r.id)?.length ?? 0,
+      selected_containers: scopesByAccount.get(r.id) ?? [],
     })),
   });
 });
@@ -201,6 +218,83 @@ app.get("/v1/:id/status", async (c) => {
     last_error: lastErr?.message ?? null,
     progress: { discovered: count ?? 0, indexed: count ?? 0 },
   });
+});
+
+app.get("/v1/:id/containers", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc, error } = await supa.from("source_accounts")
+    .select("id, user_id, provider_kind")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+
+  const svc = getServiceClient();
+  const containers = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const selected = await getSelectedContainers(svc, acc.id);
+  return c.json({ containers, selected });
+});
+
+app.patch("/v1/:id/containers", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  const body = await parseBody(c, UpdateContainersIn);
+  await enforceRateLimit(uid, "general");
+  const { data: acc, error } = await supa.from("source_accounts")
+    .select("id, user_id, provider_kind, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+
+  const svc = getServiceClient();
+  const allowed = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const allowedIds = new Set(allowed.map((item) => item.id));
+  const normalized = body.containers
+    .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
+    .map((item) => ({ id: item.id, name: item.name }));
+
+  for (const item of normalized) {
+    if (allowed.length && !allowedIds.has(item.id)) {
+      throw new ApiError("validation_failed", `Unknown container: ${item.id}`);
+    }
+  }
+
+  await setSelectedContainers(svc, acc.id, normalized);
+
+  const { data: refs, error: refsError } = await svc.from("asset_source_refs")
+    .select("asset_id")
+    .eq("source_account_id", acc.id);
+  if (refsError) throw new ApiError("internal", refsError.message);
+
+  await svc.from("asset_source_refs").delete().eq("source_account_id", acc.id);
+  await svc.from("source_sync_cursors").delete().eq("source_account_id", acc.id);
+  await svc.from("source_accounts").update({ status: "active" }).eq("id", acc.id);
+
+  const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
+  if (assetIds.length) {
+    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs")
+      .select("asset_id")
+      .in("asset_id", assetIds);
+    if (remainingError) throw new ApiError("internal", remainingError.message);
+    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+    if (orphanedIds.length) {
+      const { error: orphanedError } = await svc.from("assets")
+        .update({ deleted_state: "soft_deleted" })
+        .in("id", orphanedIds);
+      if (orphanedError) throw new ApiError("internal", orphanedError.message);
+    }
+  }
+
+  const job = await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: acc.id, mode: "initial" },
+    { userId: acc.user_id, priority: 4 },
+  );
+
+  return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
 
 app.post("/v1/connect", async (c) => {
