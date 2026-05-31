@@ -1,4 +1,4 @@
-import { z } from "../_shared/deps.ts";
+import { z, type Context } from "../_shared/deps.ts";
 import { createApi, authed } from "../_shared/router.ts";
 import { parseBody, parseParams, parseQuery } from "../_shared/validation.ts";
 import { sendError, ApiError } from "../_shared/errors.ts";
@@ -201,7 +201,7 @@ app.post("/connect", async (c) => {
   return c.json(out);
 });
 
-async function handleOAuthCallback(c: Parameters<typeof app.get>[1] extends (arg: infer T) => unknown ? T : never) {
+async function handleOAuthCallback(c: Context) {
   // SERVICE ROLE: store tokens, create account. We intentionally bypass RLS here.
   const { code, state, error } = parseQuery(c, z.object({
     code: z.string().min(1).optional(),
