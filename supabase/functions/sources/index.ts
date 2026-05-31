@@ -25,6 +25,7 @@ const UpdateContainersIn = z.object({
 }).strict();
 
 const app = createApi("/sources");
+// Redeploy marker: ensures /v1/:id/containers route is published.
 
 // Hardcoded OAuth metadata for known providers. We do NOT rely on
 // source_providers.oauth_config being seeded — if a row is missing the

@@ -290,22 +290,33 @@ export function useSourceContainers(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
-    queryFn: async () => {
-      // Read selected containers straight from Supabase to avoid hitting
-      // edge function routes that may not be deployed. Available containers
-      // are left empty so the UI falls back to manual folder entry.
-      const { data, error } = await supabase
-        .from("source_permissions")
-        .select("scopes")
-        .eq("source_account_id", accountId!)
-        .maybeSingle();
-      if (error) throw error;
-      const scopes = Array.isArray(data?.scopes) ? (data!.scopes as unknown[]) : [];
-      const entry = scopes.find(
-        (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
-      ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
-      const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
-      return { containers: [] as Array<{ id: string; name?: string }>, selected };
+    queryFn: async ({ signal }) => {
+      // Try the edge function first — it can list real folders/albums by
+      // using the stored OAuth tokens (server-only). If the endpoint is
+      // unavailable, fall back to reading just the user's saved selections
+      // from Supabase so the UI still works with manual entry.
+      try {
+        return await api.sources<{
+          containers: Array<{ id: string; name?: string }>;
+          selected: Array<{ id: string; name?: string }>;
+        }>(`/${accountId}/containers`, { signal });
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "not_found") {
+          throw error;
+        }
+        const { data, error: dbErr } = await supabase
+          .from("source_permissions")
+          .select("scopes")
+          .eq("source_account_id", accountId!)
+          .maybeSingle();
+        if (dbErr) throw dbErr;
+        const scopes = Array.isArray(data?.scopes) ? (data!.scopes as unknown[]) : [];
+        const entry = scopes.find(
+          (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
+        ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
+        const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
+        return { containers: [] as Array<{ id: string; name?: string }>, selected };
+      }
     },
     staleTime: 30_000,
     retry: false,
