@@ -15,12 +15,13 @@ import { getConnector } from "../_sources/registry.ts";
 // We run the drain in-process via EdgeRuntime.waitUntil so we don't depend
 // on the WORKER_SECRET being shared between functions or on a second HTTP
 // hop succeeding.
-function kickWorker() {
+async function kickWorker() {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
   const run = (async () => {
     try {
-      const { drainUntilEmpty } = await import("../_pipeline/runner.ts");
+      const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
+      await drainOnce({ batch: 1 });
       // Drain up to ~25s of work; the platform allows background tasks to
       // continue after the response is returned.
       await drainUntilEmpty(25000, 16);
@@ -30,8 +31,9 @@ function kickWorker() {
   })();
   if (globalAny.EdgeRuntime?.waitUntil) {
     globalAny.EdgeRuntime.waitUntil(run);
+    return;
   }
-  // If waitUntil isn't available (local dev), just let the promise float.
+  await run;
 }
 
 const ConnectIn = z.object({
@@ -341,20 +343,20 @@ app.get("/v1/:id/status", async (c) => {
   const { data: acc } = await supa.from("source_accounts").select("*").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
-  const [{ data: lastJob }, { data: cursor }, { data: lastErr }, { data: activeJobs }] = await Promise.all([
-    supa.from("source_sync_jobs").select("*").eq("source_account_id", id).order("started_at", { ascending: false }).limit(1).maybeSingle(),
+  const [{ data: lastJob }, { data: cursor }, { data: lastErr }, { data: activeJob }] = await Promise.all([
+    supa.from("source_sync_jobs").select("*").eq("source_account_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supa.from("source_sync_cursors").select("*").eq("source_account_id", id).maybeSingle(),
     supa.from("source_errors").select("message, occurred_at").eq("source_account_id", id).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("job_queue")
       .select("id, status, job_name, payload, created_at, started_at, finished_at")
       .eq("job_name", "syncSource")
       .in("status", ["pending", "running"])
+      .contains("payload", { source_account_id: id })
       .order("created_at", { ascending: false })
-      .limit(50),
+      .limit(1)
+      .maybeSingle(),
   ]);
-  // Filter active jobs for this source account (payload is jsonb).
-  const myActive = (activeJobs ?? []).filter((j: any) => j?.payload?.source_account_id === id);
-  const running = myActive.find((j: any) => j.status === "running") ?? myActive[0] ?? null;
+  const running = activeJob ?? null;
   const { count } = await supa.from("asset_source_refs").select("id", { count: "exact", head: true }).eq("source_account_id", id);
   const indexed = count ?? 0;
   const effectiveJobStatus = running ? running.status : (lastJob?.status ?? null);
@@ -465,6 +467,8 @@ app.patch("/v1/:id/containers", async (c) => {
     { source_account_id: acc.id, mode: "initial" },
     { userId: acc.user_id, priority: 4 },
   );
+  const { error: accountStatusError } = await svc.from("source_accounts").update({ status: "pending" }).eq("id", acc.id);
+  if (accountStatusError) throw new ApiError("internal", accountStatusError.message);
   await svc.from("source_sync_jobs").upsert({
     id: job.id,
     source_account_id: acc.id,
@@ -472,7 +476,7 @@ app.patch("/v1/:id/containers", async (c) => {
     status: "pending",
     stats: { discovered: 0, indexed: 0 },
   }, { onConflict: "id" });
-  kickWorker();
+  await kickWorker();
   return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
 
@@ -689,6 +693,8 @@ app.post("/v1/:id/sync", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
+  const { error: syncStatusError } = await getServiceClient().from("source_accounts").update({ status: "pending" }).eq("id", id);
+  if (syncStatusError) throw new ApiError("internal", syncStatusError.message);
   await getServiceClient().from("source_sync_jobs").upsert({
     id: job.id,
     source_account_id: id,
@@ -697,7 +703,7 @@ app.post("/v1/:id/sync", async (c) => {
     stats: { discovered: 0, indexed: 0 },
   }, { onConflict: "id" });
   emitEvent(c, "sources.sync_enqueued", { id });
-  kickWorker();
+  await kickWorker();
   return c.json({ job_id: job.id }, 202);
 });
 
@@ -723,6 +729,8 @@ app.post("/v1/:id/import-uploaded", async (c) => {
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
     { userId: uid, priority: 4 });
+  const { error: uploadStatusError } = await svc.from("source_accounts").update({ status: "pending" }).eq("id", id);
+  if (uploadStatusError) throw new ApiError("internal", uploadStatusError.message);
   await svc.from("source_sync_jobs").upsert({
     id: job.id,
     source_account_id: id,
@@ -731,7 +739,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
     stats: { discovered: fileCount, indexed: 0 },
   }, { onConflict: "id" });
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
-  kickWorker();
+  await kickWorker();
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
