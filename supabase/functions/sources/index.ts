@@ -76,7 +76,13 @@ const CALLBACK_PATHS = [
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
-type ContainerRefOut = { id: string; name?: string; path?: string };
+type ContainerRefOut = {
+  id: string;
+  name?: string;
+  path?: string;
+  selectable?: boolean;
+  has_children?: boolean;
+};
 
 async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
   const { data, error } = await svc.from("source_permissions")
@@ -296,18 +302,9 @@ app.patch("/v1/:id/containers", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
 
   const svc = getServiceClient();
-  const kindP = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
-  const allowed = await listSelectableContainers(kindP, acc.id, acc.user_id);
-  const allowedIds = new Set(allowed.map((item) => item.id));
   const normalized = body.containers
     .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
     .map((item) => ({ id: item.id, name: item.name }));
-
-  for (const item of normalized) {
-    if (allowed.length && !allowedIds.has(item.id)) {
-      throw new ApiError("validation_failed", `Unknown container: ${item.id}`);
-    }
-  }
 
   await setSelectedContainers(svc, acc.id, normalized);
 
