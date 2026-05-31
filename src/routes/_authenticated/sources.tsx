@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
-const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos", "dropbox", "onedrive", "export_import"]);
+const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
 
 type Provider = { id: string; kind: string; name: string; priority: string };
 type ExplainerState = { provider: Provider; reason: string } | null;
