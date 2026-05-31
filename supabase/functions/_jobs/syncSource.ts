@@ -58,6 +58,16 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { source_account_id, mode = "incremental" } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental" };
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
+  const syncKind = mode === "initial" ? "initial" : "incremental";
+
+  await sb.from("source_sync_jobs").upsert({
+    id: ctx.jobId,
+    source_account_id,
+    kind: syncKind,
+    status: "running",
+    started_at: new Date().toISOString(),
+    finished_at: null,
+  }, { onConflict: "id" });
 
   const { data: acct, error } = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single();
@@ -167,6 +177,22 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   // Chain next page
+  const { count: indexedTotal } = await sb.from("asset_source_refs")
+    .select("id", { count: "exact", head: true })
+    .eq("source_account_id", source_account_id);
+
+  await sb.from("source_sync_jobs").update({
+    status: page.nextCursor ? "running" : "completed",
+    finished_at: page.nextCursor ? null : new Date().toISOString(),
+    stats: {
+      page_items: page.items.length,
+      deleted: deleted.length,
+      discovered: indexedTotal ?? upsertedAssetIds.length,
+      indexed: indexedTotal ?? upsertedAssetIds.length,
+      has_more: !!page.nextCursor,
+    },
+  }).eq("id", ctx.jobId);
+
   if (page.nextCursor) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
