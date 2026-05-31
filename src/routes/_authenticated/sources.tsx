@@ -227,7 +227,7 @@ function Sources() {
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{Array.from({length:6}).map((_,i)=><Skeleton key={i} className="h-20 rounded-md" />)}</div>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {providers.data?.providers?.map((p) => {
+            {providers.data?.providers?.slice().sort((a, b) => a.name.localeCompare(b.name)).map((p) => {
               const connected = connectedByKind.get(p.kind);
               return (
                 <button key={p.id} onClick={() => onProviderClick(p.id)}
