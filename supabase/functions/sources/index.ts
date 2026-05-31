@@ -544,38 +544,57 @@ app.delete("/v1/:id", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "delete");
-  // Ownership check via user client (RLS)
-  const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
+  // Ownership check via user client (RLS). maybeSingle() returns null when
+  // the account doesn't exist OR doesn't belong to this user.
+  const { data: acc, error: accLookupError } = await supa
+    .from("source_accounts").select("id, user_id").eq("id", id).maybeSingle();
+  if (accLookupError) throw new ApiError("internal", `lookup: ${accLookupError.message}`);
   if (!acc) throw new ApiError("not_found", "Source account not found");
+
   const svc = getServiceClient();
-  const { data: refs, error: refsError } = await svc.from("asset_source_refs").select("asset_id").eq("source_account_id", id);
-  if (refsError) throw new ApiError("internal", refsError.message);
-  const { error: accountError } = await svc.from("source_accounts").update({ status: "disconnected", disconnected_at: new Date().toISOString() }).eq("id", id);
-  if (accountError) throw new ApiError("internal", accountError.message);
-  const { error: tokenError } = await svc.from("source_tokens").delete().eq("source_account_id", id);
-  if (tokenError) throw new ApiError("internal", tokenError.message);
-  const { error: permsError } = await svc.from("source_permissions").delete().eq("source_account_id", id);
-  if (permsError) throw new ApiError("internal", permsError.message);
-  const { error: capsError } = await svc.from("source_capabilities").delete().eq("source_account_id", id);
-  if (capsError) throw new ApiError("internal", capsError.message);
-  const { error: cursorError } = await svc.from("source_sync_cursors").delete().eq("source_account_id", id);
-  if (cursorError) throw new ApiError("internal", cursorError.message);
-  const { error: refDeleteError } = await svc.from("asset_source_refs").delete().eq("source_account_id", id);
-  if (refDeleteError) throw new ApiError("internal", refDeleteError.message);
-  const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
+
+  // Collect asset ids referenced solely by this account so we can soft-delete
+  // orphans after cascade.
+  const { data: refs, error: refsError } = await svc
+    .from("asset_source_refs").select("asset_id").eq("source_account_id", id);
+  if (refsError) throw new ApiError("internal", `refs: ${refsError.message}`);
+
+  // Mark account disconnected first so concurrent jobs bail out.
+  const { error: accountError } = await svc.from("source_accounts")
+    .update({ status: "disconnected", disconnected_at: new Date().toISOString() })
+    .eq("id", id);
+  if (accountError) throw new ApiError("internal", `account: ${accountError.message}`);
+
+  // Cascade related rows. Tables may legitimately have zero rows — ignore
+  // not-found shapes and only throw on real failures.
+  for (const tbl of [
+    "source_tokens", "source_permissions", "source_capabilities",
+    "source_sync_cursors", "source_sync_jobs", "source_errors",
+    "asset_source_refs",
+  ] as const) {
+    const { error } = await svc.from(tbl).delete().eq("source_account_id", id);
+    if (error) throw new ApiError("internal", `${tbl}: ${error.message}`);
+  }
+
+  const assetIds = Array.from(new Set(
+    (refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean) as string[],
+  ));
   if (assetIds.length) {
-    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs").select("asset_id").in("asset_id", assetIds);
-    if (remainingError) throw new ApiError("internal", remainingError.message);
+    const { data: remaining, error: remainingError } = await svc
+      .from("asset_source_refs").select("asset_id").in("asset_id", assetIds);
+    if (remainingError) throw new ApiError("internal", `remaining: ${remainingError.message}`);
     const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
-    const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+    const orphanedIds = assetIds.filter((aid) => !remainingIds.has(aid));
     if (orphanedIds.length) {
-      const { error: assetError } = await svc.from("assets").update({ deleted_state: "soft_deleted" }).in("id", orphanedIds);
-      if (assetError) throw new ApiError("internal", assetError.message);
+      const { error: assetError } = await svc.from("assets")
+        .update({ deleted_state: "soft_deleted" }).in("id", orphanedIds);
+      if (assetError) throw new ApiError("internal", `assets: ${assetError.message}`);
     }
   }
+
   await cache.invalidateUser(uid);
   emitEvent(c, "sources.disconnected", { id });
-  return c.json({ status: "disconnecting", account_id: id }, 202);
+  return c.json({ status: "disconnected", account_id: id }, 200);
 });
 
 Deno.serve(app.fetch);
