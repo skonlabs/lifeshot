@@ -1,7 +1,7 @@
 /**
  * Typed API client for the LifeShot Supabase edge functions.
  * Each backend function (catalog, search, sources, …) is exposed at:
- *   {SUPABASE_URL}/functions/v1/<fn>/<fn>/v1/<path>
+ *   {SUPABASE_URL}/functions/v1/<fn>/v1/<path>
  * The wrapper injects the Supabase access token, adds Idempotency-Key on
  * unsafe methods, parses the typed error envelope, retries idempotent GETs.
  */
@@ -58,7 +58,7 @@ async function authHeader(): Promise<string | null> {
 }
 
 function buildUrl(fn: ApiFn, path: string, query?: RequestOpts["query"]): string {
-  const base = `${SUPABASE_URL}/functions/v1/${fn}/${fn}/v1`;
+  const base = `${SUPABASE_URL}/functions/v1/${fn}/v1`;
   const url = new URL(`${base}${path.startsWith("/") ? path : `/${path}`}`);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
