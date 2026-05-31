@@ -36,6 +36,7 @@ type SourceAccountsResponse = {
     last_sync_at: string | null;
     selected_container_count?: number;
     selected_containers?: Array<{ id: string; name?: string }>;
+    counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   }>;
 };
 

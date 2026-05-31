@@ -54,11 +54,11 @@ export const Route = createFileRoute("/_authenticated/sources")({ component: Sou
 const PROVIDER_EXPLAINERS: Record<string, string> = {
   icloud: "Apple does not provide a public iCloud Photos API. To bring iCloud memories in, export them from iCloud.com or Photos on Mac as a zip and use the Export/Import provider below.",
   amazon_photos: "Amazon Photos has no public API for third-party indexing. Use Amazon's export tool, then upload the zip via Export/Import.",
-  local_ios: "iOS Camera Roll requires the PMP iOS app for on-device indexing (PhotoKit). Coming soon \u2014 in the meantime export an album to a zip and upload it.",
-  local_android: "Android Gallery requires the PMP Android app (MediaStore). Coming soon \u2014 export to zip and upload as a workaround.",
-  desktop_folder: "Desktop folders require the PMP desktop agent. Coming soon \u2014 zip the folder and upload it.",
-  external_drive: "External drives require the PMP desktop agent. Coming soon \u2014 zip the contents and upload them.",
-  nas: "NAS volumes require the PMP desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
+  local_ios: "iOS Camera Roll requires the LifeShot iOS app for on-device indexing (PhotoKit). Coming soon \u2014 in the meantime export an album to a zip and upload it.",
+  local_android: "Android Gallery requires the LifeShot Android app (MediaStore). Coming soon \u2014 export to zip and upload as a workaround.",
+  desktop_folder: "Desktop folders require the LifeShot desktop agent. Coming soon \u2014 zip the folder and upload it.",
+  external_drive: "External drives require the LifeShot desktop agent. Coming soon \u2014 zip the contents and upload them.",
+  nas: "NAS volumes require the LifeShot desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
 };
 
 function Sources() {
@@ -130,7 +130,7 @@ function Sources() {
         const detail = data.detail ? `: ${decodeURIComponent(data.detail)}` : "";
         toast.error(`Connection failed (${data.error}${detail})`);
       } else {
-        toast.success("Source connected. Indexing started.");
+        toast.success("Source connected. Select folders to start indexing.");
         if (data.connected && data.provider) {
           const provider = providers.data?.providers?.find((item) => item.kind === data.provider);
           if (provider) {
@@ -153,7 +153,7 @@ function Sources() {
       const detail = search.detail ? `: ${decodeURIComponent(search.detail)}` : "";
       toast.error(`Connection failed (${search.error}${detail})`);
     } else if (search?.connected) {
-      toast.success("Source connected. Indexing started.");
+      toast.success("Source connected. Select folders to start indexing.");
       if (search.provider) {
         const provider = providers.data?.providers?.find((item) => item.kind === search.provider);
         if (provider) {
@@ -269,7 +269,7 @@ function Sources() {
         <span className="text-archive-label">sources</span>
         <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">Where your memories live</h1>
         <p className="mt-2 max-w-2xl text-sm text-[color:var(--umber)]">
-          PMP indexes — never stores. We keep a tiny reference and thumbnail; originals stay in the source you trust.
+          LifeShot indexes — never stores. We keep a tiny reference and thumbnail; originals stay in the source you trust.
         </p>
       </header>
       <section className="mb-10">
@@ -373,7 +373,7 @@ function ConsentDialog({ state, onClose, onConfirm, pending }: {
         <DialogHeader>
           <DialogTitle>Connect {state?.provider.name}</DialogTitle>
           <DialogDescription>
-            You'll be redirected to {state?.provider.name} to approve access. PMP only indexes — your originals stay where they are.
+            You'll be redirected to {state?.provider.name} to approve access. LifeShot only indexes — your originals stay where they are.
           </DialogDescription>
         </DialogHeader>
         {meta && (
@@ -387,7 +387,7 @@ function ConsentDialog({ state, onClose, onConfirm, pending }: {
           <input type="checkbox" className="mt-0.5" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
           <span>
             I agree to the <a href="/terms" className="underline">Terms of Use</a> and{" "}
-            <a href="/privacy" className="underline">Privacy Policy</a>, and authorize PMP to index this source on my behalf.
+            <a href="/privacy" className="underline">Privacy Policy</a>, and authorize LifeShot to index this source on my behalf.
           </span>
         </label>
         <DialogFooter>
@@ -753,7 +753,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
         <DialogHeader>
           <DialogTitle>Upload photos & videos</DialogTitle>
           <DialogDescription>
-            Drop a zip export or pick files directly. They upload to your private storage, then PMP indexes them \u2014 originals stay yours.
+            Drop a zip export or pick files directly. They upload to your private storage, then LifeShot indexes them \u2014 originals stay yours.
           </DialogDescription>
         </DialogHeader>
         <div className="hairline rounded-md border border-dashed bg-[color:var(--paper-2)] p-8 text-center">
@@ -780,7 +780,12 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
 }
 
 function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
-  a: { id: string; provider_kind: string; status: string; display_label: string | null; asset_count: number; last_sync_at: string | null };
+  a: {
+    id: string; provider_kind: string; status: string; display_label: string | null;
+    asset_count: number; last_sync_at: string | null;
+    selected_container_count?: number;
+    counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
+  };
   onSync: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
 }) {
@@ -788,6 +793,9 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
   const s = status.data;
   const pct = s ? Math.min(100, Math.round((s.progress.indexed / Math.max(1, s.progress.discovered)) * 100)) : null;
   const running = s?.last_job?.status === "running" || s?.status === "syncing";
+  const k = a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+  const folders = a.selected_container_count ?? 0;
+  const otherCombined = k.audio + k.other;
   return (
     <li className="hairline rounded-md border bg-[color:var(--paper)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -798,7 +806,15 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
           <div className="min-w-0">
           <div className="font-medium text-[color:var(--ink)]">{provider?.name ?? a.display_label ?? a.provider_kind}</div>
           <div className="text-xs text-[color:var(--umber)]">
-            {a.asset_count.toLocaleString()} indexed · <span className={running ? "text-emerald-700" : ""}>{a.status}</span>
+            {folders.toLocaleString()} folder{folders === 1 ? "" : "s"} ·{" "}
+            {k.photo.toLocaleString()} photo{k.photo === 1 ? "" : "s"} ·{" "}
+            {k.video.toLocaleString()} video{k.video === 1 ? "" : "s"} ·{" "}
+            {k.document.toLocaleString()} doc{k.document === 1 ? "" : "s"}
+            {otherCombined > 0 ? ` · ${otherCombined.toLocaleString()} other` : ""}
+            {" · "}
+            <span className="font-medium text-[color:var(--ink)]">{a.asset_count.toLocaleString()} indexed</span>
+            {" · "}
+            <span className={running ? "text-emerald-700" : ""}>{a.status}</span>
             {a.last_sync_at && ` · synced ${new Date(a.last_sync_at).toLocaleString()}`}
           </div>
           </div>

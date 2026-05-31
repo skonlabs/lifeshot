@@ -192,13 +192,25 @@ app.get("/v1/accounts", async (c) => {
     provider:source_providers(kind)
   `).order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
-  // Counts per account (separate aggregate)
+  // Per-account counts, broken out by media_type so the UI can show
+  // photos / videos / documents / other in addition to the total indexed.
   const ids = (data ?? []).map((r: any) => r.id);
   const counts: Record<string, number> = {};
+  const breakdown: Record<string, { photo: number; video: number; document: number; audio: number; other: number }> = {};
   if (ids.length) {
     const { data: cs } = await supa.from("asset_source_refs")
-      .select("source_account_id", { count: "exact", head: false }).in("source_account_id", ids);
-    (cs ?? []).forEach((r: any) => { counts[r.source_account_id] = (counts[r.source_account_id] ?? 0) + 1; });
+      .select("source_account_id, asset:assets(media_type)")
+      .in("source_account_id", ids);
+    for (const row of (cs ?? []) as Array<{ source_account_id: string; asset?: { media_type?: string } | null }>) {
+      counts[row.source_account_id] = (counts[row.source_account_id] ?? 0) + 1;
+      const bucket = breakdown[row.source_account_id] ??= { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const kind = row.asset?.media_type ?? "unknown";
+      if (kind === "photo" || kind === "live_photo" || kind === "animation") bucket.photo += 1;
+      else if (kind === "video") bucket.video += 1;
+      else if (kind === "document") bucket.document += 1;
+      else if (kind === "audio") bucket.audio += 1;
+      else bucket.other += 1;
+    }
   }
   const scopesByAccount = new Map<string, ContainerRefOut[]>();
   if (ids.length) {
@@ -222,6 +234,7 @@ app.get("/v1/accounts", async (c) => {
       asset_count: counts[r.id] ?? 0, last_sync_at: null,
       selected_container_count: scopesByAccount.get(r.id)?.length ?? 0,
       selected_containers: scopesByAccount.get(r.id) ?? [],
+      counts_by_kind: breakdown[r.id] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 },
     })),
   });
 });
@@ -536,9 +549,8 @@ async function handleOAuthCallback(c: Context) {
     source_account_id: account.id, capability: provider?.default_capabilities ?? {},
   });
 
-  await jobEnqueuer.enqueue("syncSource",
-    { source_account_id: account.id, mode: "initial" }, { userId: st.user_id, priority: 3 });
-
+  // Do NOT auto-enqueue sync here. User must first select folders to index;
+  // sync is queued when they save their folder scope (see /v1/:id/containers).
   callbackUrl.searchParams.set("connected", account.id);
   callbackUrl.searchParams.set("provider", provider.kind);
   return c.redirect(callbackUrl.toString());
