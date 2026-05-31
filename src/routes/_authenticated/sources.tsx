@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Check, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
@@ -172,7 +173,7 @@ function Sources() {
                   className="hairline group flex items-center justify-between gap-3 rounded-md border bg-[color:var(--paper)] p-4 text-left transition-colors hover:bg-[color:var(--paper-2)]">
                   <div className="flex min-w-0 items-center gap-3">
                     <div className={`grid h-10 w-10 place-items-center rounded-md ${connected ? "bg-emerald-50 text-emerald-700" : "bg-[color:var(--paper-2)] text-[color:var(--umber)] group-hover:text-[color:var(--ink)]"}`}>
-                      {connected ? <Check className="h-4 w-4" strokeWidth={2} /> : <Plug className="h-4 w-4" strokeWidth={1.5} />}
+                      {connected ? <Check className="h-4 w-4" strokeWidth={2} /> : <ProviderIcon kind={p.kind} className="h-5 w-5" />}
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 font-medium text-[color:var(--ink)]">
