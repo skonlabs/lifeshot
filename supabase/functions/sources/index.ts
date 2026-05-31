@@ -25,7 +25,7 @@ const UpdateContainersIn = z.object({
 }).strict();
 
 const app = createApi("/sources");
-// Redeploy marker v3: /v1/:id/containers + /v1/:id/folders alias published.
+// Redeploy marker v4: surface listAlbums errors via debug field.
 
 // Hardcoded OAuth metadata for known providers. We do NOT rely on
 // source_providers.oauth_config being seeded — if a row is missing the
@@ -137,7 +137,8 @@ async function listSelectableContainers(providerKind: string, sourceAccountId: s
     }, getServiceClient());
     const albums = await connector.listAlbums();
     return albums.map((album) => ({ id: album.id, name: album.name }));
-  } catch {
+  } catch (err) {
+    console.error("listSelectableContainers failed", providerKind, sourceAccountId, err);
     return [];
   }
 }
