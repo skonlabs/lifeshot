@@ -49,6 +49,15 @@ export interface AssetAlbumRef {
   has_children?: boolean;
 }
 
+export interface SourceSelectionStats {
+  folder_count: number;
+  photo: number;
+  video: number;
+  document: number;
+  audio: number;
+  other: number;
+}
+
 /** Normalized record emitted by every connector — no originals. */
 export interface AssetRecord {
   provider_asset_id: string;
@@ -102,6 +111,7 @@ export interface SourceConnector {
   getPreview(providerAssetId: string): Promise<{ bytes: Uint8Array; contentType: string } | { url: string }>;
   getOriginalAccessToken(providerAssetId: string): Promise<{ url: string; expiresAt: string } | null>;
   listAlbums(parentId?: string | null): Promise<AssetAlbumRef[]>;
+  countSelectionStats?(): Promise<SourceSelectionStats>;
   getDeltaChanges(cursor: string | null): Promise<DeltaResult>;
   disconnect(): Promise<void>;
   revoke(): Promise<void>;
