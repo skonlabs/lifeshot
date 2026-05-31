@@ -20,10 +20,45 @@ app.get("/events", async (c) => {
   const { limit } = parseQuery(c, ListPage);
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("events")
-    .select("id, title, start_time, end_time, confidence")
+    .select("id, title, start_time, end_time, confidence, cover_asset_id")
     .order("start_time", { ascending: false }).limit(limit);
   if (error) throw new ApiError("internal", error.message);
-  return c.json({ events: data ?? [] });
+  const events = data ?? [];
+  // Hydrate cover thumbnail: prefer cover_asset_id else first event_asset.
+  const ids = events.map((e: any) => e.id);
+  const coverMap: Record<string, string> = {};
+  for (const e of events) if (e.cover_asset_id) coverMap[e.id] = e.cover_asset_id;
+  const needCover = ids.filter((id: string) => !coverMap[id]);
+  if (needCover.length) {
+    const { data: ea } = await supa.from("event_assets")
+      .select("event_id, asset_id").in("event_id", needCover);
+    for (const row of ea ?? []) if (!coverMap[row.event_id]) coverMap[row.event_id] = row.asset_id;
+  }
+  const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
+  const covers: Record<string, any> = {};
+  if (coverAssetIds.length) {
+    const { data: cs } = await supa.from("assets")
+      .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type")
+      .in("id", coverAssetIds);
+    for (const c2 of cs ?? []) covers[c2.id] = c2;
+  }
+  const { resolveThumbUrl } = await import("../_shared/signed-url.ts");
+  const enriched = await Promise.all(events.map(async (e: any) => {
+    const cid = coverMap[e.id];
+    const cov = cid && covers[cid] ? covers[cid] : null;
+    return {
+      ...e,
+      asset_count: (e as any).asset_count ?? null,
+      cover: cov ? {
+        asset_id: cid,
+        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid, cov.thumbnail_cache_key ?? null),
+        blurhash: cov.blurhash ?? null,
+        dominant_color: cov.dominant_color ?? null,
+        media_type: cov.media_type ?? "photo",
+      } : null,
+    };
+  }));
+  return c.json({ events: enriched });
 });
 
 app.get("/events/:id", async (c) => {
@@ -151,6 +186,45 @@ app.post("/corrections", async (c) => {
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
+});
+
+const BulkAssetsIn = z.object({
+  asset_ids: z.array(z.string().uuid()).min(1).max(500),
+  action: z.enum(["trash", "restore", "tag"]),
+  tag: z.string().min(1).max(60).optional(),
+}).strict();
+
+app.post("/assets/bulk", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  await enforceRateLimit(uid, "general");
+  const body = await parseBody(c, BulkAssetsIn);
+  if (body.action === "tag" && !body.tag) {
+    throw new ApiError("validation", "tag is required for action=tag");
+  }
+  let affected = 0;
+  if (body.action === "trash" || body.action === "restore") {
+    const next = body.action === "trash" ? "trashed" : "active";
+    const { data, error } = await supa.from("assets")
+      .update({ deleted_state: next })
+      .in("id", body.asset_ids)
+      .select("id");
+    if (error) throw new ApiError("internal", error.message);
+    affected = data?.length ?? 0;
+  } else if (body.action === "tag") {
+    const rows = body.asset_ids.map((asset_id) => ({
+      user_id: uid, target_type: "asset", target_id: asset_id,
+      correction: { add_tag: body.tag },
+    }));
+    const { error } = await supa.from("user_corrections").insert(rows);
+    if (error) throw new ApiError("internal", error.message);
+    affected = rows.length;
+  }
+  await supa.from("audit_logs").insert({
+    user_id: uid, action: `asset.bulk_${body.action}`, target_type: "asset",
+    target_id: body.asset_ids[0], meta: { count: body.asset_ids.length, tag: body.tag ?? null },
+  });
+  emitEvent(c, "organization.bulk_action", { action: body.action, count: body.asset_ids.length });
+  return c.json({ affected, action: body.action });
 });
 
 Deno.serve(app.fetch);
