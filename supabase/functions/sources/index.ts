@@ -121,7 +121,14 @@ async function setSelectedContainers(svc: ReturnType<typeof getServiceClient>, s
 }
 
 async function listSelectableContainers(providerKind: string, sourceAccountId: string, userId: string): Promise<ContainerRefOut[]> {
-  if (providerKind === "google_photos") {
+  // For providers with a server-side listing API, fetch the available
+  // albums/folders. For on-device or upload-style providers the server
+  // can't browse the user's filesystem — the UI lets the user add folder
+  // paths/names manually (free-form), which still get persisted as the
+  // account's selected containers.
+  const API_LISTABLE = new Set(["google_photos", "dropbox", "onedrive"]);
+  if (!API_LISTABLE.has(providerKind)) return [];
+  try {
     const connector = getConnector(providerKind as any, {
       source_account_id: sourceAccountId,
       user_id: userId,
@@ -129,8 +136,9 @@ async function listSelectableContainers(providerKind: string, sourceAccountId: s
     }, getServiceClient());
     const albums = await connector.listAlbums();
     return albums.map((album) => ({ id: album.id, name: album.name }));
+  } catch {
+    return [];
   }
-  return [];
 }
 
 // Providers list (public-ish: seeded reference data)

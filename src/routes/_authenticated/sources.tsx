@@ -45,6 +45,19 @@ const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars:
   },
 };
 
+const MANUAL_FOLDER_HINT: Record<string, string> = {
+  desktop_folder: "e.g. /Users/you/Pictures/2024",
+  external_drive: "e.g. /Volumes/MyDrive/Photos",
+  nas: "e.g. //nas.local/photos/family",
+  local_ios: "e.g. Camera Roll, Favorites",
+  local_android: "e.g. DCIM/Camera, Pictures/Screenshots",
+  export_import: "e.g. summer-2024.zip, vacation-folder",
+};
+
+function manualHintFor(kind: string) {
+  return MANUAL_FOLDER_HINT[kind] ?? "Folder name or path";
+}
+
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
 const PROVIDER_EXPLAINERS: Record<string, string> = {
@@ -349,10 +362,12 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const selected = containers.data?.selected ?? [];
   const allContainers = containers.data?.containers ?? [];
   const [draft, setDraft] = useState<Record<string, SourceContainer>>({});
+  const [manualInput, setManualInput] = useState("");
 
   useEffect(() => {
     if (!state) {
       setDraft({});
+      setManualInput("");
       return;
     }
     const next = Object.fromEntries(selected.map((item) => [item.id, item]));
@@ -370,6 +385,21 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
     });
   };
 
+  const addManual = () => {
+    const value = manualInput.trim();
+    if (!value) return;
+    const id = value;
+    setDraft((prev) => prev[id] ? prev : { ...prev, [id]: { id, name: value } });
+    setManualInput("");
+  };
+
+  // Union of API-discovered + previously-selected entries so manual ones
+  // still render as removable rows.
+  const discoveredIds = new Set(allContainers.map((c) => c.id));
+  const extraSelected = Object.values(draft).filter((c) => !discoveredIds.has(c.id));
+  const rows: SourceContainer[] = [...allContainers, ...extraSelected];
+  const supportsManual = !containers.isLoading && allContainers.length === 0;
+
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -380,39 +410,60 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
-          {!!allContainers.length && (
-            <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3">
-              <div className="mb-2 text-sm font-medium text-[color:var(--ink)]">Folders to index</div>
+          <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3">
+            <div className="mb-2 text-sm font-medium text-[color:var(--ink)]">Folders to index</div>
+            {containers.isLoading ? (
+              <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
+            ) : rows.length ? (
               <div className="max-h-52 space-y-2 overflow-auto pr-1">
-                {allContainers.map((item) => (
+                {rows.map((item) => (
                   <label key={item.id} className="flex items-start gap-2 text-sm text-[color:var(--ink)]">
                     <input
                       type="checkbox"
                       checked={!!draft[item.id]}
                       onChange={() => toggleContainer(item)}
                     />
-                    <span>{item.name ?? item.id}</span>
+                    <span className="break-all">{item.name ?? item.id}</span>
                   </label>
                 ))}
               </div>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <p className="text-xs text-[color:var(--umber)]">Only selected folders/albums will be used for indexing and future syncs.</p>
-                <Button
-                  size="sm"
-                  disabled={updateContainers.isPending || containers.isLoading}
-                  onClick={() => state && updateContainers.mutate({
-                    accountId: state.accountId,
-                    containers: Object.values(draft),
-                  }, {
-                    onSuccess: () => toast.success("Folder scope updated. Re-sync queued."),
-                    onError: (e) => toast.error((e as Error).message || "Failed to save folder scope."),
-                  })}
-                >
-                  {updateContainers.isPending ? "Saving…" : "Save scope"}
-                </Button>
+            ) : (
+              <p className="text-xs text-[color:var(--umber)]">
+                No folders selected yet. Add one below — only those folders will be indexed and synced.
+              </p>
+            )}
+            {supportsManual && (
+              <div className="mt-3 flex gap-2">
+                <input
+                  type="text"
+                  value={manualInput}
+                  onChange={(e) => setManualInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }}
+                  placeholder={state ? manualHintFor(state.provider.kind) : "Folder path or name"}
+                  className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--paper)] px-2 py-1.5 text-sm"
+                />
+                <Button size="sm" variant="outline" onClick={addManual} disabled={!manualInput.trim()}>Add</Button>
               </div>
+            )}
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-[color:var(--umber)]">
+                Only checked folders are used for indexing and future syncs. Selections are remembered per source.
+              </p>
+              <Button
+                size="sm"
+                disabled={updateContainers.isPending || containers.isLoading}
+                onClick={() => state && updateContainers.mutate({
+                  accountId: state.accountId,
+                  containers: Object.values(draft),
+                }, {
+                  onSuccess: () => toast.success("Folder scope updated. Re-sync queued."),
+                  onError: (e) => toast.error((e as Error).message || "Failed to save folder scope."),
+                })}
+              >
+                {updateContainers.isPending ? "Saving…" : "Save scope"}
+              </Button>
             </div>
-          )}
+          </div>
           <Button variant="outline" onClick={() => state && onSync(state.accountId)}>
             <RefreshCcw className="mr-2 h-4 w-4" /> Sync now
           </Button>
@@ -438,7 +489,7 @@ function ConfigMissingDialog({ state, onClose }: { state: ConfigMissingState; on
         <DialogHeader>
           <DialogTitle>{state?.provider.name} isn't configured yet</DialogTitle>
           <DialogDescription>
-            OAuth credentials for {state?.provider.name} haven't been added. An admin needs to set the following secrets in Lovable Cloud → Edge Function secrets:
+            OAuth credentials for {state?.provider.name} haven't been added. An admin needs to set the following secrets in the Supabase project (Edge Functions → Secrets):
           </DialogDescription>
         </DialogHeader>
         <ul className="my-2 space-y-1 rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] p-3 font-mono text-xs">

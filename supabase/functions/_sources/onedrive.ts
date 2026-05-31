@@ -188,7 +188,17 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       const url = item["@microsoft.graph.downloadUrl"] as string | undefined;
       return url ? { url, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() } : null;
     },
-    listAlbums: async () => [],
+    listAlbums: async () => {
+      try {
+        const json = await call(`${API}/me/drive/root/children?$top=200&$select=id,name,folder`);
+        const folders = (json.value ?? [])
+          .filter((item: any) => !!item.folder)
+          .map((item: any) => ({ id: item.id as string, name: item.name as string }));
+        return [{ id: "root", name: "All of OneDrive (root)" }, ...folders];
+      } catch {
+        return [{ id: "root", name: "All of OneDrive (root)" }];
+      }
+    },
     disconnect: async () => {
       await supabase.from("source_accounts").update({ status: "disconnected" }).eq("id", ctx.source_account_id);
     },
