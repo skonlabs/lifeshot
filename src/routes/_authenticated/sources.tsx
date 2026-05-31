@@ -134,6 +134,7 @@ function Sources() {
           const provider = providers.data?.providers?.find((item) => item.kind === data.provider);
           if (provider) {
             setManage({ provider, accountId: data.connected });
+            void qc.invalidateQueries({ queryKey: ["source-containers", data.connected] });
           }
         }
       }
@@ -156,6 +157,7 @@ function Sources() {
         const provider = providers.data?.providers?.find((item) => item.kind === search.provider);
         if (provider) {
           setManage({ provider, accountId: search.connected });
+          void qc.invalidateQueries({ queryKey: ["source-containers", search.connected] });
         }
       }
     }
@@ -229,7 +231,13 @@ function Sources() {
         redirect_uri: redirectUrl.toString(),
       });
       if (out.authorize_url) {
-        popup.location.href = out.authorize_url;
+        const authorizeUrl = new URL(out.authorize_url);
+        if (["dropbox", "google_photos", "onedrive"].includes(provider.kind)) {
+          authorizeUrl.searchParams.set("prompt", "consent");
+          authorizeUrl.searchParams.set("force_reapprove", "true");
+          authorizeUrl.searchParams.set("force_reauthentication", "true");
+        }
+        popup.location.href = authorizeUrl.toString();
         return;
       }
       popup?.close();
