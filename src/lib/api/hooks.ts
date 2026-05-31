@@ -290,18 +290,22 @@ export function useSourceContainers(accountId: string | undefined) {
   return useQuery({
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
-    queryFn: async ({ signal }) => {
-      try {
-        return await api.sources<{
-          containers: Array<{ id: string; name?: string }>;
-          selected: Array<{ id: string; name?: string }>;
-        }>(`/${accountId}/containers`, { signal });
-      } catch (error) {
-        if (error instanceof ApiError && error.code === "not_found") {
-          return { containers: [], selected: [] };
-        }
-        throw error;
-      }
+    queryFn: async () => {
+      // Read selected containers straight from Supabase to avoid hitting
+      // edge function routes that may not be deployed. Available containers
+      // are left empty so the UI falls back to manual folder entry.
+      const { data, error } = await supabase
+        .from("source_permissions")
+        .select("scopes")
+        .eq("source_account_id", accountId!)
+        .maybeSingle();
+      if (error) throw error;
+      const scopes = Array.isArray(data?.scopes) ? (data!.scopes as unknown[]) : [];
+      const entry = scopes.find(
+        (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
+      ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
+      const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
+      return { containers: [] as Array<{ id: string; name?: string }>, selected };
     },
     staleTime: 30_000,
     retry: false,
@@ -311,11 +315,47 @@ export function useSourceContainers(accountId: string | undefined) {
 export function useUpdateSourceContainers() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ accountId, containers }: { accountId: string; containers: Array<{ id: string; name?: string }> }) =>
-      api.sources<{ updated: boolean; selected_count: number; job_id: string | null }>(`/${accountId}/containers`, {
-        method: "PATCH",
-        body: { containers },
-      }),
+    mutationFn: async ({
+      accountId,
+      containers,
+    }: {
+      accountId: string;
+      containers: Array<{ id: string; name?: string }>;
+    }) => {
+      const normalized = containers
+        .filter((c, i, arr) => arr.findIndex((o) => o.id === c.id) === i)
+        .map((c) => ({ id: c.id, name: c.name }));
+      const { data: existing, error: readErr } = await supabase
+        .from("source_permissions")
+        .select("id, scopes")
+        .eq("source_account_id", accountId)
+        .maybeSingle();
+      if (readErr) throw readErr;
+      const prior = Array.isArray(existing?.scopes) ? (existing!.scopes as unknown[]) : [];
+      const nextScopes = prior.filter(
+        (s) => !(s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers"),
+      );
+      if (normalized.length) {
+        nextScopes.push({ type: "selected_containers", containers: normalized });
+      }
+      if (existing?.id) {
+        const { error: updErr } = await supabase
+          .from("source_permissions")
+          .update({ scopes: nextScopes })
+          .eq("id", existing.id);
+        if (updErr) throw updErr;
+      } else {
+        const { error: insErr } = await supabase.from("source_permissions").insert({
+          source_account_id: accountId,
+          can_cache_thumbnail: false,
+          can_cache_preview: false,
+          ai_allowed: false,
+          scopes: nextScopes,
+        });
+        if (insErr) throw insErr;
+      }
+      return { updated: true, selected_count: normalized.length, job_id: null };
+    },
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
       qc.invalidateQueries({ queryKey: ["source-status", vars.accountId] });
