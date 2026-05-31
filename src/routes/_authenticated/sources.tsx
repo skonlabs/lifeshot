@@ -290,9 +290,20 @@ function Sources() {
         ) : accounts.data?.accounts?.length ? (
           <ul className="space-y-2">
             {accounts.data.accounts.map((a) => (
-              <SourceRow key={a.id} a={a} provider={providers.data?.providers?.find(p => p.kind === a.provider_kind)} onSync={() => sync.mutate(a.id)} onDisconnect={() => {
-                requestDisconnect(a.id, providers.data?.providers?.find(p => p.kind === a.provider_kind)?.name ?? a.display_label ?? a.provider_kind);
-              }} />
+              <SourceRow
+                key={a.id}
+                a={a}
+                provider={providers.data?.providers?.find(p => p.kind === a.provider_kind)}
+                onSync={() => sync.mutate(a.id)}
+                onSelectFolders={() => {
+                  const provider = providers.data?.providers?.find(p => p.kind === a.provider_kind);
+                  if (!provider) return;
+                  setManage({ provider, accountId: a.id });
+                }}
+                onDisconnect={() => {
+                  requestDisconnect(a.id, providers.data?.providers?.find(p => p.kind === a.provider_kind)?.name ?? a.display_label ?? a.provider_kind);
+                }}
+              />
             ))}
           </ul>
         ) : (
