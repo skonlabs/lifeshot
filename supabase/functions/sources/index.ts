@@ -8,10 +8,20 @@ import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
+import { getConnector } from "../_sources/registry.ts";
 
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
   redirect_uri: z.string().url().max(2048).optional(),
+}).strict();
+
+const ContainerRef = z.object({
+  id: z.string().min(1).max(512),
+  name: z.string().min(1).max(512).optional(),
+}).strict();
+
+const UpdateContainersIn = z.object({
+  containers: z.array(ContainerRef).max(200),
 }).strict();
 
 const app = createApi("/sources");
@@ -61,6 +71,68 @@ const CALLBACK_PATHS = [
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
+type ContainerRefOut = { id: string; name?: string };
+
+async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
+  const { data, error } = await svc.from("source_permissions")
+    .select("scopes")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  const scopes = Array.isArray(data?.scopes) ? data.scopes : [];
+  const selected = scopes.find((entry: unknown) => {
+    return !!entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers";
+  }) as { containers?: ContainerRefOut[] } | undefined;
+  return Array.isArray(selected?.containers)
+    ? selected!.containers.filter((item) => item && typeof item.id === "string")
+    : [];
+}
+
+async function setSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string, containers: ContainerRefOut[]) {
+  const { data, error } = await svc.from("source_permissions")
+    .select("id, scopes")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+
+  const nextScopes = (Array.isArray(data?.scopes) ? data.scopes : [])
+    .filter((entry: unknown) => !(entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers"));
+
+  if (containers.length) {
+    nextScopes.push({ type: "selected_containers", containers });
+  }
+
+  if (data?.id) {
+    const { error: updateError } = await svc.from("source_permissions")
+      .update({ scopes: nextScopes })
+      .eq("id", data.id);
+    if (updateError) throw new ApiError("internal", updateError.message);
+    return;
+  }
+
+  const { error: insertError } = await svc.from("source_permissions").insert({
+    source_account_id: sourceAccountId,
+    can_cache_thumbnail: false,
+    can_cache_preview: false,
+    ai_allowed: false,
+    scopes: nextScopes,
+  });
+  if (insertError) throw new ApiError("internal", insertError.message);
+}
+
+async function listSelectableContainers(providerKind: string, sourceAccountId: string, userId: string): Promise<ContainerRefOut[]> {
+  if (providerKind === "google_photos") {
+    const connector = getConnector(providerKind as any, {
+      source_account_id: sourceAccountId,
+      user_id: userId,
+      provider_kind: providerKind as any,
+    }, getServiceClient());
+    const albums = await connector.listAlbums();
+    return albums.map((album) => ({ id: album.id, name: album.name }));
+  }
+  return [];
+}
+
 // Providers list (public-ish: seeded reference data)
 app.get("/v1/providers", async (c) => {
   const cached = await cache.get<unknown>(c, keys.providers());
@@ -97,12 +169,28 @@ app.get("/v1/accounts", async (c) => {
       .select("source_account_id", { count: "exact", head: false }).in("source_account_id", ids);
     (cs ?? []).forEach((r: any) => { counts[r.source_account_id] = (counts[r.source_account_id] ?? 0) + 1; });
   }
+  const scopesByAccount = new Map<string, ContainerRefOut[]>();
+  if (ids.length) {
+    const { data: perms, error: permsError } = await supa.from("source_permissions")
+      .select("source_account_id, scopes")
+      .in("source_account_id", ids);
+    if (permsError) throw new ApiError("internal", permsError.message);
+    for (const row of (perms ?? []) as Array<{ source_account_id: string; scopes?: unknown }>) {
+      const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+      const selected = scopes.find((entry: unknown) => {
+        return !!entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers";
+      }) as { containers?: ContainerRefOut[] } | undefined;
+      scopesByAccount.set(row.source_account_id, Array.isArray(selected?.containers) ? selected!.containers : []);
+    }
+  }
   return c.json({
     accounts: (data ?? []).map((r: any) => ({
       id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
       display_label: r.display_label, status: r.status,
       connected_at: r.connected_at, disconnected_at: r.disconnected_at,
       asset_count: counts[r.id] ?? 0, last_sync_at: null,
+      selected_container_count: scopesByAccount.get(r.id)?.length ?? 0,
+      selected_containers: scopesByAccount.get(r.id) ?? [],
     })),
   });
 });
@@ -130,6 +218,83 @@ app.get("/v1/:id/status", async (c) => {
     last_error: lastErr?.message ?? null,
     progress: { discovered: count ?? 0, indexed: count ?? 0 },
   });
+});
+
+app.get("/v1/:id/containers", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc, error } = await supa.from("source_accounts")
+    .select("id, user_id, provider_kind")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+
+  const svc = getServiceClient();
+  const containers = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const selected = await getSelectedContainers(svc, acc.id);
+  return c.json({ containers, selected });
+});
+
+app.patch("/v1/:id/containers", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  const body = await parseBody(c, UpdateContainersIn);
+  await enforceRateLimit(uid, "general");
+  const { data: acc, error } = await supa.from("source_accounts")
+    .select("id, user_id, provider_kind, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new ApiError("internal", error.message);
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+
+  const svc = getServiceClient();
+  const allowed = await listSelectableContainers(acc.provider_kind, acc.id, acc.user_id);
+  const allowedIds = new Set(allowed.map((item) => item.id));
+  const normalized = body.containers
+    .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
+    .map((item) => ({ id: item.id, name: item.name }));
+
+  for (const item of normalized) {
+    if (allowed.length && !allowedIds.has(item.id)) {
+      throw new ApiError("validation_failed", `Unknown container: ${item.id}`);
+    }
+  }
+
+  await setSelectedContainers(svc, acc.id, normalized);
+
+  const { data: refs, error: refsError } = await svc.from("asset_source_refs")
+    .select("asset_id")
+    .eq("source_account_id", acc.id);
+  if (refsError) throw new ApiError("internal", refsError.message);
+
+  await svc.from("asset_source_refs").delete().eq("source_account_id", acc.id);
+  await svc.from("source_sync_cursors").delete().eq("source_account_id", acc.id);
+  await svc.from("source_accounts").update({ status: "active" }).eq("id", acc.id);
+
+  const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
+  if (assetIds.length) {
+    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs")
+      .select("asset_id")
+      .in("asset_id", assetIds);
+    if (remainingError) throw new ApiError("internal", remainingError.message);
+    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+    if (orphanedIds.length) {
+      const { error: orphanedError } = await svc.from("assets")
+        .update({ deleted_state: "soft_deleted" })
+        .in("id", orphanedIds);
+      if (orphanedError) throw new ApiError("internal", orphanedError.message);
+    }
+  }
+
+  const job = await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: acc.id, mode: "initial" },
+    { userId: acc.user_id, priority: 4 },
+  );
+
+  return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
 
 app.post("/v1/connect", async (c) => {
@@ -382,10 +547,32 @@ app.delete("/v1/:id", async (c) => {
   // Ownership check via user client (RLS)
   const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
-  // Service-role cascade
   const svc = getServiceClient();
-  const { error } = await svc.rpc("disconnect_source", { _source_account_id: id });
-  if (error) throw new ApiError("internal", error.message);
+  const { data: refs, error: refsError } = await svc.from("asset_source_refs").select("asset_id").eq("source_account_id", id);
+  if (refsError) throw new ApiError("internal", refsError.message);
+  const { error: accountError } = await svc.from("source_accounts").update({ status: "disconnected", disconnected_at: new Date().toISOString() }).eq("id", id);
+  if (accountError) throw new ApiError("internal", accountError.message);
+  const { error: tokenError } = await svc.from("source_tokens").delete().eq("source_account_id", id);
+  if (tokenError) throw new ApiError("internal", tokenError.message);
+  const { error: permsError } = await svc.from("source_permissions").delete().eq("source_account_id", id);
+  if (permsError) throw new ApiError("internal", permsError.message);
+  const { error: capsError } = await svc.from("source_capabilities").delete().eq("source_account_id", id);
+  if (capsError) throw new ApiError("internal", capsError.message);
+  const { error: cursorError } = await svc.from("source_sync_cursors").delete().eq("source_account_id", id);
+  if (cursorError) throw new ApiError("internal", cursorError.message);
+  const { error: refDeleteError } = await svc.from("asset_source_refs").delete().eq("source_account_id", id);
+  if (refDeleteError) throw new ApiError("internal", refDeleteError.message);
+  const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
+  if (assetIds.length) {
+    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs").select("asset_id").in("asset_id", assetIds);
+    if (remainingError) throw new ApiError("internal", remainingError.message);
+    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+    if (orphanedIds.length) {
+      const { error: assetError } = await svc.from("assets").update({ deleted_state: "soft_deleted" }).in("id", orphanedIds);
+      if (assetError) throw new ApiError("internal", assetError.message);
+    }
+  }
   await cache.invalidateUser(uid);
   emitEvent(c, "sources.disconnected", { id });
   return c.json({ status: "disconnecting", account_id: id }, 202);

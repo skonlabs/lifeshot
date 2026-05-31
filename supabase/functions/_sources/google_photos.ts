@@ -31,6 +31,15 @@ const API = "https://photoslibrary.googleapis.com/v1";
 export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
   // forward decls so getDeltaChanges can call listAssets without `this`
   let listAssetsRef: (cursor: string | null) => Promise<PageResult>;
+  async function getSelectedAlbums(): Promise<Array<{ id: string; name?: string }>> {
+    const { data } = await supabase.from("source_permissions")
+      .select("scopes")
+      .eq("source_account_id", ctx.source_account_id)
+      .maybeSingle();
+    const scopes = Array.isArray(data?.scopes) ? data.scopes : [];
+    const selected = scopes.find((entry: unknown) => entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers") as { containers?: Array<{ id: string; name?: string }> } | undefined;
+    return Array.isArray(selected?.containers) ? selected!.containers : [];
+  }
   async function getAccessToken(): Promise<string> {
     const { data, error } = await supabase.from("source_tokens")
       .select("access_token_encrypted, refresh_token_encrypted, expires_at")
@@ -103,6 +112,28 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
     authenticate: async () => { await getAccessToken(); },
     refreshToken: async () => { await getAccessToken(); },
     listAssets: async (cursor) => {
+      const selectedAlbums = await getSelectedAlbums();
+      if (selectedAlbums.length) {
+        const state = cursor ? JSON.parse(cursor) as { albumIndex?: number; pageToken?: string | null } : { albumIndex: 0, pageToken: null };
+        const albumIndex = Math.max(0, Math.min(selectedAlbums.length - 1, state.albumIndex ?? 0));
+        const currentAlbum = selectedAlbums[albumIndex];
+        const r = await call("/mediaItems:search", {
+          method: "POST",
+          body: JSON.stringify({
+            albumId: currentAlbum.id,
+            pageSize: 100,
+            pageToken: state.pageToken ?? undefined,
+          }),
+        });
+        const body = await r.json() as { mediaItems?: any[]; nextPageToken?: string };
+        const nextCursor = body.nextPageToken
+          ? JSON.stringify({ albumIndex, pageToken: body.nextPageToken })
+          : albumIndex < selectedAlbums.length - 1
+            ? JSON.stringify({ albumIndex: albumIndex + 1, pageToken: null })
+            : null;
+        return { items: (body.mediaItems ?? []).map(mapItem), nextCursor } satisfies PageResult;
+      }
+
       const params = new URLSearchParams({ pageSize: "100" });
       if (cursor) params.set("pageToken", cursor);
       const r = await call(`/mediaItems?${params.toString()}`);
