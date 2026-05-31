@@ -16,11 +16,22 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
 
   const { data: acct, error } = await sb.from("source_accounts")
-    .select("id, user_id, provider_kind, status").eq("id", source_account_id).single();
+    .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single();
   if (error || !acct) throw new Error("not found: source_account");
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
-  const conn = getConnector(acct.provider_kind, { source_account_id, user_id: acct.user_id, provider_kind: acct.provider_kind }, sb);
+  let providerKind = acct.provider_kind;
+  if (!providerKind && acct.provider_id) {
+    const { data: provider, error: providerErr } = await sb.from("source_providers")
+      .select("kind")
+      .eq("id", acct.provider_id)
+      .single();
+    if (providerErr || !provider?.kind) throw new Error("invalid: provider_kind missing");
+    providerKind = provider.kind;
+    await sb.from("source_accounts").update({ provider_kind: providerKind }).eq("id", source_account_id);
+  }
+
+  const conn = getConnector(providerKind, { source_account_id, user_id: acct.user_id, provider_kind: providerKind }, sb);
   const caps = conn.getCapabilities();
 
   if (!(await takeSourceToken(source_account_id, caps.rateLimitPerMin))) {

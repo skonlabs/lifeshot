@@ -165,7 +165,7 @@ app.post("/connect", async (c) => {
   } else if (provider.kind === "export_import") {
     // Create the account up front so the upload UI can target it
     const { data: account, error: accErr } = await svc.from("source_accounts").insert({
-      user_id: uid, provider_id: provider.id, status: "active",
+      user_id: uid, provider_id: provider.id, provider_kind: provider.kind, status: "active",
       external_account_id: `upload_${state.slice(0, 8)}`,
       display_label: "Uploaded files",
     }).select().single();
@@ -206,13 +206,20 @@ app.get("/callback", async (c) => {
   const { data: st } = await svc.from("api_oauth_states").select("*").eq("state", state).maybeSingle();
   if (!st) return c.redirect(`${ENV.APP_REDIRECT_URL}/sources?error=invalid_state`);
   await svc.from("api_oauth_states").delete().eq("state", state);
-  const base = st.redirect_uri ?? ENV.APP_REDIRECT_URL;
-  if (error || !code) return c.redirect(`${base}/sources?error=${error ?? "no_code"}`);
+  const base = st.redirect_uri ?? `${ENV.APP_REDIRECT_URL}/sources`;
+  const callbackUrl = new URL(base, ENV.APP_REDIRECT_URL);
+  if (error || !code) {
+    callbackUrl.searchParams.set("error", error ?? "no_code");
+    return c.redirect(callbackUrl.toString());
+  }
 
   // Look up the provider to know how to exchange the auth code.
   const { data: provider } = await svc.from("source_providers")
     .select("kind, oauth_config, default_capabilities").eq("id", st.provider_id).single();
-  if (!provider) return c.redirect(`${base}/sources?error=unknown_provider`);
+  if (!provider) {
+    callbackUrl.searchParams.set("error", "unknown_provider");
+    return c.redirect(callbackUrl.toString());
+  }
 
   // Provider-specific token exchange. Google Photos is the primary supported
   // provider; other providers fall back to placeholder so the connection row
@@ -242,7 +249,11 @@ app.get("/callback", async (c) => {
   try {
     const cfg = tokenEndpoints[provider.kind];
     if (cfg) {
-      if (!cfg.cid || !cfg.cs) return c.redirect(`${base}/sources?error=oauth_not_configured&provider=${provider.kind}`);
+      if (!cfg.cid || !cfg.cs) {
+        callbackUrl.searchParams.set("error", "oauth_not_configured");
+        callbackUrl.searchParams.set("provider", provider.kind);
+        return c.redirect(callbackUrl.toString());
+      }
       const body = new URLSearchParams({
         code,
         client_id: cfg.cid,
@@ -255,10 +266,13 @@ app.get("/callback", async (c) => {
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body,
       });
-      if (!r.ok) {
-        const txt = await r.text();
-        return c.redirect(`${base}/sources?error=token_exchange_failed&provider=${provider.kind}&detail=${encodeURIComponent(txt.slice(0, 160))}`);
-      }
+        if (!r.ok) {
+          const txt = await r.text();
+          callbackUrl.searchParams.set("error", "token_exchange_failed");
+          callbackUrl.searchParams.set("provider", provider.kind);
+          callbackUrl.searchParams.set("detail", txt.slice(0, 160));
+          return c.redirect(callbackUrl.toString());
+        }
       const j = await r.json() as { access_token: string; refresh_token?: string; expires_in?: number };
       access_token = j.access_token;
       refresh_token = j.refresh_token ?? null;
@@ -267,16 +281,23 @@ app.get("/callback", async (c) => {
         : null;
     }
   } catch (e) {
-    return c.redirect(`${base}/sources?error=token_exchange_threw&detail=${encodeURIComponent((e as Error).message.slice(0, 120))}`);
+    callbackUrl.searchParams.set("error", "token_exchange_threw");
+    callbackUrl.searchParams.set("detail", (e as Error).message.slice(0, 120));
+    return c.redirect(callbackUrl.toString());
   }
 
   const { data: account, error: accErr } = await svc.from("source_accounts").insert({
     user_id: st.user_id,
     provider_id: st.provider_id,
+    provider_kind: provider.kind,
     status: "active",
     external_account_id: `acct_${state.slice(0, 8)}`,
   } as Record<string, unknown>).select().single();
-  if (accErr) return c.redirect(`${base}/sources?error=account_create_failed&detail=${encodeURIComponent(accErr.message.slice(0, 120))}`);
+  if (accErr) {
+    callbackUrl.searchParams.set("error", "account_create_failed");
+    callbackUrl.searchParams.set("detail", accErr.message.slice(0, 120));
+    return c.redirect(callbackUrl.toString());
+  }
 
   if (access_token) {
     await svc.from("source_tokens").insert({
@@ -303,7 +324,8 @@ app.get("/callback", async (c) => {
   await jobEnqueuer.enqueue("syncSource",
     { source_account_id: account.id, mode: "initial" }, { userId: st.user_id, priority: 3 });
 
-  return c.redirect(`${base}/sources?connected=${account.id}`);
+  callbackUrl.searchParams.set("connected", account.id);
+  return c.redirect(callbackUrl.toString());
 });
 
 app.post("/:id/sync", async (c) => {
