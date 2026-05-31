@@ -8,8 +8,10 @@ import type {
   DocumentMetadata, AudioMetadata, VideoMetadata,
 } from "../../../packages/core/metadata/types";
 
-export async function sha256Hex(input: string | Uint8Array | ArrayBuffer): Promise<string> {
-  const data = typeof input === "string" ? new TextEncoder().encode(input) : input;
+export async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
+  const data: ArrayBuffer = typeof input === "string"
+    ? (new TextEncoder().encode(input).buffer as ArrayBuffer)
+    : input;
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }

@@ -24,8 +24,8 @@ export async function* walk(
     const { dir, path, depth } = queue.shift()!;
     if (opts.maxDepth != null && depth > opts.maxDepth) continue;
     try {
-      // @ts-expect-error — values() exists on FileSystemDirectoryHandle in modern browsers
-      for await (const entry of dir.values()) {
+      const dirAny = dir as unknown as { values(): AsyncIterable<FileSystemHandle> };
+      for await (const entry of dirAny.values()) {
         if (opts.signal?.aborted) return;
         const name = entry.name as string;
         if (!opts.includeHidden && name.startsWith(".")) continue;
