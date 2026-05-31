@@ -536,9 +536,8 @@ async function handleOAuthCallback(c: Context) {
     source_account_id: account.id, capability: provider?.default_capabilities ?? {},
   });
 
-  await jobEnqueuer.enqueue("syncSource",
-    { source_account_id: account.id, mode: "initial" }, { userId: st.user_id, priority: 3 });
-
+  // Do NOT auto-enqueue sync here. User must first select folders to index;
+  // sync is queued when they save their folder scope (see /v1/:id/containers).
   callbackUrl.searchParams.set("connected", account.id);
   callbackUrl.searchParams.set("provider", provider.kind);
   return c.redirect(callbackUrl.toString());
