@@ -455,7 +455,7 @@ app.patch("/v1/:id/containers", async (c) => {
     { source_account_id: acc.id, mode: "initial" },
     { userId: acc.user_id, priority: 4 },
   );
-
+  kickWorker();
   return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
 
@@ -700,6 +700,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
     { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
     { userId: uid, priority: 4 });
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
+  kickWorker();
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
