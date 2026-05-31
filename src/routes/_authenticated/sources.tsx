@@ -459,6 +459,17 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const rows: SourceContainer[] = [...allContainers, ...extraSelected];
   const supportsManual = !containers.isLoading && allContainers.length === 0;
   const accountMissing = !!state && !containers.isLoading && !containers.data && !containers.error;
+  const reason = (containers.data as { reason?: string | null } | undefined)?.reason ?? null;
+  const reasonHint =
+    reason === "service_unavailable"
+      ? "Folder discovery service isn't configured yet. You can still type folder names below."
+      : reason === "provider_unsupported"
+        ? "This provider doesn't expose a browsable folder list. Add folder names below."
+        : reason === "no_token"
+          ? "We couldn't read this source's access token. Try reconnecting."
+          : reason === "internal_error"
+            ? "Couldn't load folders from the provider. You can type them below."
+            : null;
 
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
@@ -491,7 +502,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               </div>
             ) : (
               <p className="text-xs text-[color:var(--umber)]">
-                No folders selected yet. Add one below — only those folders will be indexed and synced.
+                {reasonHint ?? "No folders selected yet. Add one below — only those folders will be indexed and synced."}
               </p>
             )}
             {supportsManual && (
