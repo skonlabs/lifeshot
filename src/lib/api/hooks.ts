@@ -24,7 +24,7 @@ import type {
 } from "@core/api";
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
-import { listSourceFolders } from "./folders.functions";
+
 
 type SourceAccountsResponse = {
   accounts: Array<{
@@ -258,53 +258,39 @@ export function useSourceContainers(accountId: string | undefined) {
     queryKey: ["source-containers", accountId],
     enabled: !!accountId,
     queryFn: async ({ signal }) => {
-      void signal;
-      // 1) Always read the user's saved selections directly from Supabase.
-      const { data: permRow, error: dbErr } = await supabase
-        .from("source_permissions")
-        .select("scopes")
-        .eq("source_account_id", accountId!)
-        .maybeSingle();
-      if (dbErr) throw dbErr;
-      const scopes = Array.isArray(permRow?.scopes) ? (permRow!.scopes as unknown[]) : [];
-      const entry = scopes.find(
-        (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
-      ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
-      const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
-
-      const { data: accountRow, error: accountErr } = await supabase
-        .from("source_accounts")
-        .select("provider_kind")
-        .eq("id", accountId!)
-        .maybeSingle();
-      if (accountErr) throw accountErr;
-      if (!accountRow?.provider_kind) {
-        return { containers: [], selected, reason: "account_not_found" as const };
-      }
-
-      // 2) Fetch the real folder/album list from the provider via a
-      //    TanStack server function so we avoid the broken edge-function path.
+      // Read saved selections + live folder list from the edge function,
+      // which uses the service-role Supabase client to access stored OAuth
+      // tokens and call the provider APIs (Google Photos, Dropbox, OneDrive).
       let containers: Array<{ id: string; name?: string }> = [];
+      let selected: Array<{ id: string; name?: string }> = [];
       let reason: string | null = null;
       try {
-        const { data: sess } = await supabase.auth.getSession();
-        const bearer = sess.session?.access_token;
-        if (!bearer) {
-          reason = "no_session";
-        } else {
-          const res = await listSourceFolders({
-            data: {
-              accountId: accountId!,
-              providerKind: accountRow.provider_kind,
-              bearer,
-            },
-          });
-          if (res.ok) containers = res.folders;
-          else reason = res.reason;
-        }
+        const res = await api.sources<{
+          containers: Array<{ id: string; name?: string }>;
+          selected: Array<{ id: string; name?: string }>;
+        }>(`/${accountId}/containers`, { signal });
+        containers = Array.isArray(res.containers) ? res.containers : [];
+        selected = Array.isArray(res.selected) ? res.selected : [];
+        if (!containers.length) reason = "empty";
       } catch (error) {
         reason = error instanceof ApiError ? error.code : "internal_error";
         console.warn("folder listing failed", error);
+        // Fall back to whatever the user previously saved so the dialog
+        // still renders something useful.
+        try {
+          const { data: permRow } = await supabase
+            .from("source_permissions")
+            .select("scopes")
+            .eq("source_account_id", accountId!)
+            .maybeSingle();
+          const scopes = Array.isArray(permRow?.scopes) ? (permRow!.scopes as unknown[]) : [];
+          const entry = scopes.find(
+            (s) => !!s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers",
+          ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
+          selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
+        } catch {
+          /* ignore */
+        }
       }
       return { containers, selected, reason };
     },
