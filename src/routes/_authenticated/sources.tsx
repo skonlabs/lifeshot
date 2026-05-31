@@ -443,7 +443,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
         <DialogHeader>
           <DialogTitle>{state?.provider.name}</DialogTitle>
           <DialogDescription>
-            This source is connected. You can re-sync, re-authenticate, or disconnect it.
+            Choose which folders or albums should be indexed for this source.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
