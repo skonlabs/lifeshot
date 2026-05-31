@@ -154,8 +154,14 @@ app.post("/connect", async (c) => {
     upload_target = { bucket: "source_uploads", prefix: `${uid}/${account.id}` };
     session_token = account.id;
   } else {
-    // Local / on-device providers: return a one-time session token for the client agent flow.
-    session_token = state;
+    // No OAuth config and not export_import: this provider can't be
+    // connected from the web. Surface a clear error instead of silently
+    // returning a useless response — the UI used to show "Connection
+    // started" and stall forever.
+    throw new ApiError(
+      "failed_precondition",
+      `${provider.name} can't be connected from the web yet. Use Export/Import (zip upload) or the desktop/mobile agent when available.`,
+    );
   }
 
   const out = { authorize_url, session_token, state, upload_target };
