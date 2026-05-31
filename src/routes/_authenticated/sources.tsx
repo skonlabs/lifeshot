@@ -472,35 +472,55 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
             ) : containers.isLoading ? (
               <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
             ) : (rootItems.length || Object.keys(draft).length) ? (
-              <div className="max-h-72 space-y-1 overflow-auto pr-1">
-                {rootItems.map((item) => (
-                  <ContainerTreeNode
-                    key={item.id}
-                    accountId={state?.accountId}
-                    item={item}
-                    depth={0}
-                    expanded={expanded}
-                    draft={draft}
-                    onToggleExpanded={toggleExpanded}
-                    onToggleSelected={toggleContainer}
-                  />
-                ))}
-                {Object.values(draft)
-                  .filter((item) => !rootItems.some((rootItem) => rootItem.id === item.id))
-                  .map((item) => (
-                    <label key={item.id} className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]">
-                      <input
-                        type="checkbox"
-                        checked={!!draft[item.id]}
-                        onChange={() => toggleContainer(item)}
+              (() => {
+                const rootIds = new Set(rootItems.map((r) => r.id));
+                const orphans = Object.values(draft).filter((item) => !rootIds.has(item.id));
+                return (
+                  <div className="max-h-72 space-y-1 overflow-auto pr-1">
+                    {rootItems.map((item) => (
+                      <ContainerTreeNode
+                        key={item.id}
+                        accountId={state?.accountId}
+                        item={item}
+                        depth={0}
+                        expanded={expanded}
+                        draft={draft}
+                        onToggleExpanded={toggleExpanded}
+                        onToggleSelected={toggleContainer}
                       />
-                      <span className="break-all">
-                        {item.name ?? item.id}
-                        <span className="ml-2 text-xs text-[color:var(--umber)]">Saved selection</span>
-                      </span>
-                    </label>
-                  ))}
-              </div>
+                    ))}
+                    {orphans.length ? (
+                      <div className="mt-3 rounded-sm border border-dashed border-[color:var(--border)] bg-[color:var(--paper)] p-2">
+                        <div className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-[color:var(--umber)]">
+                          Nested saved selections
+                        </div>
+                        <p className="mb-2 px-1 text-[11px] text-[color:var(--umber)]">
+                          These folders live deeper in the tree than the top-level view above. Expand their parent folder to see them inline, or uncheck here to remove from scope.
+                        </p>
+                        {orphans.map((item) => (
+                          <label
+                            key={item.id}
+                            className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!draft[item.id]}
+                              onChange={() => toggleContainer(item)}
+                            />
+                            <Folder className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--umber)]" />
+                            <span className="min-w-0 break-all">
+                              {item.name ?? item.id}
+                              {item.path && item.path !== "/" ? (
+                                <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
+                              ) : null}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()
             ) : (
               <p className="text-xs text-[color:var(--umber)]">
                 {reasonHint ?? (expectsBrowserTree
