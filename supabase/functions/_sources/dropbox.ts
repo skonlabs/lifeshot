@@ -208,7 +208,19 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       const url = await getTemporaryLink(providerAssetId);
       return url ? { url, expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString() } : null;
     },
-    listAlbums: async () => [],
+    listAlbums: async () => {
+      // Top-level folders in the user's Dropbox act as selectable "containers".
+      try {
+        const json = await call("/files/list_folder", { path: "", recursive: false, limit: 200 });
+        const folders = (json.entries ?? [])
+          .filter((e: any) => e[".tag"] === "folder")
+          .map((e: any) => ({ id: e.path_lower ?? e.path_display ?? `/${e.name}`, name: e.name }));
+        // Always include the root so users can keep "everything".
+        return [{ id: "/", name: "All of Dropbox (root)" }, ...folders];
+      } catch {
+        return [{ id: "/", name: "All of Dropbox (root)" }];
+      }
+    },
     disconnect: async () => {
       await supabase.from("source_accounts").update({ status: "disconnected" }).eq("id", ctx.source_account_id);
     },
