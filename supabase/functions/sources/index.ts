@@ -18,6 +18,7 @@ const ConnectIn = z.object({
 const ContainerRef = z.object({
   id: z.string().min(1).max(512),
   name: z.string().min(1).max(512).optional(),
+  path: z.string().min(1).max(2048).optional(),
 }).strict();
 
 const UpdateContainersIn = z.object({
@@ -387,7 +388,7 @@ app.patch("/v1/:id/containers", async (c) => {
   const svc = getServiceClient();
   const normalized = body.containers
     .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
-    .map((item) => ({ id: item.id, name: item.name }));
+    .map((item) => ({ id: item.id, name: item.name, path: item.path }));
 
   await setSelectedContainers(svc, acc.id, normalized);
 
