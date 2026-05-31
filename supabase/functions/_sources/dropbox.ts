@@ -209,16 +209,36 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       return url ? { url, expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString() } : null;
     },
     listAlbums: async () => {
-      // Top-level folders in the user's Dropbox act as selectable "containers".
+      // Recursively walk the user's Dropbox and surface ALL folders (full tree)
+      // so they can pick specific subfolders, not just top-level ones.
       try {
-        const json = await call("/files/list_folder", { path: "", recursive: false, limit: 200 });
-        const folders = (json.entries ?? [])
-          .filter((e: any) => e[".tag"] === "folder")
-          .map((e: any) => ({ id: e.path_lower ?? e.path_display ?? `/${e.name}`, name: e.name }));
-        // Always include the root so users can keep "everything".
-        return [{ id: "/", name: "All of Dropbox (root)" }, ...folders];
-      } catch {
-        return [{ id: "/", name: "All of Dropbox (root)" }];
+        const folders: Array<{ id: string; name: string; path?: string }> = [
+          { id: "/", name: "All of Dropbox (root)", path: "/" },
+        ];
+        let json: any = await call("/files/list_folder", {
+          path: "",
+          recursive: true,
+          include_deleted: false,
+          include_media_info: false,
+          limit: 1000,
+        });
+        let safety = 0;
+        while (true) {
+          for (const e of (json.entries ?? [])) {
+            if (e[".tag"] !== "folder") continue;
+            const path = (e.path_display ?? e.path_lower ?? `/${e.name}`) as string;
+            folders.push({ id: e.path_lower ?? path, name: e.name, path });
+          }
+          if (!json.has_more || !json.cursor) break;
+          if (++safety > 50) break; // cap at ~50k entries
+          json = await call("/files/list_folder/continue", { cursor: json.cursor });
+        }
+        // Sort by path so the UI can render a stable tree.
+        folders.sort((a, b) => (a.path ?? a.id).localeCompare(b.path ?? b.id));
+        return folders as any;
+      } catch (err) {
+        console.error("dropbox listAlbums failed", err);
+        return [{ id: "/", name: "All of Dropbox (root)", path: "/" } as any];
       }
     },
     disconnect: async () => {
