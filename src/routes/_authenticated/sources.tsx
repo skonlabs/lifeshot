@@ -5,6 +5,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Plug, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+const LOCAL_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas", "export_import"]);
+const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
+
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
 function Sources() {
@@ -17,6 +20,19 @@ function Sources() {
 
   async function onConnect(providerId: string) {
     try {
+      const provider = providers.data?.providers?.find((p) => p.id === providerId);
+      if (!provider) {
+        toast.error("Source provider unavailable.");
+        return;
+      }
+      if (UNSUPPORTED_PROVIDER_KINDS.has(provider.kind)) {
+        toast.error(`${provider.name} does not have a live connection flow yet.`);
+        return;
+      }
+      if (LOCAL_PROVIDER_KINDS.has(provider.kind)) {
+        toast.message(`${provider.name} needs its local import flow wired next.`);
+        return;
+      }
       const out = await connect.mutateAsync({
         provider_id: providerId,
         redirect_uri: `${window.location.origin}/callback`,
@@ -67,7 +83,10 @@ function Sources() {
                 </div>
                 <div>
                   <div className="font-medium text-[color:var(--ink)]">{p.name}</div>
-                  <div className="text-xs text-[color:var(--umber)]">{p.kind} · {p.priority}</div>
+                  <div className="text-xs text-[color:var(--umber)]">
+                    {p.kind} · {p.priority}
+                    {UNSUPPORTED_PROVIDER_KINDS.has(p.kind) ? " · unavailable" : LOCAL_PROVIDER_KINDS.has(p.kind) ? " · local flow pending" : ""}
+                  </div>
                 </div>
               </button>
             ))}
