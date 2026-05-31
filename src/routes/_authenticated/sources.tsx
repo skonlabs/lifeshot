@@ -1,12 +1,12 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Check, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
+import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -22,7 +22,7 @@ type ConsentState = { provider: Provider } | null;
 type ManageState = { provider: Provider; accountId: string } | null;
 type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
 type DisconnectState = { accountId: string; providerName: string } | null;
-type SourceContainer = { id: string; name?: string; path?: string };
+type SourceContainer = { id: string; name?: string; path?: string; selectable?: boolean; has_children?: boolean };
 
 const BROWSABLE_PROVIDER_KINDS = new Set(["google_photos", "dropbox", "onedrive"]);
 
@@ -408,17 +408,24 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const containers = useSourceContainers(state?.accountId);
   const updateContainers = useUpdateSourceContainers();
   const selected = containers.data?.selected ?? [];
-  const allContainers = containers.data?.containers ?? [];
   const [draft, setDraft] = useState<Record<string, SourceContainer>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!state) {
       setDraft({});
+      setExpanded({});
       return;
     }
     const next = Object.fromEntries(selected.map((item) => [item.id, item]));
     setDraft(next);
   }, [state, containers.data?.selected]);
+
+  const rootItems = containers.data?.containers ?? [];
+
+  const toggleExpanded = (item: SourceContainer) => {
+    setExpanded((prev) => ({ ...prev, [item.id]: !prev[item.id] }));
+  };
 
   const toggleContainer = (item: SourceContainer) => {
     setDraft((prev) => {
@@ -430,12 +437,6 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
       return { ...prev, [item.id]: item };
     });
   };
-
-  // Union of discovered + previously-selected entries so saved selections
-  // still render even if the provider temporarily omits them.
-  const discoveredIds = new Set(allContainers.map((c) => c.id));
-  const extraSelected = Object.values(draft).filter((c) => !discoveredIds.has(c.id));
-  const rows: SourceContainer[] = [...allContainers, ...extraSelected];
   const expectsBrowserTree = !!state && BROWSABLE_PROVIDER_KINDS.has(state.provider.kind);
   const accountMissing = !!state && !containers.isLoading && !containers.data && !containers.error;
   const reason = (containers.data as { reason?: string | null } | undefined)?.reason ?? null;
@@ -470,20 +471,24 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               <p className="text-xs text-[color:var(--umber)]">This source is no longer connected.</p>
             ) : containers.isLoading ? (
               <p className="text-xs text-[color:var(--umber)]">Loading folders…</p>
-            ) : rows.length ? (
-              <div className="max-h-52 space-y-2 overflow-auto pr-1">
-                {rows.map((item) => {
-                  const path = item.path ?? "";
-                  // Compute depth from path ("/a/b" => 2). Root "/" stays at 0.
-                  const depth = path && path !== "/"
-                    ? Math.max(0, path.split("/").filter(Boolean).length - 1)
-                    : 0;
-                  return (
-                    <label
-                      key={item.id}
-                      className="flex items-start gap-2 text-sm text-[color:var(--ink)]"
-                      style={{ paddingLeft: `${depth * 16}px` }}
-                    >
+            ) : (rootItems.length || Object.keys(draft).length) ? (
+              <div className="max-h-72 space-y-1 overflow-auto pr-1">
+                {rootItems.map((item) => (
+                  <ContainerTreeNode
+                    key={item.id}
+                    accountId={state?.accountId}
+                    item={item}
+                    depth={0}
+                    expanded={expanded}
+                    draft={draft}
+                    onToggleExpanded={toggleExpanded}
+                    onToggleSelected={toggleContainer}
+                  />
+                ))}
+                {Object.values(draft)
+                  .filter((item) => !rootItems.some((rootItem) => rootItem.id === item.id))
+                  .map((item) => (
+                    <label key={item.id} className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]">
                       <input
                         type="checkbox"
                         checked={!!draft[item.id]}
@@ -491,13 +496,10 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
                       />
                       <span className="break-all">
                         {item.name ?? item.id}
-                        {item.path && item.path !== "/" && depth > 0 ? (
-                          <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
-                        ) : null}
+                        <span className="ml-2 text-xs text-[color:var(--umber)]">Saved selection</span>
                       </span>
                     </label>
-                  );
-                })}
+                  ))}
               </div>
             ) : (
               <p className="text-xs text-[color:var(--umber)]">
@@ -540,6 +542,98 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ContainerTreeNode({
+  accountId,
+  item,
+  depth,
+  expanded,
+  draft,
+  onToggleExpanded,
+  onToggleSelected,
+}: {
+  accountId: string | undefined;
+  item: SourceContainer;
+  depth: number;
+  expanded: Record<string, boolean>;
+  draft: Record<string, SourceContainer>;
+  onToggleExpanded: (item: SourceContainer) => void;
+  onToggleSelected: (item: SourceContainer) => void;
+}) {
+  const isExpanded = !!expanded[item.id];
+  const children = useSourceContainerChildren({
+    accountId,
+    parentId: item.id,
+    enabled: isExpanded && !!item.has_children,
+  });
+  const childItems = children.data?.containers ?? [];
+
+  return (
+    <div>
+      <div
+        className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]"
+        style={{ paddingLeft: `${depth * 16}px` }}
+      >
+        <button
+          type="button"
+          onClick={() => item.has_children && onToggleExpanded(item)}
+          className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[color:var(--umber)] disabled:opacity-30"
+          disabled={!item.has_children}
+          aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
+        >
+          <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+        </button>
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={!!draft[item.id]}
+          onChange={() => onToggleSelected(item)}
+          disabled={item.selectable === false}
+        />
+        <button
+          type="button"
+          onClick={() => item.has_children && onToggleExpanded(item)}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+        >
+          {isExpanded ? <FolderOpen className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--umber)]" /> : <Folder className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--umber)]" />}
+          <span className="min-w-0 break-all">
+            {item.name ?? item.id}
+            {item.path && item.path !== "/" ? (
+              <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
+            ) : null}
+          </span>
+        </button>
+      </div>
+
+      {isExpanded ? (
+        <div>
+          {children.isLoading ? (
+            <p className="px-2 py-1 text-xs text-[color:var(--umber)]" style={{ paddingLeft: `${(depth + 1) * 16 + 24}px` }}>
+              Loading…
+            </p>
+          ) : childItems.length ? (
+            childItems.map((child) => (
+              <ContainerTreeNode
+                key={child.id}
+                accountId={accountId}
+                item={child}
+                depth={depth + 1}
+                expanded={expanded}
+                draft={draft}
+                onToggleExpanded={onToggleExpanded}
+                onToggleSelected={onToggleSelected}
+              />
+            ))
+          ) : (
+            <p className="px-2 py-1 text-xs text-[color:var(--umber)]" style={{ paddingLeft: `${(depth + 1) * 16 + 24}px` }}>
+              No subfolders.
+            </p>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

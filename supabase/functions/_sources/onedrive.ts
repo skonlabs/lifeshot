@@ -60,6 +60,16 @@ function isSupportedMedia(name: string, mimeType?: string): boolean {
 }
 
 export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
+  async function getSelectedFolders(): Promise<Array<{ id: string; name?: string }>> {
+    const { data } = await supabase.from("source_permissions")
+      .select("scopes")
+      .eq("source_account_id", ctx.source_account_id)
+      .maybeSingle();
+    const scopes = Array.isArray(data?.scopes) ? data.scopes : [];
+    const selected = scopes.find((entry: unknown) => entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "selected_containers") as { containers?: Array<{ id: string; name?: string }> } | undefined;
+    return Array.isArray(selected?.containers) ? selected!.containers : [];
+  }
+
   async function getAccessToken(): Promise<string> {
     const { data, error } = await supabase.from("source_tokens")
       .select("access_token_encrypted, refresh_token_encrypted, expires_at")
@@ -150,17 +160,40 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
     };
   }
 
-  return {
+  let listAssetsRef: (cursor: string | null) => Promise<PageResult>;
+
+  const conn: SourceConnector = {
     capabilities: CAPS,
     getCapabilities: () => CAPS,
     authenticate: async () => { await getAccessToken(); },
     refreshToken: async () => { await getAccessToken(); },
     listAssets: async (cursor) => {
-      const url = cursor ?? `${API}/me/drive/root/search(q='')?$top=100&select=id,name,size,createdDateTime,lastModifiedDateTime,webUrl,file,photo,video,image,@microsoft.graph.downloadUrl`;
+      const selectedFolders = await getSelectedFolders();
+      const folderTargets = selectedFolders.length ? selectedFolders.map((item) => item.id).filter(Boolean) : ["root"];
+      const state = cursor
+        ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null }
+        : { folderIndex: 0, providerCursor: null };
+      const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, state.folderIndex ?? 0));
+      const currentFolderId = folderTargets[folderIndex] ?? "root";
+      const url = state.providerCursor
+        ? state.providerCursor
+        : currentFolderId === "root"
+          ? `${API}/me/drive/root/search(q='')?$top=100&select=id,name,size,createdDateTime,lastModifiedDateTime,webUrl,file,photo,video,image,@microsoft.graph.downloadUrl`
+          : `${API}/me/drive/items/${currentFolderId}/search(q='')?$top=100&select=id,name,size,createdDateTime,lastModifiedDateTime,webUrl,file,photo,video,image,@microsoft.graph.downloadUrl`;
       const page = await list(url);
-      return { items: page.items, nextCursor: page.nextCursor } satisfies PageResult;
+      const nextCursor = page.nextCursor
+        ? JSON.stringify({ folderIndex, providerCursor: page.nextCursor })
+        : folderIndex < folderTargets.length - 1
+          ? JSON.stringify({ folderIndex: folderIndex + 1, providerCursor: null })
+          : null;
+      return { items: page.items, nextCursor } satisfies PageResult;
     },
     getDeltaChanges: async (cursor) => {
+      const selectedFolders = await getSelectedFolders();
+      if (selectedFolders.length) {
+        const page = await listAssetsRef(cursor);
+        return { items: page.items, deleted: [], nextCursor: page.nextCursor } satisfies DeltaResult;
+      }
       const url = cursor ?? `${API}/me/drive/root/delta?$top=100&select=id,name,size,createdDateTime,lastModifiedDateTime,webUrl,file,photo,video,image,@microsoft.graph.downloadUrl,deleted`;
       const page = await list(url);
       return { items: page.items, deleted: page.deleted, nextCursor: page.nextCursor } satisfies DeltaResult;
@@ -188,15 +221,29 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       const url = item["@microsoft.graph.downloadUrl"] as string | undefined;
       return url ? { url, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() } : null;
     },
-    listAlbums: async () => {
+    listAlbums: async (parentId) => {
       try {
-        const json = await call(`${API}/me/drive/root/children?$top=200&$select=id,name,folder`);
+        const isRoot = !parentId || parentId === "root";
+        const url = isRoot
+          ? `${API}/me/drive/root/children?$top=200&$select=id,name,folder,parentReference`
+          : `${API}/me/drive/items/${parentId}/children?$top=200&$select=id,name,folder,parentReference`;
+        const json = await call(url);
         const folders = (json.value ?? [])
           .filter((item: any) => !!item.folder)
-          .map((item: any) => ({ id: item.id as string, name: item.name as string }));
-        return [{ id: "root", name: "All of OneDrive (root)" }, ...folders];
+          .map((item: any) => ({
+            id: item.id as string,
+            name: item.name as string,
+            path: `${item.parentReference?.path ?? "/drive/root:"}/${item.name}`.replace(/^.*root:/, "") || `/${item.name}`,
+            has_children: true,
+            selectable: true,
+          }));
+        return !parentId
+          ? [{ id: "root", name: "All of OneDrive (root)", path: "/", has_children: true, selectable: true }, ...folders]
+          : folders;
       } catch {
-        return [{ id: "root", name: "All of OneDrive (root)" }];
+        return (!parentId || parentId === "root")
+          ? [{ id: "root", name: "All of OneDrive (root)", path: "/", has_children: true, selectable: true }]
+          : [];
       }
     },
     disconnect: async () => {
@@ -209,4 +256,7 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       await supabase.from("source_accounts").update({ status: "disconnected" }).eq("id", ctx.source_account_id);
     },
   };
+
+  listAssetsRef = conn.listAssets;
+  return conn;
 };

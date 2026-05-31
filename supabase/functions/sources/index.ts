@@ -24,6 +24,10 @@ const UpdateContainersIn = z.object({
   containers: z.array(ContainerRef).max(200),
 }).strict();
 
+const ListContainersQuery = z.object({
+  parent_id: z.string().min(1).max(512).optional(),
+}).strict();
+
 const app = createApi("/sources");
 // Redeploy marker v4: surface listAlbums errors via debug field.
 
@@ -72,7 +76,13 @@ const CALLBACK_PATHS = [
 ] as const;
 const OAUTH_CALLBACK_URL = `${ENV.SUPABASE_URL}${CALLBACK_PATHS[0]}`;
 
-type ContainerRefOut = { id: string; name?: string; path?: string };
+type ContainerRefOut = {
+  id: string;
+  name?: string;
+  path?: string;
+  selectable?: boolean;
+  has_children?: boolean;
+};
 
 async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
   const { data, error } = await svc.from("source_permissions")
@@ -121,7 +131,12 @@ async function setSelectedContainers(svc: ReturnType<typeof getServiceClient>, s
   if (insertError) throw new ApiError("internal", insertError.message);
 }
 
-async function listSelectableContainers(providerKind: string, sourceAccountId: string, userId: string): Promise<ContainerRefOut[]> {
+async function listSelectableContainers(
+  providerKind: string,
+  sourceAccountId: string,
+  userId: string,
+  parentId?: string | null,
+): Promise<ContainerRefOut[]> {
   // For providers with a server-side listing API, fetch the available
   // albums/folders. For on-device or upload-style providers the server
   // can't browse the user's filesystem — the UI lets the user add folder
@@ -135,8 +150,14 @@ async function listSelectableContainers(providerKind: string, sourceAccountId: s
       user_id: userId,
       provider_kind: providerKind as any,
     }, getServiceClient());
-    const albums = await connector.listAlbums();
-    return albums.map((album: any) => ({ id: album.id, name: album.name, path: album.path }));
+    const albums = await connector.listAlbums(parentId);
+    return albums.map((album: any) => ({
+      id: album.id,
+      name: album.name,
+      path: album.path,
+      selectable: album.selectable,
+      has_children: album.has_children,
+    } as ContainerRefOut & { selectable?: boolean; has_children?: boolean }));
   } catch (err) {
     console.error("listSelectableContainers failed", providerKind, sourceAccountId, err);
     return [];
@@ -233,6 +254,7 @@ app.get("/v1/:id/status", async (c) => {
 app.get("/v1/:id/containers", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  const { parent_id } = parseQuery(c, ListContainersQuery);
   await enforceRateLimit(uid, "general");
   const { data: acc, error } = await supa.from("source_accounts")
     .select("id, user_id, provider:source_providers(kind)")
@@ -243,15 +265,16 @@ app.get("/v1/:id/containers", async (c) => {
 
   const svc = getServiceClient();
   const kind = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
-  const containers = await listSelectableContainers(kind, acc.id, acc.user_id);
+  const containers = await listSelectableContainers(kind, acc.id, acc.user_id, parent_id ?? null);
   const selected = await getSelectedContainers(svc, acc.id);
-  return c.json({ containers, selected });
+  return c.json({ containers, selected, parent_id: parent_id ?? null });
 });
 
 // Alias kept for compatibility with older clients/builds.
 app.get("/v1/:id/folders", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  const { parent_id } = parseQuery(c, ListContainersQuery);
   await enforceRateLimit(uid, "general");
   const { data: acc, error } = await supa.from("source_accounts")
     .select("id, user_id, provider:source_providers(kind)")
@@ -261,9 +284,9 @@ app.get("/v1/:id/folders", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
   const kind = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
-  const containers = await listSelectableContainers(kind, acc.id, acc.user_id);
+  const containers = await listSelectableContainers(kind, acc.id, acc.user_id, parent_id ?? null);
   const selected = await getSelectedContainers(svc, acc.id);
-  return c.json({ containers, selected });
+  return c.json({ containers, selected, parent_id: parent_id ?? null });
 });
 
 app.patch("/v1/:id/containers", async (c) => {
@@ -279,18 +302,9 @@ app.patch("/v1/:id/containers", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
 
   const svc = getServiceClient();
-  const kindP = (acc as { provider?: { kind?: string } | null }).provider?.kind ?? "";
-  const allowed = await listSelectableContainers(kindP, acc.id, acc.user_id);
-  const allowedIds = new Set(allowed.map((item) => item.id));
   const normalized = body.containers
     .filter((item, index, arr) => arr.findIndex((other) => other.id === item.id) === index)
     .map((item) => ({ id: item.id, name: item.name }));
-
-  for (const item of normalized) {
-    if (allowed.length && !allowedIds.has(item.id)) {
-      throw new ApiError("validation_failed", `Unknown container: ${item.id}`);
-    }
-  }
 
   await setSelectedContainers(svc, acc.id, normalized);
 

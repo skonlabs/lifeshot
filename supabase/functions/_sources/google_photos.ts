@@ -117,6 +117,20 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
         const state = cursor ? JSON.parse(cursor) as { albumIndex?: number; pageToken?: string | null } : { albumIndex: 0, pageToken: null };
         const albumIndex = Math.max(0, Math.min(selectedAlbums.length - 1, state.albumIndex ?? 0));
         const currentAlbum = selectedAlbums[albumIndex];
+
+        if (currentAlbum.id === "__all__") {
+          const params = new URLSearchParams({ pageSize: "100" });
+          if (state.pageToken) params.set("pageToken", state.pageToken);
+          const r = await call(`/mediaItems?${params.toString()}`);
+          const body = await r.json() as { mediaItems?: any[]; nextPageToken?: string };
+          const nextCursor = body.nextPageToken
+            ? JSON.stringify({ albumIndex, pageToken: body.nextPageToken })
+            : albumIndex < selectedAlbums.length - 1
+              ? JSON.stringify({ albumIndex: albumIndex + 1, pageToken: null })
+              : null;
+          return { items: (body.mediaItems ?? []).map(mapItem), nextCursor } satisfies PageResult;
+        }
+
         const r = await call("/mediaItems:search", {
           method: "POST",
           body: JSON.stringify({
@@ -160,11 +174,9 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       // Google base URL is short-lived (~60min).
       return { url: `${it.baseUrl}=d`, expiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString() };
     },
-    listAlbums: async () => {
-      const out: AssetAlbumRef[] = [];
-      // Synthetic "everything" container so users can opt in to the full library.
-      out.push({ id: "__all__", name: "All photos & videos (entire library)" } as any);
-      const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string) => {
+    listAlbums: async (parentId) => {
+      const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string, basePath: string) => {
+        const out: AssetAlbumRef[] = [];
         let pageToken: string | undefined;
         let safety = 0;
         do {
@@ -181,14 +193,34 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
             if (!a?.id) continue;
             const title = a.title ?? "(untitled)";
             const count = a.mediaItemsCount ? ` · ${a.mediaItemsCount}` : "";
-            out.push({ id: a.id, name: `${label}${title}${count}` } as any);
+            out.push({
+              id: a.id,
+              name: `${label}${title}${count}`,
+              path: `${basePath}/${title}`,
+              selectable: true,
+              has_children: false,
+            } as any);
           }
           pageToken = j.nextPageToken;
         } while (pageToken && ++safety < 40);
+        return out;
       };
-      try { await fetchAll("albums", ""); } catch (e) { console.error("albums fetch error", e); }
-      try { await fetchAll("sharedAlbums", "Shared · "); } catch (e) { console.error("sharedAlbums fetch error", e); }
-      return out;
+
+      if (!parentId || parentId === "root") {
+        return [
+          { id: "__all__", name: "All photos & videos", path: "/", selectable: true, has_children: false } as any,
+          { id: "__albums__", name: "Albums", path: "/Albums", selectable: false, has_children: true } as any,
+          { id: "__shared__", name: "Shared albums", path: "/Shared", selectable: false, has_children: true } as any,
+        ];
+      }
+
+      try {
+        if (parentId === "__albums__") return await fetchAll("albums", "", "/Albums");
+        if (parentId === "__shared__") return await fetchAll("sharedAlbums", "Shared · ", "/Shared");
+      } catch (e) {
+        console.error("google_photos listAlbums fetch error", e);
+      }
+      return [];
     },
     getDeltaChanges: async (cursor): Promise<DeltaResult> => {
       // Google Photos has no delta; fall back to bounded list with checkpoint.

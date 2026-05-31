@@ -41,7 +41,13 @@ export interface AssetExifSubset {
   iso?: number; aperture?: number; shutter?: string; focal_mm?: number;
   white_balance?: string; flash?: boolean; orientation?: number;
 }
-export interface AssetAlbumRef { id: string; name?: string }
+export interface AssetAlbumRef {
+  id: string;
+  name?: string;
+  path?: string;
+  selectable?: boolean;
+  has_children?: boolean;
+}
 
 /** Normalized record emitted by every connector — no originals. */
 export interface AssetRecord {
@@ -95,7 +101,7 @@ export interface SourceConnector {
   getThumbnail(providerAssetId: string): Promise<{ bytes: Uint8Array; contentType: string } | { url: string }>;
   getPreview(providerAssetId: string): Promise<{ bytes: Uint8Array; contentType: string } | { url: string }>;
   getOriginalAccessToken(providerAssetId: string): Promise<{ url: string; expiresAt: string } | null>;
-  listAlbums(): Promise<AssetAlbumRef[]>;
+  listAlbums(parentId?: string | null): Promise<AssetAlbumRef[]>;
   getDeltaChanges(cursor: string | null): Promise<DeltaResult>;
   disconnect(): Promise<void>;
   revoke(): Promise<void>;
