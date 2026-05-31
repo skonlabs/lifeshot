@@ -248,7 +248,7 @@ app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("source_accounts").select(`
-    id, user_id, provider_id, display_label, status, connected_at, disconnected_at,
+    id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
   `).order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
@@ -326,10 +326,10 @@ app.get("/v1/accounts", async (c) => {
       id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
       display_label: r.display_label, status: r.status,
       connected_at: r.connected_at, disconnected_at: r.disconnected_at,
-      asset_count: counts[r.id] ?? 0, last_sync_at: null,
+      asset_count: counts[r.id] ?? 0, last_sync_at: r.last_synced_at ?? null,
       selected_container_count: liveStatsByAccount.get(r.id)?.folder_count ?? 0,
       selected_containers: scopesByAccount.get(r.id) ?? [],
-      counts_by_kind: liveStatsByAccount.get(r.id) ?? breakdown[r.id] ?? ZERO_SELECTION_STATS,
+      counts_by_kind: breakdown[r.id] ?? ZERO_SELECTION_STATS,
     })),
   });
 });
@@ -359,6 +359,9 @@ app.get("/v1/:id/status", async (c) => {
   const indexed = count ?? 0;
   const effectiveJobStatus = running ? running.status : (lastJob?.status ?? null);
   const effectiveJobKind = running ? "syncSource" : (lastJob?.kind ?? null);
+  const jobStats = (lastJob?.stats && typeof lastJob.stats === "object") ? lastJob.stats as Record<string, unknown> : {};
+  const discovered = Number(jobStats.discovered ?? indexed ?? 0);
+  const progressIndexed = Number(jobStats.indexed ?? indexed ?? 0);
   return c.json({
     account_id: id,
     status: running ? "syncing" : acc.status,
@@ -368,11 +371,11 @@ app.get("/v1/:id/status", async (c) => {
       status: effectiveJobStatus,
       started_at: running?.started_at ?? lastJob?.started_at ?? null,
       finished_at: running ? null : (lastJob?.finished_at ?? null),
-      stats: lastJob?.stats ?? {},
+      stats: jobStats,
     },
     cursor_age_seconds: cursor ? Math.floor((Date.now() - new Date(cursor.updated_at).getTime()) / 1000) : null,
     last_error: lastErr?.message ?? null,
-    progress: { discovered: indexed, indexed },
+    progress: { discovered, indexed: progressIndexed },
   });
 });
 
@@ -462,6 +465,13 @@ app.patch("/v1/:id/containers", async (c) => {
     { source_account_id: acc.id, mode: "initial" },
     { userId: acc.user_id, priority: 4 },
   );
+  await svc.from("source_sync_jobs").upsert({
+    id: job.id,
+    source_account_id: acc.id,
+    kind: "initial",
+    status: "pending",
+    stats: { discovered: 0, indexed: 0 },
+  }, { onConflict: "id" });
   kickWorker();
   return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
 });
@@ -679,6 +689,13 @@ app.post("/v1/:id/sync", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
+  await getServiceClient().from("source_sync_jobs").upsert({
+    id: job.id,
+    source_account_id: id,
+    kind: "incremental",
+    status: "pending",
+    stats: { discovered: 0, indexed: 0 },
+  }, { onConflict: "id" });
   emitEvent(c, "sources.sync_enqueued", { id });
   kickWorker();
   return c.json({ job_id: job.id }, 202);
@@ -706,6 +723,13 @@ app.post("/v1/:id/import-uploaded", async (c) => {
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
     { userId: uid, priority: 4 });
+  await svc.from("source_sync_jobs").upsert({
+    id: job.id,
+    source_account_id: id,
+    kind: "initial",
+    status: "pending",
+    stats: { discovered: fileCount, indexed: 0 },
+  }, { onConflict: "id" });
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
   kickWorker();
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
