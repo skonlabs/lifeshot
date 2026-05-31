@@ -575,9 +575,22 @@ app.delete("/v1/:id", async (c) => {
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "delete");
   // Ownership check via user client (RLS)
-  const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
+  const { data: acc } = await supa.from("source_accounts")
+    .select("id, user_id, provider_kind")
+    .eq("id", id)
+    .maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
+  try {
+    const connector = getConnector(acc.provider_kind as any, {
+      source_account_id: id,
+      user_id: acc.user_id,
+      provider_kind: acc.provider_kind as any,
+    }, svc);
+    await connector.revoke();
+  } catch (revokeError) {
+    console.warn("sources revoke failed", { id, error: revokeError instanceof Error ? revokeError.message : String(revokeError) });
+  }
   const { data: refs, error: refsError } = await svc.from("asset_source_refs").select("asset_id").eq("source_account_id", id);
   if (refsError) throw new ApiError("internal", refsError.message);
   const { error: accountError } = await svc.from("source_accounts").update({ status: "disconnected", disconnected_at: new Date().toISOString() }).eq("id", id);

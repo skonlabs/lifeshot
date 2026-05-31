@@ -24,6 +24,8 @@ type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
 type DisconnectState = { accountId: string; providerName: string } | null;
 type SourceContainer = { id: string; name?: string };
 
+const BROWSABLE_PROVIDER_KINDS = new Set(["google_photos", "dropbox", "onedrive"]);
+
 const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars: string[] }> = {
   google_photos: {
     label: "Google Photos",
@@ -46,19 +48,6 @@ const PROVIDER_SCOPES: Record<string, { label: string; items: string[]; envVars:
     envVars: [],
   },
 };
-
-const MANUAL_FOLDER_HINT: Record<string, string> = {
-  desktop_folder: "e.g. /Users/you/Pictures/2024",
-  external_drive: "e.g. /Volumes/MyDrive/Photos",
-  nas: "e.g. //nas.local/photos/family",
-  local_ios: "e.g. Camera Roll, Favorites",
-  local_android: "e.g. DCIM/Camera, Pictures/Screenshots",
-  export_import: "e.g. summer-2024.zip, vacation-folder",
-};
-
-function manualHintFor(kind: string) {
-  return MANUAL_FOLDER_HINT[kind] ?? "Folder name or path";
-}
 
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
@@ -421,12 +410,10 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   const selected = containers.data?.selected ?? [];
   const allContainers = containers.data?.containers ?? [];
   const [draft, setDraft] = useState<Record<string, SourceContainer>>({});
-  const [manualInput, setManualInput] = useState("");
 
   useEffect(() => {
     if (!state) {
       setDraft({});
-      setManualInput("");
       return;
     }
     const next = Object.fromEntries(selected.map((item) => [item.id, item]));
@@ -444,31 +431,27 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
     });
   };
 
-  const addManual = () => {
-    const value = manualInput.trim();
-    if (!value) return;
-    const id = value;
-    setDraft((prev) => prev[id] ? prev : { ...prev, [id]: { id, name: value } });
-    setManualInput("");
-  };
-
-  // Union of API-discovered + previously-selected entries so manual ones
-  // still render as removable rows.
+  // Union of discovered + previously-selected entries so saved selections
+  // still render even if the provider temporarily omits them.
   const discoveredIds = new Set(allContainers.map((c) => c.id));
   const extraSelected = Object.values(draft).filter((c) => !discoveredIds.has(c.id));
   const rows: SourceContainer[] = [...allContainers, ...extraSelected];
-  const supportsManual = !containers.isLoading && allContainers.length === 0;
+  const expectsBrowserTree = !!state && BROWSABLE_PROVIDER_KINDS.has(state.provider.kind);
   const accountMissing = !!state && !containers.isLoading && !containers.data && !containers.error;
   const reason = (containers.data as { reason?: string | null } | undefined)?.reason ?? null;
   const reasonHint =
     reason === "service_unavailable"
-      ? "Folder discovery service isn't configured yet. You can still type folder names below."
+      ? "Folder discovery service isn't configured yet."
       : reason === "provider_unsupported"
-        ? "This provider doesn't expose a browsable folder list. Add folder names below."
+        ? "This provider doesn't expose a browsable folder list."
         : reason === "no_token"
           ? "We couldn't read this source's access token. Try reconnecting."
+          : reason === "no_session"
+            ? "Your session expired. Refresh the page and try again."
+            : reason === "account_not_found"
+              ? "This source is no longer connected."
           : reason === "internal_error"
-            ? "Couldn't load folders from the provider. You can type them below."
+            ? "Couldn't load folders from the provider. Try reconnecting, then open Select folders again."
             : null;
 
   return (
@@ -502,21 +485,10 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
               </div>
             ) : (
               <p className="text-xs text-[color:var(--umber)]">
-                {reasonHint ?? "No folders selected yet. Add one below — only those folders will be indexed and synced."}
+                {reasonHint ?? (expectsBrowserTree
+                  ? "No folders were returned by the source yet."
+                  : "No selectable folders are available for this source.")}
               </p>
-            )}
-            {supportsManual && (
-              <div className="mt-3 flex gap-2">
-                <input
-                  type="text"
-                  value={manualInput}
-                  onChange={(e) => setManualInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }}
-                  placeholder={state ? manualHintFor(state.provider.kind) : "Folder path or name"}
-                  className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--paper)] px-2 py-1.5 text-sm"
-                />
-                <Button size="sm" variant="outline" onClick={addManual} disabled={!manualInput.trim()}>Add</Button>
-              </div>
             )}
             <div className="mt-3 flex items-center justify-between gap-3">
               <p className="text-xs text-[color:var(--umber)]">

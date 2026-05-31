@@ -233,44 +233,10 @@ export function useDisconnectSource() {
 
       return { previousAccounts };
     },
-    mutationFn: async (accountId: string) => {
-      const { data: refs, error: refsError } = await supabase
-        .from("asset_source_refs")
-        .select("asset_id")
-        .eq("source_account_id", accountId);
-      if (refsError) throw refsError;
-
-      const assetIds = Array.from(
-        new Set((refs ?? []).map((row) => row.asset_id).filter((id): id is string => !!id)),
-      );
-
-      const { error: deleteError } = await supabase
-        .from("source_accounts")
-        .delete()
-        .eq("id", accountId);
-      if (deleteError) throw deleteError;
-
-      if (assetIds.length) {
-        const { data: remaining, error: remainingError } = await supabase
-          .from("asset_source_refs")
-          .select("asset_id")
-          .in("asset_id", assetIds);
-        if (remainingError) throw remainingError;
-
-        const remainingIds = new Set((remaining ?? []).map((row) => row.asset_id));
-        const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
-
-        if (orphanedIds.length) {
-          const { error: assetError } = await supabase
-            .from("assets")
-            .update({ deleted_state: "soft_deleted" })
-            .in("id", orphanedIds);
-          if (assetError) throw assetError;
-        }
-      }
-
-      return { status: "disconnected", account_id: accountId, direct: true };
-    },
+    mutationFn: (accountId: string) =>
+      api.sources<{ status: string; account_id: string }>(`/${accountId}`, {
+        method: "DELETE",
+      }),
     onError: (_error, _accountId, context) => {
       if (context?.previousAccounts) {
         qc.setQueryData(["source-accounts"], context.previousAccounts);
@@ -306,36 +272,39 @@ export function useSourceContainers(accountId: string | undefined) {
       ) as { containers?: Array<{ id: string; name?: string }> } | undefined;
       const selected = Array.isArray(entry?.containers) ? entry!.containers! : [];
 
+      const { data: accountRow, error: accountErr } = await supabase
+        .from("source_accounts")
+        .select("provider_kind")
+        .eq("id", accountId!)
+        .maybeSingle();
+      if (accountErr) throw accountErr;
+      if (!accountRow?.provider_kind) {
+        return { containers: [], selected, reason: "account_not_found" as const };
+      }
+
       // 2) Fetch the real folder/album list from the provider via a
-      //    Supabase edge function (it has the OAuth secrets server-side).
-      //    If the edge function is unavailable, fall back to a TanStack
-      //    server function that does the same via Cloudflare Worker env.
+      //    TanStack server function so we avoid the broken edge-function path.
       let containers: Array<{ id: string; name?: string }> = [];
       let reason: string | null = null;
       try {
-        const res = await api.sources<{
-          containers: Array<{ id: string; name?: string }>;
-          selected: Array<{ id: string; name?: string }>;
-        }>(`/${accountId}/containers`, { signal });
-        containers = res.containers ?? [];
-      } catch (edgeErr) {
-        try {
-          const { data: sess } = await supabase.auth.getSession();
-          const bearer = sess.session?.access_token;
-          if (!bearer) {
-            reason = "no_session";
-          } else {
-            const res = await listSourceFolders({
-              data: { accountId: accountId!, bearer },
-            });
-            if (res.ok) containers = res.folders;
-            else reason = res.reason;
-          }
-        } catch (fnErr) {
-          reason =
-            edgeErr instanceof ApiError ? edgeErr.code : "internal_error";
-          console.warn("folder listing failed", edgeErr, fnErr);
+        const { data: sess } = await supabase.auth.getSession();
+        const bearer = sess.session?.access_token;
+        if (!bearer) {
+          reason = "no_session";
+        } else {
+          const res = await listSourceFolders({
+            data: {
+              accountId: accountId!,
+              providerKind: accountRow.provider_kind,
+              bearer,
+            },
+          });
+          if (res.ok) containers = res.folders;
+          else reason = res.reason;
         }
+      } catch (error) {
+        reason = error instanceof ApiError ? error.code : "internal_error";
+        console.warn("folder listing failed", error);
       }
       return { containers, selected, reason };
     },
@@ -357,36 +326,13 @@ export function useUpdateSourceContainers() {
       const normalized = containers
         .filter((c, i, arr) => arr.findIndex((o) => o.id === c.id) === i)
         .map((c) => ({ id: c.id, name: c.name }));
-      const { data: existing, error: readErr } = await supabase
-        .from("source_permissions")
-        .select("id, scopes")
-        .eq("source_account_id", accountId)
-        .maybeSingle();
-      if (readErr) throw readErr;
-      const prior = Array.isArray(existing?.scopes) ? (existing!.scopes as unknown[]) : [];
-      const nextScopes = prior.filter(
-        (s) => !(s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers"),
+      return api.sources<{ updated: boolean; selected_count: number; job_id: string | null }>(
+        `/${accountId}/containers`,
+        {
+          method: "PATCH",
+          body: { containers: normalized },
+        },
       );
-      if (normalized.length) {
-        nextScopes.push({ type: "selected_containers", containers: normalized });
-      }
-      if (existing?.id) {
-        const { error: updErr } = await supabase
-          .from("source_permissions")
-          .update({ scopes: nextScopes })
-          .eq("id", existing.id);
-        if (updErr) throw updErr;
-      } else {
-        const { error: insErr } = await supabase.from("source_permissions").insert({
-          source_account_id: accountId,
-          can_cache_thumbnail: false,
-          can_cache_preview: false,
-          ai_allowed: false,
-          scopes: nextScopes,
-        });
-        if (insErr) throw insErr;
-      }
-      return { updated: true, selected_count: normalized.length, job_id: null };
     },
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
