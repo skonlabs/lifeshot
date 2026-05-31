@@ -1,12 +1,12 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Check, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
+import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -22,7 +22,7 @@ type ConsentState = { provider: Provider } | null;
 type ManageState = { provider: Provider; accountId: string } | null;
 type ConfigMissingState = { provider: Provider; envVars: string[] } | null;
 type DisconnectState = { accountId: string; providerName: string } | null;
-type SourceContainer = { id: string; name?: string; path?: string };
+type SourceContainer = { id: string; name?: string; path?: string; selectable?: boolean; has_children?: boolean };
 
 const BROWSABLE_PROVIDER_KINDS = new Set(["google_photos", "dropbox", "onedrive"]);
 
