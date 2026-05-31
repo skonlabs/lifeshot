@@ -545,6 +545,98 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
   );
 }
 
+function ContainerTreeNode({
+  accountId,
+  item,
+  depth,
+  expanded,
+  draft,
+  onToggleExpanded,
+  onToggleSelected,
+}: {
+  accountId: string | undefined;
+  item: SourceContainer;
+  depth: number;
+  expanded: Record<string, boolean>;
+  draft: Record<string, SourceContainer>;
+  onToggleExpanded: (item: SourceContainer) => void;
+  onToggleSelected: (item: SourceContainer) => void;
+}) {
+  const isExpanded = !!expanded[item.id];
+  const children = useSourceContainerChildren({
+    accountId,
+    parentId: item.id,
+    enabled: isExpanded && !!item.has_children,
+  });
+  const childItems = children.data?.containers ?? [];
+
+  return (
+    <div>
+      <div
+        className="flex items-start gap-2 rounded-sm px-2 py-1 text-sm text-[color:var(--ink)]"
+        style={{ paddingLeft: `${depth * 16}px` }}
+      >
+        <button
+          type="button"
+          onClick={() => item.has_children && onToggleExpanded(item)}
+          className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[color:var(--umber)] disabled:opacity-30"
+          disabled={!item.has_children}
+          aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
+        >
+          <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+        </button>
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={!!draft[item.id]}
+          onChange={() => onToggleSelected(item)}
+          disabled={item.selectable === false}
+        />
+        <button
+          type="button"
+          onClick={() => item.has_children && onToggleExpanded(item)}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+        >
+          {isExpanded ? <FolderOpen className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--umber)]" /> : <Folder className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--umber)]" />}
+          <span className="min-w-0 break-all">
+            {item.name ?? item.id}
+            {item.path && item.path !== "/" ? (
+              <span className="ml-2 text-xs text-[color:var(--umber)]">{item.path}</span>
+            ) : null}
+          </span>
+        </button>
+      </div>
+
+      {isExpanded ? (
+        <div>
+          {children.isLoading ? (
+            <p className="px-2 py-1 text-xs text-[color:var(--umber)]" style={{ paddingLeft: `${(depth + 1) * 16 + 24}px` }}>
+              Loading…
+            </p>
+          ) : childItems.length ? (
+            childItems.map((child) => (
+              <ContainerTreeNode
+                key={child.id}
+                accountId={accountId}
+                item={child}
+                depth={depth + 1}
+                expanded={expanded}
+                draft={draft}
+                onToggleExpanded={onToggleExpanded}
+                onToggleSelected={onToggleSelected}
+              />
+            ))
+          ) : (
+            <p className="px-2 py-1 text-xs text-[color:var(--umber)]" style={{ paddingLeft: `${(depth + 1) * 16 + 24}px` }}>
+              No subfolders.
+            </p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DisconnectDialog({
   state,
   pending,
