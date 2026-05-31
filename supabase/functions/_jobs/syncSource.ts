@@ -120,6 +120,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
     throw new Error("not found: source_account");
   }
+  const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
+  if (markSyncing.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
+    throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
+  }
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
   let providerKind = acct.provider_kind;
