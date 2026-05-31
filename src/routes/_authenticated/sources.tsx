@@ -163,9 +163,9 @@ function Sources() {
       <section>
         <div className="text-archive-label mb-3">Add a source</div>
         {providers.isLoading ? (
-          <div className="grid gap-2 md:grid-cols-2">{Array.from({length:4}).map((_,i)=><Skeleton key={i} className="h-20 rounded-md" />)}</div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{Array.from({length:6}).map((_,i)=><Skeleton key={i} className="h-20 rounded-md" />)}</div>
         ) : (
-          <div className="grid gap-2 md:grid-cols-2">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {providers.data?.providers?.map((p) => {
               const connected = connectedByKind.get(p.kind);
               return (
