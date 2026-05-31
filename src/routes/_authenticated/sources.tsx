@@ -167,7 +167,7 @@ function Sources() {
     try {
       const out = await connect.mutateAsync({
         provider_id: provider.id,
-        redirect_uri: `${window.location.origin}/sources?oauth_popup=1`,
+        redirect_uri: `${window.location.origin}/oauth-popup`,
       });
       if (out.authorize_url) {
         popup.location.href = out.authorize_url;
