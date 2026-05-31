@@ -4,7 +4,7 @@ import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Check, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
+import { Check, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
