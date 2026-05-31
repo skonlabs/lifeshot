@@ -110,29 +110,55 @@ app.post("/connect", async (c) => {
   const oauth = provider.oauth_config ?? {};
   let authorize_url: string | null = null;
   let session_token: string | null = null;
+  let upload_target: { bucket: string; prefix: string } | null = null;
 
-  if (oauth.authorize_url) {
+  // Resolve OAuth client id from per-provider edge secret (never from DB).
+  const envClientId =
+    provider.kind === "google_photos" ? Deno.env.get("GOOGLE_CLIENT_ID")
+    : provider.kind === "dropbox"     ? Deno.env.get("DROPBOX_APP_KEY")
+    : provider.kind === "onedrive"    ? Deno.env.get("MICROSOFT_CLIENT_ID")
+    : undefined;
+
+  if (oauth.authorize_url && envClientId) {
     const u = new URL(oauth.authorize_url);
     u.searchParams.set("state", state);
     u.searchParams.set("redirect_uri", `${ENV.SUPABASE_URL}/functions/v1/sources/callback`);
-    // Prefer credentials from edge function secrets over seeded oauth_config
-    // so client IDs never live in the database.
-    const envClientId = provider.kind === "google_photos"
-      ? Deno.env.get("GOOGLE_CLIENT_ID")
-      : undefined;
-    const clientId = envClientId ?? oauth.client_id;
-    if (clientId) u.searchParams.set("client_id", clientId);
+    u.searchParams.set("client_id", envClientId);
     if (oauth.scope) u.searchParams.set("scope", oauth.scope);
     if (oauth.access_type) u.searchParams.set("access_type", oauth.access_type);
     if (oauth.prompt) u.searchParams.set("prompt", oauth.prompt);
     u.searchParams.set("response_type", "code");
+    // Microsoft requires response_mode=query for code flow on common endpoint
+    if (provider.kind === "onedrive") u.searchParams.set("response_mode", "query");
+    // Dropbox needs token_access_type=offline to get a refresh token
+    if (provider.kind === "dropbox") u.searchParams.set("token_access_type", "offline");
     authorize_url = u.toString();
+  } else if (oauth.authorize_url && !envClientId) {
+    throw new ApiError("failed_precondition",
+      `${provider.name} is not configured. Ask the admin to set the OAuth client credentials.`);
+  } else if (provider.kind === "export_import") {
+    // Create the account up front so the upload UI can target it
+    const { data: account, error: accErr } = await svc.from("source_accounts").insert({
+      user_id: uid, provider_id: provider.id, status: "active",
+      external_account_id: `upload_${state.slice(0, 8)}`,
+      display_label: "Uploaded files",
+    }).select().single();
+    if (accErr) throw new ApiError("internal", accErr.message);
+    await svc.from("source_tokens").insert({ source_account_id: account.id, access_token_encrypted: "" });
+    await svc.from("source_permissions").insert({
+      source_account_id: account.id, can_cache_thumbnail: true, can_cache_preview: true, ai_allowed: true,
+    });
+    await svc.from("source_capabilities").insert({
+      source_account_id: account.id, capability: provider.default_capabilities ?? {},
+    });
+    upload_target = { bucket: "source_uploads", prefix: `${uid}/${account.id}` };
+    session_token = account.id;
   } else {
-    // Local / export providers: return a one-time session token
+    // Local / on-device providers: return a one-time session token for the client agent flow.
     session_token = state;
   }
 
-  const out = { authorize_url, session_token, state };
+  const out = { authorize_url, session_token, state, upload_target };
   await storeIdempotent(c, "sources.connect", reqHash, out, 200);
   emitEvent(c, "sources.connect_initiated", { provider: provider.kind });
   return c.json(out);
@@ -164,25 +190,43 @@ app.get("/callback", async (c) => {
   let refresh_token: string | null = null;
   let expires_at: string | null = null;
 
+  const tokenEndpoints: Record<string, { url: string; cid?: string; cs?: string }> = {
+    google_photos: {
+      url: "https://oauth2.googleapis.com/token",
+      cid: Deno.env.get("GOOGLE_CLIENT_ID"),
+      cs:  Deno.env.get("GOOGLE_CLIENT_SECRET"),
+    },
+    dropbox: {
+      url: "https://api.dropboxapi.com/oauth2/token",
+      cid: Deno.env.get("DROPBOX_APP_KEY"),
+      cs:  Deno.env.get("DROPBOX_APP_SECRET"),
+    },
+    onedrive: {
+      url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      cid: Deno.env.get("MICROSOFT_CLIENT_ID"),
+      cs:  Deno.env.get("MICROSOFT_CLIENT_SECRET"),
+    },
+  };
+
   try {
-    if (provider.kind === "google_photos") {
-      const cid = Deno.env.get("GOOGLE_CLIENT_ID");
-      const cs = Deno.env.get("GOOGLE_CLIENT_SECRET");
-      if (!cid || !cs) return c.redirect(`${base}/sources?error=oauth_not_configured`);
-      const r = await fetch("https://oauth2.googleapis.com/token", {
+    const cfg = tokenEndpoints[provider.kind];
+    if (cfg) {
+      if (!cfg.cid || !cfg.cs) return c.redirect(`${base}/sources?error=oauth_not_configured&provider=${provider.kind}`);
+      const body = new URLSearchParams({
+        code,
+        client_id: cfg.cid,
+        client_secret: cfg.cs,
+        redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/callback`,
+        grant_type: "authorization_code",
+      });
+      const r = await fetch(cfg.url, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          code,
-          client_id: cid,
-          client_secret: cs,
-          redirect_uri: `${ENV.SUPABASE_URL}/functions/v1/sources/callback`,
-          grant_type: "authorization_code",
-        }),
+        body,
       });
       if (!r.ok) {
         const txt = await r.text();
-        return c.redirect(`${base}/sources?error=token_exchange_failed&detail=${encodeURIComponent(txt.slice(0, 120))}`);
+        return c.redirect(`${base}/sources?error=token_exchange_failed&provider=${provider.kind}&detail=${encodeURIComponent(txt.slice(0, 160))}`);
       }
       const j = await r.json() as { access_token: string; refresh_token?: string; expires_in?: number };
       access_token = j.access_token;
@@ -241,6 +285,32 @@ app.post("/:id/sync", async (c) => {
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   emitEvent(c, "sources.sync_enqueued", { id });
   return c.json({ job_id: job.id }, 202);
+});
+
+// After client-side upload to the source_uploads storage bucket, scan the
+// folder for this account and enqueue an import job. Returns counts.
+app.post("/:id/import-uploaded", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc } = await supa.from("source_accounts")
+    .select("id, provider:source_providers(kind)").eq("id", id).maybeSingle();
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+  if ((acc as any).provider?.kind !== "export_import") {
+    throw new ApiError("failed_precondition", "This account does not accept uploads");
+  }
+  const svc = getServiceClient();
+  const prefix = `${uid}/${id}`;
+  const { data: files, error } = await svc.storage.from("source_uploads").list(prefix, {
+    limit: 1000, sortBy: { column: "name", order: "asc" },
+  });
+  if (error) throw new ApiError("internal", error.message);
+  const fileCount = (files ?? []).filter((f) => f.name && !f.name.endsWith("/")).length;
+  const job = await jobEnqueuer.enqueue("syncSource",
+    { source_account_id: id, mode: "upload_import", bucket: "source_uploads", prefix, file_count: fileCount },
+    { userId: uid, priority: 4 });
+  emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
+  return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
 app.delete("/:id", async (c) => {

@@ -161,7 +161,21 @@ export function useConnectSource() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { provider_id: string; redirect_uri?: string }) =>
-      api.sources<{ authorize_url: string | null; session_token: string | null; state: string }>("/connect", { method: "POST", body }),
+      api.sources<{
+        authorize_url: string | null;
+        session_token: string | null;
+        state: string;
+        upload_target: { bucket: string; prefix: string } | null;
+      }>("/connect", { method: "POST", body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+  });
+}
+
+export function useImportUploaded() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) =>
+      api.sources<{ job_id: string; queued_files: number }>(`/${accountId}/import-uploaded`, { method: "POST", body: {} }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
   });
 }

@@ -1,44 +1,77 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useProviders, useSourceAccounts, useSourceStatus, useSyncSource } from "@/lib/api/hooks";
+import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceStatus, useSyncSource } from "@/lib/api/hooks";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plug, RefreshCcw, Trash2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Plug, RefreshCcw, Trash2, UploadCloud } from "lucide-react";
 import { toast } from "sonner";
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
-const LOCAL_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas", "export_import"]);
+const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
 const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
+
+type Provider = { id: string; kind: string; name: string; priority: string };
+type ExplainerState = { provider: Provider; reason: string } | null;
+type UploadState = { accountId: string; prefix: string } | null;
 
 export const Route = createFileRoute("/_authenticated/sources")({ component: Sources });
 
+const PROVIDER_EXPLAINERS: Record<string, string> = {
+  icloud: "Apple does not provide a public iCloud Photos API. To bring iCloud memories in, export them from iCloud.com or Photos on Mac as a zip and use the Export/Import provider below.",
+  amazon_photos: "Amazon Photos has no public API for third-party indexing. Use Amazon's export tool, then upload the zip via Export/Import.",
+  local_ios: "iOS Camera Roll requires the PMP iOS app for on-device indexing (PhotoKit). Coming soon \u2014 in the meantime export an album to a zip and upload it.",
+  local_android: "Android Gallery requires the PMP Android app (MediaStore). Coming soon \u2014 export to zip and upload as a workaround.",
+  desktop_folder: "Desktop folders require the PMP desktop agent. Coming soon \u2014 zip the folder and upload it.",
+  external_drive: "External drives require the PMP desktop agent. Coming soon \u2014 zip the contents and upload them.",
+  nas: "NAS volumes require the PMP desktop agent (SMB). Coming soon \u2014 export a folder and upload as a zip.",
+};
+
 function Sources() {
   useSourceProgress();
+  const search = useSearch({ strict: false }) as Record<string, string | undefined>;
   const accounts = useSourceAccounts();
   const providers = useProviders();
   const connect = useConnectSource();
   const sync = useSyncSource();
   const disconnect = useDisconnectSource();
+  const [explainer, setExplainer] = useState<ExplainerState>(null);
+  const [upload, setUpload] = useState<UploadState>(null);
+
+  // Surface OAuth callback errors as toasts.
+  useEffect(() => {
+    if (search?.error) {
+      const detail = search.detail ? `: ${decodeURIComponent(search.detail)}` : "";
+      toast.error(`Connection failed (${search.error}${detail})`);
+    } else if (search?.connected) {
+      toast.success("Source connected. Indexing started.");
+    }
+  }, [search?.error, search?.detail, search?.connected]);
 
   async function onConnect(providerId: string) {
+    const provider = providers.data?.providers?.find((p) => p.id === providerId);
+    if (!provider) { toast.error("Source provider unavailable."); return; }
+
+    if (UNSUPPORTED_PROVIDER_KINDS.has(provider.kind) || ON_DEVICE_PROVIDER_KINDS.has(provider.kind)) {
+      setExplainer({ provider, reason: PROVIDER_EXPLAINERS[provider.kind] ?? "This provider isn't available yet." });
+      return;
+    }
+
     try {
-      const provider = providers.data?.providers?.find((p) => p.id === providerId);
-      if (!provider) {
-        toast.error("Source provider unavailable.");
-        return;
-      }
-      if (UNSUPPORTED_PROVIDER_KINDS.has(provider.kind)) {
-        toast.error(`${provider.name} does not have a live connection flow yet.`);
-        return;
-      }
-      if (LOCAL_PROVIDER_KINDS.has(provider.kind)) {
-        toast.message(`${provider.name} needs its local import flow wired next.`);
-        return;
-      }
       const out = await connect.mutateAsync({
         provider_id: providerId,
-        redirect_uri: `${window.location.origin}/callback`,
+        redirect_uri: `${window.location.origin}/sources`,
       });
-      if (out.authorize_url) window.location.href = out.authorize_url;
-      else toast.success("Connected.");
+      if (out.authorize_url) {
+        window.location.href = out.authorize_url;
+        return;
+      }
+      if (provider.kind === "export_import" && out.upload_target && out.session_token) {
+        setUpload({ accountId: out.session_token, prefix: out.upload_target.prefix });
+        return;
+      }
+      toast.message("Connection started.");
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -85,7 +118,7 @@ function Sources() {
                   <div className="font-medium text-[color:var(--ink)]">{p.name}</div>
                   <div className="text-xs text-[color:var(--umber)]">
                     {p.kind} · {p.priority}
-                    {UNSUPPORTED_PROVIDER_KINDS.has(p.kind) ? " · unavailable" : LOCAL_PROVIDER_KINDS.has(p.kind) ? " · local flow pending" : ""}
+                    {UNSUPPORTED_PROVIDER_KINDS.has(p.kind) ? " · no public API" : ON_DEVICE_PROVIDER_KINDS.has(p.kind) ? " · needs PMP agent" : ""}
                   </div>
                 </div>
               </button>
@@ -93,7 +126,89 @@ function Sources() {
           </div>
         )}
       </section>
+      <ExplainerDialog state={explainer} onClose={() => setExplainer(null)} />
+      <UploadDialog state={upload} onClose={() => setUpload(null)} />
     </div>
+  );
+}
+
+function ExplainerDialog({ state, onClose }: { state: ExplainerState; onClose: () => void }) {
+  return (
+    <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{state?.provider.name}</DialogTitle>
+          <DialogDescription>{state?.reason}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Got it</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const importUploaded = useImportUploaded();
+
+  async function onFiles(files: FileList | null) {
+    if (!files || !state) return;
+    setBusy(true);
+    setProgress({ done: 0, total: files.length });
+    let failed = 0;
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const safeName = f.name.replace(/[^\w.\-]+/g, "_");
+        const path = `${state.prefix}/${Date.now()}_${i}_${safeName}`;
+        const { error } = await supabase.storage.from("source_uploads").upload(path, f, {
+          upsert: false, contentType: f.type || "application/octet-stream",
+        });
+        if (error) { failed++; toast.error(`Upload failed: ${f.name} \u2014 ${error.message}`); }
+        setProgress({ done: i + 1, total: files.length });
+      }
+      const res = await importUploaded.mutateAsync(state.accountId);
+      toast.success(`Queued ${res.queued_files} file(s) for indexing.${failed ? ` ${failed} failed to upload.` : ""}`);
+      onClose();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  }
+
+  return (
+    <Dialog open={!!state} onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Upload photos & videos</DialogTitle>
+          <DialogDescription>
+            Drop a zip export or pick files directly. They upload to your private storage, then PMP indexes them \u2014 originals stay yours.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="hairline rounded-md border border-dashed bg-[color:var(--paper-2)] p-8 text-center">
+          <UploadCloud className="mx-auto mb-2 h-6 w-6 text-[color:var(--umber)]" strokeWidth={1.5} />
+          <p className="text-sm text-[color:var(--umber)]">Images, videos, or a single .zip export.</p>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            accept="image/*,video/*,.zip"
+            className="hidden"
+            onChange={(e) => onFiles(e.target.files)}
+          />
+          <Button className="mt-4" disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? `Uploading ${progress?.done ?? 0}/${progress?.total ?? 0}\u2026` : "Choose files"}
+          </Button>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
