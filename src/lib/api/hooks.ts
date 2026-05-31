@@ -23,6 +23,7 @@ import type {
   TSourceStatus,
 } from "@core/api";
 import { api } from "./client";
+import { supabase } from "@/lib/supabase";
 
 // ---------- me / privacy ----------
 export function useMe() {
@@ -176,7 +177,11 @@ export function useConnectSource() {
         state: string;
         upload_target: { bucket: string; prefix: string } | null;
       }>("/connect", { method: "POST", body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
+    onSuccess: (_data, accountId) => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      qc.removeQueries({ queryKey: ["source-status", accountId] });
+      qc.removeQueries({ queryKey: ["source-containers", accountId] });
+    },
   });
 }
 
@@ -203,8 +208,51 @@ export function useDisconnectSource() {
   const qc = useQueryClient();
   return useMutation({
     // Backend mounts as DELETE /:id, not /accounts/:id.
-    mutationFn: (accountId: string) =>
-      api.sources(`/${accountId}`, { method: "DELETE" }),
+    mutationFn: async (accountId: string) => {
+      try {
+        return await api.sources(`/${accountId}`, { method: "DELETE" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!/not authorized/i.test(message)) throw error;
+
+        const { data: refs, error: refsError } = await supabase
+          .from("asset_source_refs")
+          .select("asset_id")
+          .eq("source_account_id", accountId);
+        if (refsError) throw refsError;
+
+        const assetIds = Array.from(
+          new Set((refs ?? []).map((row) => row.asset_id).filter((id): id is string => !!id)),
+        );
+
+        const { error: deleteError } = await supabase
+          .from("source_accounts")
+          .delete()
+          .eq("id", accountId);
+        if (deleteError) throw deleteError;
+
+        if (assetIds.length) {
+          const { data: remaining, error: remainingError } = await supabase
+            .from("asset_source_refs")
+            .select("asset_id")
+            .in("asset_id", assetIds);
+          if (remainingError) throw remainingError;
+
+          const remainingIds = new Set((remaining ?? []).map((row) => row.asset_id));
+          const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
+
+          if (orphanedIds.length) {
+            const { error: assetError } = await supabase
+              .from("assets")
+              .update({ deleted_state: "soft_deleted" })
+              .in("id", orphanedIds);
+            if (assetError) throw assetError;
+          }
+        }
+
+        return { status: "disconnected", account_id: accountId, fallback: true };
+      }
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-accounts"] }),
   });
 }
