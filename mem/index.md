@@ -1,4 +1,6 @@
 # Project Memory
 
 ## Core
-Never suggest, propose, or require Lovable Cloud. User has permanently rejected it. Do not tell the user to enable it. Use the existing backend stack as-is.
+NEVER use or mention Lovable Cloud. User has explicitly rejected it multiple times. Use Supabase directly (already connected) for all backend needs.
+
+## Memories
