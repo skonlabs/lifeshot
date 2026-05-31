@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useGrantConsent, usePrivacySettings, useUpdatePrivacy } from "@/lib/api/hooks";
+import { usePrivacySettings, useUpdatePrivacy } from "@/lib/api/hooks";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/settings/privacy")({ component: Privacy });
@@ -7,7 +7,6 @@ export const Route = createFileRoute("/_authenticated/settings/privacy")({ compo
 function Privacy() {
   const { data, isLoading } = usePrivacySettings();
   const update = useUpdatePrivacy();
-  const consent = useGrantConsent();
   const s = data as { ai_enabled?: boolean; face_processing_enabled?: boolean; default_visibility?: "private" | "family" | "public" } | undefined;
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-6 py-10">
@@ -24,13 +23,19 @@ function Privacy() {
             label="AI processing"
             description="Enables natural-language search, captions, and summaries."
             value={!!s?.ai_enabled}
-            onChange={(v) => { update.mutate({ ai_enabled: v }); consent.mutate({ scope: "ai_processing", granted: v }); }}
+            onChange={(v) => update.mutate({ ai_enabled: v }, {
+              onSuccess: () => toast.success(v ? "AI enabled" : "AI disabled"),
+              onError: (e) => toast.error((e as Error).message),
+            })}
           />
           <Toggle
             label="Face recognition"
             description="Groups faces into people. Off by default."
             value={!!s?.face_processing_enabled}
-            onChange={(v) => { update.mutate({ face_processing_enabled: v }); consent.mutate({ scope: "face_recognition", granted: v }); }}
+            onChange={(v) => update.mutate({ face_processing_enabled: v }, {
+              onSuccess: () => toast.success(v ? "Face recognition on" : "Face recognition off"),
+              onError: (e) => toast.error((e as Error).message),
+            })}
           />
           <Select
             label="Default visibility"
