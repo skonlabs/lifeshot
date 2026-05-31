@@ -326,36 +326,13 @@ export function useUpdateSourceContainers() {
       const normalized = containers
         .filter((c, i, arr) => arr.findIndex((o) => o.id === c.id) === i)
         .map((c) => ({ id: c.id, name: c.name }));
-      const { data: existing, error: readErr } = await supabase
-        .from("source_permissions")
-        .select("id, scopes")
-        .eq("source_account_id", accountId)
-        .maybeSingle();
-      if (readErr) throw readErr;
-      const prior = Array.isArray(existing?.scopes) ? (existing!.scopes as unknown[]) : [];
-      const nextScopes = prior.filter(
-        (s) => !(s && typeof s === "object" && (s as Record<string, unknown>).type === "selected_containers"),
+      return api.sources<{ updated: boolean; selected_count: number; job_id: string | null }>(
+        `/${accountId}/containers`,
+        {
+          method: "PATCH",
+          body: { containers: normalized },
+        },
       );
-      if (normalized.length) {
-        nextScopes.push({ type: "selected_containers", containers: normalized });
-      }
-      if (existing?.id) {
-        const { error: updErr } = await supabase
-          .from("source_permissions")
-          .update({ scopes: nextScopes })
-          .eq("id", existing.id);
-        if (updErr) throw updErr;
-      } else {
-        const { error: insErr } = await supabase.from("source_permissions").insert({
-          source_account_id: accountId,
-          can_cache_thumbnail: false,
-          can_cache_preview: false,
-          ai_allowed: false,
-          scopes: nextScopes,
-        });
-        if (insErr) throw insErr;
-      }
-      return { updated: true, selected_count: normalized.length, job_id: null };
     },
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
