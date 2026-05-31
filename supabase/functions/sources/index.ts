@@ -10,21 +10,28 @@ import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
-// Kick the worker drain immediately so newly enqueued jobs start within ~1s
-// instead of waiting up to 10s for pg_cron. Fire-and-forget.
+// Kick the worker drain immediately so newly enqueued jobs start within
+// the same request lifetime instead of waiting up to 10s for pg_cron.
+// We run the drain in-process via EdgeRuntime.waitUntil so we don't depend
+// on the WORKER_SECRET being shared between functions or on a second HTTP
+// hop succeeding.
 function kickWorker() {
-  try {
-    const workerUrl = ENV.SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/worker/drain";
-    const workerSecret = Deno.env.get("WORKER_SECRET") ?? "";
-    // deno-lint-ignore no-explicit-any
-    const globalAny = globalThis as any;
-    const kick = fetch(workerUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-worker-secret": workerSecret },
-      body: "{}",
-    }).catch(() => undefined);
-    if (globalAny.EdgeRuntime?.waitUntil) globalAny.EdgeRuntime.waitUntil(kick);
-  } catch { /* ignore */ }
+  // deno-lint-ignore no-explicit-any
+  const globalAny = globalThis as any;
+  const run = (async () => {
+    try {
+      const { drainUntilEmpty } = await import("../_pipeline/runner.ts");
+      // Drain up to ~25s of work; the platform allows background tasks to
+      // continue after the response is returned.
+      await drainUntilEmpty(25000, 16);
+    } catch (err) {
+      console.error("kickWorker drain failed", err);
+    }
+  })();
+  if (globalAny.EdgeRuntime?.waitUntil) {
+    globalAny.EdgeRuntime.waitUntil(run);
+  }
+  // If waitUntil isn't available (local dev), just let the promise float.
 }
 
 const ConnectIn = z.object({
