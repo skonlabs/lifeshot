@@ -174,6 +174,54 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       // Google base URL is short-lived (~60min).
       return { url: `${it.baseUrl}=d`, expiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString() };
     },
+    countSelectionStats: async () => {
+      const selectedAlbums = await getSelectedAlbums();
+      if (!selectedAlbums.length) return { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+
+      const stats = { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const seenAlbums = new Set<string>();
+      const seenItems = new Set<string>();
+
+      for (const album of selectedAlbums) {
+        if (!seenAlbums.has(album.id)) {
+          seenAlbums.add(album.id);
+          stats.folder_count += 1;
+        }
+
+        let pageToken: string | undefined;
+        let safety = 0;
+        do {
+          if (album.id === "__all__") {
+            const params = new URLSearchParams({ pageSize: "100" });
+            if (pageToken) params.set("pageToken", pageToken);
+            const r = await call(`/mediaItems?${params.toString()}`);
+            const body = await r.json() as { mediaItems?: any[]; nextPageToken?: string };
+            for (const item of (body.mediaItems ?? [])) {
+              if (!item?.id || seenItems.has(item.id)) continue;
+              seenItems.add(item.id);
+              const mediaType = item.mediaMetadata?.video ? "video" : "photo";
+              stats[mediaType] += 1;
+            }
+            pageToken = body.nextPageToken;
+          } else {
+            const r = await call("/mediaItems:search", {
+              method: "POST",
+              body: JSON.stringify({ albumId: album.id, pageSize: 100, pageToken: pageToken ?? undefined }),
+            });
+            const body = await r.json() as { mediaItems?: any[]; nextPageToken?: string };
+            for (const item of (body.mediaItems ?? [])) {
+              if (!item?.id || seenItems.has(item.id)) continue;
+              seenItems.add(item.id);
+              const mediaType = item.mediaMetadata?.video ? "video" : "photo";
+              stats[mediaType] += 1;
+            }
+            pageToken = body.nextPageToken;
+          }
+        } while (pageToken && ++safety < 1000);
+      }
+
+      return stats;
+    },
     listAlbums: async (parentId) => {
       const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string, basePath: string) => {
         const out: AssetAlbumRef[] = [];
