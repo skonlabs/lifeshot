@@ -262,13 +262,13 @@ export function useSourceContainers(accountId: string | undefined) {
       // Read saved selections + live folder list from the edge function,
       // which uses the service-role Supabase client to access stored OAuth
       // tokens and call the provider APIs (Google Photos, Dropbox, OneDrive).
-      let containers: Array<{ id: string; name?: string }> = [];
-      let selected: Array<{ id: string; name?: string }> = [];
+      let containers: Array<{ id: string; name?: string; path?: string }> = [];
+      let selected: Array<{ id: string; name?: string; path?: string }> = [];
       let reason: string | null = null;
       try {
         const fetchContainers = (path: string) => api.sources<{
-          containers: Array<{ id: string; name?: string }>;
-          selected: Array<{ id: string; name?: string }>;
+          containers: Array<{ id: string; name?: string; path?: string }>;
+          selected: Array<{ id: string; name?: string; path?: string }>;
         }>(path, { signal });
 
         let res;
@@ -382,11 +382,11 @@ export function useUpdateSourceContainers() {
       containers,
     }: {
       accountId: string;
-      containers: Array<{ id: string; name?: string }>;
+      containers: Array<{ id: string; name?: string; path?: string }>;
     }) => {
       const normalized = containers
         .filter((c, i, arr) => arr.findIndex((o) => o.id === c.id) === i)
-        .map((c) => ({ id: c.id, name: c.name }));
+        .map((c) => ({ id: c.id, name: c.name, path: c.path }));
       return api.sources<{ updated: boolean; selected_count: number; job_id: string | null }>(
         `/${accountId}/containers`,
         {
