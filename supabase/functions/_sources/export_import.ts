@@ -43,6 +43,7 @@ export const exportImportFactory = (ctx: ConnectorContext, supabase: any): Sourc
     capabilities: CAPS, getCapabilities: () => CAPS,
     authenticate: async () => {}, refreshToken: async () => {},
     listAssets: async (cursor) => readZips(cursor),
+    countSelectionStats: async () => ({ folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 }),
     getDeltaChanges: async (cursor) => {
       const r = await readZips(cursor);
       return { items: r.items, deleted: [], nextCursor: r.nextCursor };
