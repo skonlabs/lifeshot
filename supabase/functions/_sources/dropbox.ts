@@ -82,6 +82,23 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     return Array.isArray(selected?.containers) ? selected!.containers : [];
   }
 
+  async function resolveFolderPath(target: { id: string; name?: string; path?: string }): Promise<string> {
+    const rawPath = target.path ?? target.id;
+    if (!rawPath) return "";
+    if (rawPath === "/") return "";
+
+    try {
+      const meta = await call("/files/get_metadata", {
+        path: rawPath,
+        include_media_info: false,
+      });
+      const canonical = (meta?.path_lower ?? meta?.path_display ?? rawPath) as string;
+      return canonical === "/" ? "" : canonical;
+    } catch {
+      return rawPath;
+    }
+  }
+
   async function getAccessToken(): Promise<string> {
     const { data, error } = await supabase.from("source_tokens")
       .select("access_token_encrypted, refresh_token_encrypted, expires_at")
@@ -252,9 +269,11 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       const seenFiles = new Set<string>();
 
       for (const target of selectedFolders) {
-        const rootPath = target.id === "/" ? "/" : target.id;
-        if (rootPath && !seenFolders.has(rootPath)) {
-          seenFolders.add(rootPath);
+        const canonicalPath = await resolveFolderPath(target as { id: string; name?: string; path?: string });
+        const rootPath = canonicalPath ? canonicalPath : "/";
+        const rootKey = rootPath.toLowerCase();
+        if (rootPath && !seenFolders.has(rootKey)) {
+          seenFolders.add(rootKey);
           stats.folder_count += 1;
         }
 
@@ -271,8 +290,9 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
           for (const entry of (json.entries ?? [])) {
             if (entry[".tag"] === "folder") {
               const folderId = (entry.path_lower ?? entry.path_display ?? `/${entry.name}`) as string;
-              if (!seenFolders.has(folderId)) {
-                seenFolders.add(folderId);
+              const folderKey = folderId.toLowerCase();
+              if (!seenFolders.has(folderKey)) {
+                seenFolders.add(folderKey);
                 stats.folder_count += 1;
               }
               continue;
