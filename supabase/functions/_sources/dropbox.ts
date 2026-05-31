@@ -208,16 +208,24 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       const url = await getTemporaryLink(providerAssetId);
       return url ? { url, expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString() } : null;
     },
-    listAlbums: async () => {
-      // Recursively walk the user's Dropbox and surface ALL folders (full tree)
-      // so they can pick specific subfolders, not just top-level ones.
+    listAlbums: async (parentId) => {
       try {
-        const folders: Array<{ id: string; name: string; path?: string }> = [
-          { id: "/", name: "All of Dropbox (root)", path: "/" },
-        ];
+        const path = !parentId || parentId === "/" ? "" : parentId;
+        const folders: Array<{ id: string; name: string; path?: string; has_children?: boolean; selectable?: boolean }> = [];
+
+        if (!parentId || parentId === "/") {
+          folders.push({
+            id: "/",
+            name: "All of Dropbox (root)",
+            path: "/",
+            has_children: true,
+            selectable: true,
+          });
+        }
+
         let json: any = await call("/files/list_folder", {
-          path: "",
-          recursive: true,
+          path,
+          recursive: false,
           include_deleted: false,
           include_media_info: false,
           include_mounted_folders: true,
@@ -228,19 +236,27 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         while (true) {
           for (const e of (json.entries ?? [])) {
             if (e[".tag"] !== "folder") continue;
-            const path = (e.path_display ?? e.path_lower ?? `/${e.name}`) as string;
-            folders.push({ id: e.path_lower ?? path, name: e.name, path });
+            const folderPath = (e.path_display ?? e.path_lower ?? `/${e.name}`) as string;
+            folders.push({
+              id: e.path_lower ?? folderPath,
+              name: e.name,
+              path: folderPath,
+              has_children: true,
+              selectable: true,
+            });
           }
           if (!json.has_more || !json.cursor) break;
-          if (++safety > 1000) break; // walk up to ~2M entries to reach all folders
+          if (++safety > 1000) break;
           json = await call("/files/list_folder/continue", { cursor: json.cursor });
         }
-        // Sort by path so the UI can render a stable tree.
+
         folders.sort((a, b) => (a.path ?? a.id).localeCompare(b.path ?? b.id));
         return folders as any;
       } catch (err) {
         console.error("dropbox listAlbums failed", err);
-        return [{ id: "/", name: "All of Dropbox (root)", path: "/" } as any];
+        return !parentId || parentId === "/"
+          ? [{ id: "/", name: "All of Dropbox (root)", path: "/", has_children: true, selectable: true } as any]
+          : [];
       }
     },
     disconnect: async () => {
