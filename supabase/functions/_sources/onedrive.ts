@@ -54,6 +54,18 @@ function inferMimeType(name: string): string | undefined {
   return map[ext];
 }
 
+function inferFileKind(name: string, mimeType?: string): "photo" | "video" | "document" | "audio" | "other" {
+  const ext = name.split(".").pop()?.toLowerCase();
+  const mime = mimeType ?? inferMimeType(name);
+  if (mime?.startsWith("image/")) return "photo";
+  if (mime?.startsWith("video/")) return "video";
+  if (mime?.startsWith("audio/")) return "audio";
+  if (ext && ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "csv", "zip", "json", "xml", "psd", "ai", "indd"].includes(ext)) {
+    return "document";
+  }
+  return ext ? "other" : "document";
+}
+
 function isSupportedMedia(name: string, mimeType?: string): boolean {
   const mime = mimeType ?? inferMimeType(name);
   return !!mime && (mime.startsWith("image/") || mime.startsWith("video/"));
@@ -220,6 +232,53 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       const item = await call(`${API}/me/drive/items/${providerAssetId}?select=@microsoft.graph.downloadUrl`);
       const url = item["@microsoft.graph.downloadUrl"] as string | undefined;
       return url ? { url, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() } : null;
+    },
+    countSelectionStats: async () => {
+      const selectedFolders = await getSelectedFolders();
+      if (!selectedFolders.length) return { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+
+      const stats = { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const seenFolders = new Set<string>();
+      const seenFiles = new Set<string>();
+
+      for (const target of selectedFolders) {
+        const rootId = target.id || "root";
+        if (!seenFolders.has(rootId)) {
+          seenFolders.add(rootId);
+          stats.folder_count += 1;
+        }
+
+        let nextUrl: string | null = rootId === "root"
+          ? `${API}/me/drive/root/search(q='')?$top=200&select=id,name,file,folder,audio,image,photo,video,parentReference`
+          : `${API}/me/drive/items/${rootId}/search(q='')?$top=200&select=id,name,file,folder,audio,image,photo,video,parentReference`;
+        let safety = 0;
+
+        while (nextUrl) {
+          const json = await call(nextUrl);
+          for (const item of (json.value ?? [])) {
+            if (item.folder) {
+              const folderId = item.id as string | undefined;
+              if (folderId && !seenFolders.has(folderId)) {
+                seenFolders.add(folderId);
+                stats.folder_count += 1;
+              }
+              continue;
+            }
+            if (!item.file && !item.photo && !item.video && !item.audio) continue;
+            const fileId = (item.id ?? item.webUrl ?? item.name) as string;
+            if (seenFiles.has(fileId)) continue;
+            seenFiles.add(fileId);
+            const kind = inferFileKind(item.name ?? fileId, item.file?.mimeType);
+            stats[kind] += 1;
+          }
+
+          const candidate = (json["@odata.nextLink"] as string | undefined) ?? null;
+          nextUrl = candidate;
+          if (++safety > 1000) break;
+        }
+      }
+
+      return stats;
     },
     listAlbums: async (parentId) => {
       try {

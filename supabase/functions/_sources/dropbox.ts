@@ -54,6 +54,18 @@ function inferMimeType(name: string): string | undefined {
   return map[ext];
 }
 
+function inferFileKind(name: string, mimeType?: string): "photo" | "video" | "document" | "audio" | "other" {
+  const ext = name.split(".").pop()?.toLowerCase();
+  const mime = mimeType ?? inferMimeType(name);
+  if (mime?.startsWith("image/")) return "photo";
+  if (mime?.startsWith("video/")) return "video";
+  if (mime?.startsWith("audio/")) return "audio";
+  if (ext && ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "csv", "zip", "json", "xml", "psd", "ai", "indd"].includes(ext)) {
+    return "document";
+  }
+  return ext ? "other" : "document";
+}
+
 function isSupportedMedia(name: string, mimeType?: string): boolean {
   const mime = mimeType ?? inferMimeType(name);
   return !!mime && (mime.startsWith("image/") || mime.startsWith("video/"));
@@ -230,6 +242,56 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     getOriginalAccessToken: async (providerAssetId) => {
       const url = await getTemporaryLink(providerAssetId);
       return url ? { url, expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString() } : null;
+    },
+    countSelectionStats: async () => {
+      const selectedFolders = await getSelectedFolders();
+      if (!selectedFolders.length) return { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+
+      const stats = { folder_count: 0, photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const seenFolders = new Set<string>();
+      const seenFiles = new Set<string>();
+
+      for (const target of selectedFolders) {
+        const rootPath = target.id === "/" ? "/" : target.id;
+        if (rootPath && !seenFolders.has(rootPath)) {
+          seenFolders.add(rootPath);
+          stats.folder_count += 1;
+        }
+
+        let json: any = await call("/files/list_folder", {
+          path: rootPath === "/" ? "" : rootPath,
+          recursive: true,
+          include_deleted: false,
+          include_media_info: false,
+          limit: 2000,
+        });
+        let safety = 0;
+
+        while (true) {
+          for (const entry of (json.entries ?? [])) {
+            if (entry[".tag"] === "folder") {
+              const folderId = (entry.path_lower ?? entry.path_display ?? `/${entry.name}`) as string;
+              if (!seenFolders.has(folderId)) {
+                seenFolders.add(folderId);
+                stats.folder_count += 1;
+              }
+              continue;
+            }
+            if (entry[".tag"] !== "file") continue;
+            const fileId = (entry.id ?? entry.path_lower ?? entry.path_display ?? entry.name) as string;
+            if (seenFiles.has(fileId)) continue;
+            seenFiles.add(fileId);
+            const kind = inferFileKind(entry.name ?? fileId);
+            stats[kind] += 1;
+          }
+
+          if (!json.has_more || !json.cursor) break;
+          if (++safety > 1000) break;
+          json = await call("/files/list_folder/continue", { cursor: json.cursor });
+        }
+      }
+
+      return stats;
     },
     listAlbums: async (parentId) => {
       try {

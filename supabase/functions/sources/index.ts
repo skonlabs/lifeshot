@@ -84,6 +84,24 @@ type ContainerRefOut = {
   has_children?: boolean;
 };
 
+type SourceSelectionStats = {
+  folder_count: number;
+  photo: number;
+  video: number;
+  document: number;
+  audio: number;
+  other: number;
+};
+
+const ZERO_SELECTION_STATS: SourceSelectionStats = {
+  folder_count: 0,
+  photo: 0,
+  video: 0,
+  document: 0,
+  audio: 0,
+  other: 0,
+};
+
 async function getSelectedContainers(svc: ReturnType<typeof getServiceClient>, sourceAccountId: string): Promise<ContainerRefOut[]> {
   const { data, error } = await svc.from("source_permissions")
     .select("scopes")
@@ -164,6 +182,23 @@ async function listSelectableContainers(
   }
 }
 
+async function getSelectionStats(providerKind: string, sourceAccountId: string, userId: string): Promise<SourceSelectionStats> {
+  const API_LISTABLE = new Set(["google_photos", "dropbox", "onedrive"]);
+  if (!API_LISTABLE.has(providerKind)) return ZERO_SELECTION_STATS;
+  try {
+    const connector = getConnector(providerKind as any, {
+      source_account_id: sourceAccountId,
+      user_id: userId,
+      provider_kind: providerKind as any,
+    }, getServiceClient());
+    if (!connector.countSelectionStats) return ZERO_SELECTION_STATS;
+    return await connector.countSelectionStats();
+  } catch (err) {
+    console.error("countSelectionStats failed", providerKind, sourceAccountId, err);
+    return ZERO_SELECTION_STATS;
+  }
+}
+
 // Providers list (public-ish: seeded reference data)
 app.get("/v1/providers", async (c) => {
   const cached = await cache.get<unknown>(c, keys.providers());
@@ -188,7 +223,7 @@ app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const { data, error } = await supa.from("source_accounts").select(`
-    id, provider_id, display_label, status, connected_at, disconnected_at,
+    id, user_id, provider_id, display_label, status, connected_at, disconnected_at,
     provider:source_providers(kind)
   `).order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
@@ -230,6 +265,13 @@ app.get("/v1/accounts", async (c) => {
       else bucket.other += 1;
     }
   }
+  const accountMeta = new Map<string, { providerKind: string; userId: string }>();
+  for (const row of (data ?? []) as Array<{ id: string; user_id?: string; provider?: { kind?: string } | null }>) {
+    accountMeta.set(row.id, {
+      providerKind: row.provider?.kind ?? "",
+      userId: row.user_id ?? uid,
+    });
+  }
   const scopesByAccount = new Map<string, ContainerRefOut[]>();
   if (ids.length) {
     const { data: perms, error: permsError } = await supa.from("source_permissions")
@@ -244,15 +286,25 @@ app.get("/v1/accounts", async (c) => {
       scopesByAccount.set(row.source_account_id, Array.isArray(selected?.containers) ? selected!.containers : []);
     }
   }
+  const liveStatsByAccount = new Map<string, SourceSelectionStats>();
+  await Promise.all(ids.map(async (accountId) => {
+    const meta = accountMeta.get(accountId);
+    if (!meta?.providerKind) {
+      liveStatsByAccount.set(accountId, ZERO_SELECTION_STATS);
+      return;
+    }
+    const stats = await getSelectionStats(meta.providerKind, accountId, meta.userId);
+    liveStatsByAccount.set(accountId, stats);
+  }));
   return c.json({
     accounts: (data ?? []).map((r: any) => ({
       id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
       display_label: r.display_label, status: r.status,
       connected_at: r.connected_at, disconnected_at: r.disconnected_at,
       asset_count: counts[r.id] ?? 0, last_sync_at: null,
-      selected_container_count: scopesByAccount.get(r.id)?.length ?? 0,
+      selected_container_count: liveStatsByAccount.get(r.id)?.folder_count ?? 0,
       selected_containers: scopesByAccount.get(r.id) ?? [],
-      counts_by_kind: breakdown[r.id] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 },
+      counts_by_kind: liveStatsByAccount.get(r.id) ?? breakdown[r.id] ?? ZERO_SELECTION_STATS,
     })),
   });
 });
