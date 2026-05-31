@@ -175,11 +175,8 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
       return { url: `${it.baseUrl}=d`, expiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString() };
     },
     listAlbums: async (parentId) => {
-      if (parentId && parentId !== "root") return [];
-      const out: AssetAlbumRef[] = [];
-      // Synthetic "everything" container so users can opt in to the full library.
-      out.push({ id: "__all__", name: "All photos & videos (entire library)", path: "/", selectable: true, has_children: false } as any);
-      const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string) => {
+      const fetchAll = async (endpoint: "albums" | "sharedAlbums", label: string, basePath: string) => {
+        const out: AssetAlbumRef[] = [];
         let pageToken: string | undefined;
         let safety = 0;
         do {
@@ -199,17 +196,31 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
             out.push({
               id: a.id,
               name: `${label}${title}${count}`,
-              path: `/${label ? "Shared/" : "Albums/"}${title}`,
+              path: `${basePath}/${title}`,
               selectable: true,
               has_children: false,
             } as any);
           }
           pageToken = j.nextPageToken;
         } while (pageToken && ++safety < 40);
+        return out;
       };
-      try { await fetchAll("albums", ""); } catch (e) { console.error("albums fetch error", e); }
-      try { await fetchAll("sharedAlbums", "Shared · "); } catch (e) { console.error("sharedAlbums fetch error", e); }
-      return out;
+
+      if (!parentId || parentId === "root") {
+        return [
+          { id: "__all__", name: "All photos & videos", path: "/", selectable: true, has_children: false } as any,
+          { id: "__albums__", name: "Albums", path: "/Albums", selectable: false, has_children: true } as any,
+          { id: "__shared__", name: "Shared albums", path: "/Shared", selectable: false, has_children: true } as any,
+        ];
+      }
+
+      try {
+        if (parentId === "__albums__") return await fetchAll("albums", "", "/Albums");
+        if (parentId === "__shared__") return await fetchAll("sharedAlbums", "Shared · ", "/Shared");
+      } catch (e) {
+        console.error("google_photos listAlbums fetch error", e);
+      }
+      return [];
     },
     getDeltaChanges: async (cursor): Promise<DeltaResult> => {
       // Google Photos has no delta; fall back to bounded list with checkpoint.

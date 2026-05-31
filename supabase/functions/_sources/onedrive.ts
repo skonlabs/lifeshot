@@ -160,7 +160,9 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
     };
   }
 
-  return {
+  let listAssetsRef: (cursor: string | null) => Promise<PageResult>;
+
+  const conn: SourceConnector = {
     capabilities: CAPS,
     getCapabilities: () => CAPS,
     authenticate: async () => { await getAccessToken(); },
@@ -189,7 +191,7 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
     getDeltaChanges: async (cursor) => {
       const selectedFolders = await getSelectedFolders();
       if (selectedFolders.length) {
-        const page = await conn.listAssets(cursor);
+        const page = await listAssetsRef(cursor);
         return { items: page.items, deleted: [], nextCursor: page.nextCursor } satisfies DeltaResult;
       }
       const url = cursor ?? `${API}/me/drive/root/delta?$top=100&select=id,name,size,createdDateTime,lastModifiedDateTime,webUrl,file,photo,video,image,@microsoft.graph.downloadUrl,deleted`;
@@ -254,4 +256,7 @@ export const onedriveFactory = (ctx: ConnectorContext, supabase: any): SourceCon
       await supabase.from("source_accounts").update({ status: "disconnected" }).eq("id", ctx.source_account_id);
     },
   };
+
+  listAssetsRef = conn.listAssets;
+  return conn;
 };
