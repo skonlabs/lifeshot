@@ -74,8 +74,18 @@ export const queryParser: QueryParser = {
       filterPlan.to   = `${years[years.length - 1]}-12-31`;
     }
     if (sources.length) filterPlan.sources = sources;
+    const mediaTypeMap: [RegExp, string][] = [
+      [/\b(videos?|clips?|footage|reels?|movies?)\b/, "video"],
+      [/\b(docs?|documents?|pdfs?|files?|spreadsheets?|presentations?)\b/, "document"],
+      [/\b(audios?|music|songs?|tracks?|podcasts?)\b/, "audio"],
+      [/\b(photos?|images?|pictures?|pics?|shots?|portraits?)\b/, "photo"],
+    ];
+    for (const [re, type] of mediaTypeMap) {
+      if (re.test(q)) { filterPlan.media_type = type; break; }
+    }
+    const hasFilter = years.length || sources.length || filterPlan.media_type;
     return {
-      intent: years.length || sources.length ? "filter" : "find",
+      intent: hasFilter ? "filter" : "find",
       entities: { dates: years, sources, places, people: [] },
       filterPlan,
     };

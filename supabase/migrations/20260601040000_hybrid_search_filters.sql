@@ -1,6 +1,8 @@
--- Fix "column reference asset_id is ambiguous" in hybrid_search by aliasing
--- inner CTE columns so they don't collide with OUT parameter names.
--- Also applies media_type and sources filters from _filters jsonb.
+-- 20260601040000_hybrid_search_filters.sql
+-- Extends hybrid_search RPC to apply media_type and sources filters.
+-- Previously only from/to date filters were applied; all other filter keys
+-- in the _filters jsonb were silently ignored.
+
 drop function if exists public.hybrid_search(text, vector, jsonb, int);
 
 create or replace function public.hybrid_search(
@@ -15,14 +17,14 @@ create or replace function public.hybrid_search(
 ) language plpgsql stable security definer set search_path = public as $$
 #variable_conflict use_column
 declare
-  _uid uuid := auth.uid();
-  _from timestamptz;
-  _to timestamptz;
+  _uid        uuid := auth.uid();
+  _from       timestamptz;
+  _to         timestamptz;
   _media_type text;
 begin
-  _from        := nullif(_filters->>'from','')::timestamptz;
-  _to          := nullif(_filters->>'to','')::timestamptz;
-  _media_type  := nullif(_filters->>'media_type','');
+  _from       := nullif(_filters->>'from','')::timestamptz;
+  _to         := nullif(_filters->>'to','')::timestamptz;
+  _media_type := nullif(_filters->>'media_type','');
 
   return query
   with fts as (

@@ -65,7 +65,14 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         const conn = getConnector(providerKind, {
           source_account_id: ref.source_account_id, user_id: asset.user_id, provider_kind: providerKind,
         }, sb);
-        const isImage = (asset.mime_type ?? "").startsWith("image/") || asset.media_type === "photo";
+        const mime = asset.mime_type ?? "";
+        const isImage = mime.startsWith("image/") || asset.media_type === "photo";
+        const isVideo = mime.startsWith("video/") || asset.media_type === "video";
+        const isAudio = mime.startsWith("audio/") || asset.media_type === "audio";
+        const isDocument = asset.media_type === "document" ||
+          ["application/pdf", "application/msword",
+           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+           "application/vnd.ms-excel", "application/vnd.odf+xml"].includes(mime);
 
         if (isImage) {
           const head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
@@ -133,7 +140,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
                 orientation: ex.media.orientation ?? null,
                 color_space: ex.media.colorSpace ?? null,
                 has_alpha: ex.media.hasAlpha ?? null,
-                has_audio: false, has_video: false,
+                has_audio: false, has_video: false, // images never have separate video/audio streams
                 thumbnail_possible: true, preview_possible: true,
                 ai_processing_possible: true, ocr_possible: true,
               }, { onConflict: "asset_id" });
@@ -174,6 +181,60 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             if (ex.exif?.timezoneOffset && !asset.timezone) updates.timezone = ex.exif.timezoneOffset;
             await sb.from("assets").update(updates).eq("id", asset_id);
           }
+        }
+
+        // Video: write has_video=true into media_metadata and stub video_metadata row.
+        // Full codec/framerate data is not extractable from a 384KB head range without
+        // a dedicated ffprobe-style parser; we record what we can infer from the MIME type.
+        if (isVideo) {
+          await sb.from("asset_media_metadata").upsert({
+            asset_id, user_id: asset.user_id,
+            width: asset.width ?? null, height: asset.height ?? null,
+            aspect_ratio: asset.width && asset.height ? Number(asset.width) / Number(asset.height) : null,
+            has_video: true,
+            has_audio: true, // conservative default; no byte-level audio detection without ffprobe
+            has_alpha: false,
+            thumbnail_possible: true, preview_possible: true,
+            ai_processing_possible: true, ocr_possible: false,
+          }, { onConflict: "asset_id" });
+          await sb.from("asset_video_metadata").upsert({
+            asset_id, user_id: asset.user_id,
+            container_format: mime.split("/")[1] ?? null,
+            raw: {},
+          }, { onConflict: "asset_id" });
+          // Lift duration onto asset row if already stored (e.g. from cloud provider metadata).
+          await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
+          extractedAny = true;
+        }
+
+        // Audio: write has_audio into media_metadata.
+        if (isAudio) {
+          await sb.from("asset_media_metadata").upsert({
+            asset_id, user_id: asset.user_id,
+            has_video: false, has_audio: true, has_alpha: false,
+            thumbnail_possible: false, preview_possible: false,
+            ai_processing_possible: false, ocr_possible: false,
+          }, { onConflict: "asset_id" });
+          await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
+          extractedAny = true;
+        }
+
+        // Document: write document_metadata stub with what we can infer.
+        // Full page count / author requires OCR; ocrAsset will populate further.
+        if (isDocument) {
+          await sb.from("asset_media_metadata").upsert({
+            asset_id, user_id: asset.user_id,
+            has_video: false, has_audio: false, has_alpha: false,
+            thumbnail_possible: mime === "application/pdf",
+            preview_possible: true,
+            ai_processing_possible: true, ocr_possible: true,
+          }, { onConflict: "asset_id" });
+          await sb.from("asset_document_metadata").upsert({
+            asset_id, user_id: asset.user_id,
+            raw: {},
+          }, { onConflict: "asset_id" });
+          await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
+          extractedAny = true;
         }
 
         // File-system shell metadata (filename / extension / parent folder) for every cloud asset.
