@@ -11,29 +11,52 @@ import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
 // Kick the worker drain immediately so newly enqueued jobs start within
-// the same request lifetime instead of waiting up to 10s for pg_cron.
-// We run the drain in-process via EdgeRuntime.waitUntil so we don't depend
-// on the WORKER_SECRET being shared between functions or on a second HTTP
-// hop succeeding.
+// the same request lifetime. Two strategies run in parallel:
+//
+// 1. In-process drain via _pipeline/runner (no HTTP hop, works even without
+//    WORKER_SECRET).  Runs for up to 55s via EdgeRuntime.waitUntil.
+//
+// 2. HTTP POST to the dedicated worker function (/worker/drain) so it can
+//    run independently for the full Edge Function time limit.  Falls back
+//    silently if the worker URL or secret is not configured.
 async function kickWorker() {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
-  const run = (async () => {
+
+  const inProcess = (async () => {
     try {
       const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
       await drainOnce({ batch: 1 });
-      // Drain up to ~25s of work; the platform allows background tasks to
-      // continue after the response is returned.
-      await drainUntilEmpty(25000, 16);
+      await drainUntilEmpty(55000, 16);
     } catch (err) {
-      console.error("kickWorker drain failed", err);
+      console.error("kickWorker in-process drain failed", err);
     }
   })();
+
+  const httpKick = (async () => {
+    try {
+      const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
+      const secret = Deno.env.get("WORKER_SECRET") ?? "";
+      await fetch(workerUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(secret ? { "x-worker-secret": secret } : {}),
+        },
+        body: JSON.stringify({ batch: 16 }),
+      });
+    } catch {
+      // Best-effort — worker function may not be deployed or reachable.
+    }
+  })();
+
+  const combined = Promise.all([inProcess, httpKick]);
+
   if (globalAny.EdgeRuntime?.waitUntil) {
-    globalAny.EdgeRuntime.waitUntil(run);
+    globalAny.EdgeRuntime.waitUntil(combined);
     return;
   }
-  await run;
+  await combined;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {

@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient } from "../_pipeline/clients.ts";
-import { enqueueJob } from "../_pipeline/enqueuer.ts";
+import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
@@ -203,68 +203,100 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw e;
   }
 
-  // Upsert: per-source ref + a bare canonical asset row (if not existing).
-  // needsNormalize tracks assets that require (re-)normalization:
-  //   - new assets (no existing ref)
-  //   - existing assets whose provider modified_time has changed
-  // We use modified_time as part of the idempotency key so that updating a
-  // file in Dropbox/OneDrive causes a fresh normalizeMetadata run.
-  const needsNormalize: Array<{ assetId: string; modifiedTime: string | null }> = [];
+  // ── Bulk DB work: 4 queries total regardless of page size ───────────────────
+  //
+  // 1) Load all existing refs for this page in ONE query.
+  // 2) Bulk-insert brand-new assets.
+  // 3) Bulk-upsert all asset_source_refs.
+  // 4) Bulk-enqueue normalizeMetadata for new/changed assets.
+  //
+  // Previous approach: ~3 sequential queries × N items = 300 round-trips/page.
+  // This approach: 4 queries regardless of N — fits easily inside the 25s window.
 
-  for (const a of page.items) {
-    // 1) Find existing ref → asset_id + stored modified time
-    const { data: existingRef } = await sb.from("asset_source_refs")
-      .select("asset_id, source_modified_at")
-      .eq("source_account_id", source_account_id)
-      .eq("source_asset_id", a.provider_asset_id).maybeSingle();
+  const providerIds = page.items.map((a) => a.provider_asset_id);
 
-    let assetId: string | null = (existingRef as any)?.asset_id ?? null;
-    const storedModifiedAt: string | null = (existingRef as any)?.source_modified_at ?? null;
-    const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
+  // 1) Bulk-load existing refs.
+  const { data: existingRefs } = await sb.from("asset_source_refs")
+    .select("asset_id, source_asset_id, source_modified_at, is_primary")
+    .eq("source_account_id", source_account_id)
+    .in("source_asset_id", providerIds);
 
-    const isNew = !assetId;
-    if (isNew) {
-      const { data: newAsset, error: aErr } = await sb.from("assets").insert({
-        user_id: acct.user_id,
-        media_type: a.media_type === "image" ? "photo" : a.media_type,
-        mime_type: a.mime_type,
-        capture_time: a.capture_time,
-        upload_time: a.upload_time,
-        created_time: a.created_time,
-        modified_time: a.modified_time,
-        timezone: a.timezone,
-        width: a.width, height: a.height, duration_ms: a.duration_ms,
-        file_size_bytes: a.file_size_bytes,
-        checksum_hash: a.checksum_hex,
-        perceptual_hash: a.perceptual_hash,
-        location_lat: a.location?.lat ?? null,
-        location_lng: a.location?.lng ?? null,
-        device_make: a.device_make, device_model: a.device_model,
-        thumbnail_cache_key: a.thumbnail_url ?? null,
-        proxy_cache_key: a.preview_url ?? null,
-        status: "ingested",
-      }).select("id").single();
-      if (aErr) throw new Error(`insert asset: ${aErr.message}`);
-      assetId = newAsset!.id as string;
-    }
+  const refMap = new Map<string, { asset_id: string; source_modified_at: string | null; is_primary: boolean }>(
+    (existingRefs ?? []).map((r: any) => [r.source_asset_id, r]),
+  );
 
-    const relPath = (a as any).relative_path ?? a.provider_url ?? null;
-    await sb.from("asset_source_refs").upsert({
-      asset_id: assetId, source_account_id, source_asset_id: a.provider_asset_id,
+  // 2) Bulk-insert new assets (those without an existing ref).
+  const newItems = page.items.filter((a) => !refMap.has(a.provider_asset_id));
+  let newAssetMap = new Map<string, string>(); // provider_asset_id → asset_id
+
+  if (newItems.length > 0) {
+    const rows = newItems.map((a) => ({
+      user_id: acct.user_id,
+      media_type: a.media_type === "image" ? "photo" : a.media_type,
+      mime_type: a.mime_type ?? null,
+      capture_time: a.capture_time ?? null,
+      upload_time: a.upload_time ?? null,
+      created_time: a.created_time ?? null,
+      modified_time: a.modified_time ?? null,
+      timezone: a.timezone ?? null,
+      width: a.width ?? null,
+      height: a.height ?? null,
+      duration_ms: a.duration_ms ?? null,
+      file_size_bytes: a.file_size_bytes ?? null,
+      checksum_hash: a.checksum_hex ?? null,
+      perceptual_hash: a.perceptual_hash ?? null,
+      location_lat: a.location?.lat ?? null,
+      location_lng: a.location?.lng ?? null,
+      device_make: a.device_make ?? null,
+      device_model: a.device_model ?? null,
+      thumbnail_cache_key: a.thumbnail_url ?? null,
+      proxy_cache_key: a.preview_url ?? null,
+      status: "ingested",
+    }));
+    const { data: inserted, error: insertErr } = await sb.from("assets")
+      .insert(rows).select("id");
+    if (insertErr) throw new Error(`bulk insert assets: ${insertErr.message}`);
+    // Map inserted IDs back to provider_asset_ids by position.
+    (inserted ?? []).forEach((row: any, i: number) => {
+      newAssetMap.set(newItems[i].provider_asset_id, row.id);
+    });
+  }
+
+  // 3) Bulk-upsert asset_source_refs.
+  const now = new Date().toISOString();
+  const refRows = page.items.map((a) => {
+    const existing = refMap.get(a.provider_asset_id);
+    const assetId = existing?.asset_id ?? newAssetMap.get(a.provider_asset_id)!;
+    return {
+      asset_id: assetId,
+      source_account_id,
+      source_asset_id: a.provider_asset_id,
       source_kind: providerKind,
-      source_relative_path: relPath,
-      source_modified_at: providerModifiedAt,
+      source_relative_path: (a as any).relative_path ?? a.provider_url ?? null,
+      source_modified_at: a.modified_time ?? a.created_time ?? null,
       provider_url: a.provider_url ?? null,
-      is_primary: isNew ? true : (existingRef as any)?.is_primary ?? false,
-      last_seen_at: new Date().toISOString(),
-    }, { onConflict: "source_account_id,source_asset_id" });
+      is_primary: existing ? (existing.is_primary ?? false) : true,
+      last_seen_at: now,
+    };
+  }).filter((r) => r.asset_id); // skip any that failed to insert
 
-    // Schedule normalization for new files or files modified since last sync.
-    const hasChanged = isNew || !storedModifiedAt ||
-      (providerModifiedAt && providerModifiedAt > storedModifiedAt);
-    if (hasChanged) {
-      needsNormalize.push({ assetId: assetId!, modifiedTime: providerModifiedAt });
-    }
+  if (refRows.length > 0) {
+    const { error: refErr } = await sb.from("asset_source_refs")
+      .upsert(refRows, { onConflict: "source_account_id,source_asset_id" });
+    if (refErr) throw new Error(`bulk upsert refs: ${refErr.message}`);
+  }
+
+  // Collect assets needing normalizeMetadata (new OR modified).
+  const needsNormalize: Array<{ assetId: string; modifiedTime: string | null }> = [];
+  for (const a of page.items) {
+    const existing = refMap.get(a.provider_asset_id);
+    const assetId = existing?.asset_id ?? newAssetMap.get(a.provider_asset_id);
+    if (!assetId) continue;
+    const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
+    const isNew = !existing;
+    const hasChanged = isNew || !existing.source_modified_at ||
+      (providerModifiedAt && providerModifiedAt > existing.source_modified_at);
+    if (hasChanged) needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
   }
 
   // Cascade deletions via refs.
@@ -284,16 +316,16 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   // Save cursor
   await saveCursor(sb, source_account_id, cursorKind, page.nextCursor);
 
-  // Fan-out normalizeMetadata only for new/changed assets.
-  // The idempotency key includes modified_time so that updating a file in the
-  // provider (new modified_time) produces a new normalizeMetadata run even if
-  // the asset already exists in the DB.
-  for (const { assetId, modifiedTime } of needsNormalize) {
-    const modKey = modifiedTime ? `:${modifiedTime}` : `:initial`;
-    await enqueueJob("normalizeMetadata", {
-      userId: acct.user_id, payload: { asset_id: assetId },
-      idempotencyKey: `normalize:${assetId}${modKey}`,
-    });
+  // 4) Bulk-enqueue normalizeMetadata — one INSERT for all changed assets.
+  if (needsNormalize.length > 0) {
+    await enqueueMany(needsNormalize.map(({ assetId, modifiedTime }) => ({
+      name: "normalizeMetadata",
+      opts: {
+        userId: acct.user_id,
+        payload: { asset_id: assetId },
+        idempotencyKey: `normalize:${assetId}:${modifiedTime ?? "initial"}`,
+      },
+    })));
   }
 
   // Chain next page
