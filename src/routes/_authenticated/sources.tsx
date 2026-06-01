@@ -895,8 +895,8 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
         <div className="mt-3">
           <div className="h-1.5 overflow-hidden rounded-full bg-[color:var(--paper-2)]">
             <div
-              className={`h-full bg-[color:var(--ink)] transition-all ${pct === null ? "animate-pulse w-1/3" : ""}`}
-              style={pct !== null ? { width: `${pct}%` } : undefined}
+              className="h-full bg-[color:var(--ink)] transition-all"
+              style={{ width: `${pct}%` }}
             />
           </div>
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
