@@ -848,8 +848,18 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const k = a.selection_counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
   const docsCombined = k.document + k.audio + k.other;
-  const currentFileRaw = (s?.last_job?.stats as Record<string, unknown> | undefined)?.current_file;
+  const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
+  const currentFileRaw = stats.current_file;
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
+  const stage = typeof stats.stage === "string" ? stats.stage : null;
+  const stageLabel =
+    stage === "connecting" ? "Connecting to source…" :
+    stage === "listing"    ? "Listing files…" :
+    stage === "indexing"   ? "Indexing files…" :
+    discovered === 0       ? "Discovering files…" :
+                              "Syncing…";
+  const queueError = stats.queue_error;
+  const queueErrorText = typeof queueError === "string" ? queueError : null;
   return (
     <li className="hairline rounded-md border bg-[color:var(--paper)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -906,11 +916,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
           </div>
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
             <span className="flex min-w-0 items-center gap-1">
-              {discovered === 0 ? (
-                <span>Discovering files…</span>
-              ) : (
-                <span>Syncing…</span>
-              )}
+              <span>{stageLabel}</span>
               {currentFile && (
                 <span className="truncate max-w-[200px] opacity-70">
                   {currentFile}
@@ -923,9 +929,9 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
           </div>
         </div>
       )}
-      {(s?.last_error || (s?.last_job?.stats as Record<string,unknown>|undefined)?.queue_error) && (
+      {(s?.last_error || queueErrorText) && (
         <p className="mt-2 text-xs text-destructive">
-          {s?.last_error ?? String((s!.last_job!.stats as Record<string,unknown>).queue_error)}
+          {s?.last_error ?? queueErrorText}
         </p>
       )}
     </li>
