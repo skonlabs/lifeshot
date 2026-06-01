@@ -189,7 +189,10 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const mimeType = inferMimeType(name);
     if (!isSupportedMedia(name, mimeType)) return null;
 
-    const link = await getTemporaryLink(entry.path_display ?? entry.path_lower);
+    // Do NOT call getTemporaryLink here — that adds one HTTP round-trip per file
+    // during listing and causes rate-limit hits (100 concurrent requests per page).
+    // The path in provider_url is enough for later jobs (generateDerived,
+    // normalizeMetadata) to call getOriginalAccessToken on-demand.
     const media = entry.media_info?.metadata ?? {};
     const kind = inferFileKind(name, mimeType);
     const mediaTypeOut: "image" | "video" | "audio" | "document" =
@@ -205,8 +208,8 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       width: media.dimensions?.width,
       height: media.dimensions?.height,
       file_size_bytes: entry.size,
-      thumbnail_url: link,
-      preview_url: link,
+      thumbnail_url: undefined, // fetched on-demand by generateDerived
+      preview_url: undefined,   // fetched on-demand by generateDerived
       provider_url: entry.path_display ?? entry.path_lower,
       raw: { path_display: entry.path_display ?? null },
     };
