@@ -398,10 +398,13 @@ app.get("/v1/:id/status", async (c) => {
   const jobStats = { ...persistedJobStats, ...queueJobStats };
   const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed);
   const progressIndexed = indexed;
-  const syncing = effectiveJobStatus === "pending" || effectiveJobStatus === "running";
+  const lastErrorMessage = lastErr?.message ?? queueJob?.last_error ?? null;
+  const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
+  const syncing = !unauthorized && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
+  const accountStatus = unauthorized ? "revoked" : (syncing ? "syncing" : acc.status);
   return c.json({
     account_id: id,
-    status: syncing ? "syncing" : acc.status,
+    status: accountStatus,
     last_job: {
       id: activeJob?.id ?? lastJob?.id ?? queueJob?.id ?? null,
       kind: effectiveJobKind,
@@ -411,7 +414,7 @@ app.get("/v1/:id/status", async (c) => {
       stats: jobStats,
     },
     cursor_age_seconds: cursor ? Math.floor((Date.now() - new Date(cursor.updated_at).getTime()) / 1000) : null,
-    last_error: lastErr?.message ?? queueJob?.last_error ?? null,
+    last_error: unauthorized ? "Authorization expired. Please reconnect this source." : lastErrorMessage,
     progress: { discovered, indexed: progressIndexed },
   });
 });
@@ -716,10 +719,19 @@ app.post("/v1/:id/sync", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
-  const { error: syncStatusError } = await getServiceClient().from("source_accounts")
+  const svc = getServiceClient();
+  const syncStatusAttempt = await svc.from("source_accounts")
     .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
-  if (syncStatusError) throw new ApiError("internal", syncStatusError.message);
-  const { error: syncJobError } = await getServiceClient().from("source_sync_jobs").upsert({
+  if (syncStatusAttempt.error) {
+    if (/sync_cancel_requested_at/i.test(syncStatusAttempt.error.message)) {
+      const { error: fallbackStatusError } = await svc.from("source_accounts")
+        .update({ status: "pending" }).eq("id", id);
+      if (fallbackStatusError) throw new ApiError("internal", fallbackStatusError.message);
+    } else {
+      throw new ApiError("internal", syncStatusAttempt.error.message);
+    }
+  }
+  const { error: syncJobError } = await svc.from("source_sync_jobs").upsert({
     id: job.id,
     source_account_id: id,
     kind: "incremental",
@@ -748,7 +760,15 @@ app.post("/v1/:id/sync/stop", async (c) => {
   // 1) Mark the account so the worker bails out on its next page.
   const { error: cancelFlagError } = await svc.from("source_accounts")
     .update({ sync_cancel_requested_at: now, status: "active" }).eq("id", id);
-  if (cancelFlagError) throw new ApiError("internal", cancelFlagError.message);
+  if (cancelFlagError) {
+    if (/sync_cancel_requested_at/i.test(cancelFlagError.message)) {
+      const { error: fallbackCancelError } = await svc.from("source_accounts")
+        .update({ status: "active" }).eq("id", id);
+      if (fallbackCancelError) throw new ApiError("internal", fallbackCancelError.message);
+    } else {
+      throw new ApiError("internal", cancelFlagError.message);
+    }
+  }
 
   // 2) Remove queued (not-yet-started) syncSource jobs for this account.
   await svc.from("job_queue").delete()

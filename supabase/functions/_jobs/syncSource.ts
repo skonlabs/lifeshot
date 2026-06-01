@@ -3,7 +3,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
 import { getConnector } from "../_sources/registry.ts";
-import { ConnectorRateLimitError } from "../_sources/types.ts";
+import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
 async function recordSyncError(
@@ -114,8 +114,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_accounts pending failed: ${accountRunning.error.message}`);
   }
 
-  const { data: acct, error } = await sb.from("source_accounts")
+  const accountSelect = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status, sync_cancel_requested_at").eq("id", source_account_id).single();
+  const accountSelectFallback = accountSelect.error && /sync_cancel_requested_at/i.test(accountSelect.error.message)
+    ? await sb.from("source_accounts")
+      .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single()
+    : null;
+  const acct = accountSelect.data ?? accountSelectFallback?.data;
+  const error = accountSelect.error && !accountSelectFallback ? accountSelect.error : accountSelectFallback?.error ?? accountSelect.error;
   if (error || !acct) {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
     throw new Error("not found: source_account");
@@ -132,8 +138,16 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
   if (markSyncing.error) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
-    throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
+    if (/sync_status.*syncing/i.test(markSyncing.error.message)) {
+      const fallbackMarkPending = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
+      if (fallbackMarkPending.error) {
+        await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", fallbackMarkPending.error.message, { stage: "mark_syncing_fallback" });
+        throw new Error(`source_accounts pending fallback failed: ${fallbackMarkPending.error.message}`);
+      }
+    } else {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
+      throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
+    }
   }
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
@@ -167,6 +181,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   try {
     page = cursorKind === "delta" ? await conn.getDeltaChanges(cursor) : await conn.listAssets(cursor);
   } catch (e) {
+    if (e instanceof ConnectorAuthError) {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_connector_auth_failed", e.message, { stage: "list", provider_kind: providerKind, mode });
+      await sb.from("source_accounts").update({ status: "revoked" }).eq("id", source_account_id);
+      throw new Error(e.message);
+    }
     if (e instanceof ConnectorRateLimitError) {
       await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: e.retryAfterSeconds });
       return { rateLimited: true };
@@ -265,7 +284,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  if (page.nextCursor) {
+  const currentJobStatus = await sb.from("source_sync_jobs").select("status").eq("id", ctx.jobId).maybeSingle();
+  const cancellationRequested = currentJobStatus.data?.status === "cancelled";
+
+  if (page.nextCursor && !cancellationRequested) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
