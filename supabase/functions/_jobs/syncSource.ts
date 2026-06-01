@@ -204,15 +204,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   // Upsert: per-source ref + a bare canonical asset row (if not existing).
-  const upsertedAssetIds: string[] = [];
+  // needsNormalize tracks assets that require (re-)normalization:
+  //   - new assets (no existing ref)
+  //   - existing assets whose provider modified_time has changed
+  // We use modified_time as part of the idempotency key so that updating a
+  // file in Dropbox/OneDrive causes a fresh normalizeMetadata run.
+  const needsNormalize: Array<{ assetId: string; modifiedTime: string | null }> = [];
+
   for (const a of page.items) {
-    // 1) Find existing ref → asset_id
+    // 1) Find existing ref → asset_id + stored modified time
     const { data: existingRef } = await sb.from("asset_source_refs")
-      .select("asset_id").eq("source_account_id", source_account_id)
+      .select("asset_id, source_modified_at")
+      .eq("source_account_id", source_account_id)
       .eq("source_asset_id", a.provider_asset_id).maybeSingle();
 
-    let assetId: string | null = existingRef?.asset_id ?? null;
-    if (!assetId) {
+    let assetId: string | null = (existingRef as any)?.asset_id ?? null;
+    const storedModifiedAt: string | null = (existingRef as any)?.source_modified_at ?? null;
+    const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
+
+    const isNew = !assetId;
+    if (isNew) {
       const { data: newAsset, error: aErr } = await sb.from("assets").insert({
         user_id: acct.user_id,
         media_type: a.media_type === "image" ? "photo" : a.media_type,
@@ -237,13 +248,23 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       assetId = newAsset!.id as string;
     }
 
+    const relPath = (a as any).relative_path ?? a.provider_url ?? null;
     await sb.from("asset_source_refs").upsert({
       asset_id: assetId, source_account_id, source_asset_id: a.provider_asset_id,
-      provider_url: a.provider_url ?? null, is_primary: !existingRef,
+      source_kind: providerKind,
+      source_relative_path: relPath,
+      source_modified_at: providerModifiedAt,
+      provider_url: a.provider_url ?? null,
+      is_primary: isNew ? true : (existingRef as any)?.is_primary ?? false,
       last_seen_at: new Date().toISOString(),
     }, { onConflict: "source_account_id,source_asset_id" });
 
-    upsertedAssetIds.push(assetId);
+    // Schedule normalization for new files or files modified since last sync.
+    const hasChanged = isNew || !storedModifiedAt ||
+      (providerModifiedAt && providerModifiedAt > storedModifiedAt);
+    if (hasChanged) {
+      needsNormalize.push({ assetId: assetId!, modifiedTime: providerModifiedAt });
+    }
   }
 
   // Cascade deletions via refs.
@@ -263,11 +284,15 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   // Save cursor
   await saveCursor(sb, source_account_id, cursorKind, page.nextCursor);
 
-  // Fan-out normalizeMetadata
-  for (const id of upsertedAssetIds) {
+  // Fan-out normalizeMetadata only for new/changed assets.
+  // The idempotency key includes modified_time so that updating a file in the
+  // provider (new modified_time) produces a new normalizeMetadata run even if
+  // the asset already exists in the DB.
+  for (const { assetId, modifiedTime } of needsNormalize) {
+    const modKey = modifiedTime ? `:${modifiedTime}` : `:initial`;
     await enqueueJob("normalizeMetadata", {
-      userId: acct.user_id, payload: { asset_id: id },
-      idempotencyKey: `normalize:${id}`,
+      userId: acct.user_id, payload: { asset_id: assetId },
+      idempotencyKey: `normalize:${assetId}${modKey}`,
     });
   }
 
@@ -282,8 +307,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     stats: {
       page_items: page.items.length,
       deleted: deleted.length,
-      discovered: indexedTotal ?? upsertedAssetIds.length,
-      indexed: indexedTotal ?? upsertedAssetIds.length,
+      discovered: indexedTotal ?? page.items.length,
+      indexed: indexedTotal ?? page.items.length,
+      normalized: needsNormalize.length,
       has_more: !!page.nextCursor,
     },
   }).eq("id", ctx.jobId);
@@ -320,5 +346,5 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  return { items: page.items.length, deleted: deleted.length, more: !!page.nextCursor };
+  return { items: page.items.length, normalized: needsNormalize.length, deleted: deleted.length, more: !!page.nextCursor };
 }
