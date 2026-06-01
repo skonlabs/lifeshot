@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Square, Trash2, UploadCloud } from "lucide-react";
+import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Square, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -842,7 +842,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   }, [running, qc]);
   const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
   const discovered = s?.progress.discovered ?? indexed;
-  const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : null;
+  const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : 0;
   const k = a.selection_counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
   const docsCombined = k.document + k.audio + k.other;
@@ -902,8 +902,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
             <span>Syncing…</span>
             <span>
-              {indexed.toLocaleString()} indexed
-              {pct !== null ? ` (${pct}%)` : ""}
+              {pct}% · {indexed.toLocaleString()} indexed
             </span>
           </div>
         </div>
