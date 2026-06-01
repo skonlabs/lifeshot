@@ -115,10 +115,20 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   const { data: acct, error } = await sb.from("source_accounts")
-    .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single();
+    .select("id, user_id, provider_id, provider_kind, status, sync_cancel_requested_at").eq("id", source_account_id).single();
   if (error || !acct) {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
     throw new Error("not found: source_account");
+  }
+  // Honor user-requested stop. If a cancel was requested, mark this job
+  // cancelled, set account back to active, and do NOT chain another page.
+  if ((acct as any).sync_cancel_requested_at) {
+    await sb.from("source_sync_jobs").update({
+      status: "cancelled",
+      finished_at: new Date().toISOString(),
+    }).eq("id", ctx.jobId);
+    await sb.from("source_accounts").update({ status: "active" }).eq("id", source_account_id);
+    return { cancelled: true };
   }
   const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
   if (markSyncing.error) {
