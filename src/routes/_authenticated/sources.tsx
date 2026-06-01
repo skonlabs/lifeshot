@@ -806,7 +806,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
   );
 }
 
-function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
+function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider }: {
   a: {
     id: string; provider_kind: string; status: string; display_label: string | null;
     asset_count: number; last_sync_at: string | null;
@@ -814,7 +814,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
     selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   };
-  onSync: () => void; onSelectFolders: () => void; onDisconnect: () => void;
+  onSync: () => void; onStop: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
 }) {
   const qc = useQueryClient();
@@ -876,9 +876,15 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
           <button onClick={onSelectFolders} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
             <Settings2 className="h-3 w-3" /> Select folders
           </button>
-          <button onClick={onSync} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
-            <RefreshCcw className="h-3 w-3" /> Sync
-          </button>
+          {running ? (
+            <button onClick={onStop} className="inline-flex items-center gap-1 rounded-full border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10">
+              <Square className="h-3 w-3" /> Stop Sync
+            </button>
+          ) : (
+            <button onClick={onSync} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
+              <RefreshCcw className="h-3 w-3" /> Sync
+            </button>
+          )}
           <button onClick={onDisconnect}
             className="inline-flex items-center gap-1 rounded-full border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10">
             <Trash2 className="h-3 w-3" /> Disconnect
