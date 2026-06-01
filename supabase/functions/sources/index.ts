@@ -324,23 +324,25 @@ app.get("/v1/accounts", async (c) => {
     liveStatsByAccount.set(accountId, stats);
   }));
   return c.json({
-    accounts: (data ?? []).map((r: any) => ({
+    accounts: (data ?? []).map((r: any) => {
       const selectionStats = liveStatsByAccount.get(r.id) ?? ZERO_SELECTION_STATS;
-      id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
-      display_label: r.display_label, status: r.status,
-      connected_at: r.connected_at, disconnected_at: r.disconnected_at,
-      asset_count: counts[r.id] ?? 0, last_sync_at: r.last_synced_at ?? null,
-      selected_container_count: selectionStats.folder_count,
-      selected_containers: scopesByAccount.get(r.id) ?? [],
-      counts_by_kind: breakdown[r.id] ?? ZERO_SELECTION_STATS,
-      selection_counts_by_kind: {
-        photo: selectionStats.photo,
-        video: selectionStats.video,
-        document: selectionStats.document,
-        audio: selectionStats.audio,
-        other: selectionStats.other,
-      },
-    })),
+      return {
+        id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
+        display_label: r.display_label, status: r.status,
+        connected_at: r.connected_at, disconnected_at: r.disconnected_at,
+        asset_count: counts[r.id] ?? 0, last_sync_at: r.last_synced_at ?? null,
+        selected_container_count: selectionStats.folder_count,
+        selected_containers: scopesByAccount.get(r.id) ?? [],
+        counts_by_kind: breakdown[r.id] ?? ZERO_SELECTION_STATS,
+        selection_counts_by_kind: {
+          photo: selectionStats.photo,
+          video: selectionStats.video,
+          document: selectionStats.document,
+          audio: selectionStats.audio,
+          other: selectionStats.other,
+        },
+      };
+    }),
   });
 });
 

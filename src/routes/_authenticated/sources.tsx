@@ -807,6 +807,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
     asset_count: number; last_sync_at: string | null;
     selected_container_count?: number;
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
+    selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   };
   onSync: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
@@ -837,7 +838,7 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
   const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
   const discovered = s?.progress.discovered ?? indexed;
   const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : null;
-  const k = a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+  const k = a.selection_counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
   const docsCombined = k.document + k.audio + k.other;
   return (
