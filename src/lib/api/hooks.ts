@@ -214,6 +214,18 @@ export function useSyncSource() {
   });
 }
 
+export function useStopSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) =>
+      api.sources(`/${accountId}/sync/stop`, { method: "POST", body: {} }),
+    onSuccess: (_d, accountId) => {
+      qc.invalidateQueries({ queryKey: ["source-accounts"] });
+      qc.invalidateQueries({ queryKey: ["source-status", accountId] });
+    },
+  });
+}
+
 export function useDisconnectSource() {
   const qc = useQueryClient();
   return useMutation({
