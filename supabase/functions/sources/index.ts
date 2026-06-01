@@ -428,7 +428,9 @@ app.get("/v1/:id/status", async (c) => {
   const latestQueueJob = latestQueueJobRes.data;
   const queueJob = activeJob ?? latestQueueJob ?? null;
   const indexed = indexedRes.count ?? 0;
-  const effectiveJobStatus = activeJob?.status ?? lastJob?.status ?? queueJob?.status ?? null;
+  // Prefer the live job_queue status over source_sync_jobs, which can get stuck
+  // at "running" if the job fails unexpectedly (runner.ts never updates it).
+  const effectiveJobStatus = activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null;
   const effectiveJobKind = lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const persistedJobStats = (lastJob?.stats && typeof lastJob.stats === "object") ? lastJob.stats as Record<string, unknown> : {};
   const queueJobStats = queueJob ? {
@@ -441,7 +443,10 @@ app.get("/v1/:id/status", async (c) => {
   const progressIndexed = indexed;
   const lastErrorMessage = lastErr?.message ?? queueJob?.last_error ?? null;
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
-  const syncing = !unauthorized && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
+  // Only show syncing if there is actually an active (pending/running) job in
+  // the queue. source_sync_jobs.status alone can show "running" stale if the
+  // job failed and was never cleaned up by syncSource's own error handling.
+  const syncing = !unauthorized && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
   const accountStatus = unauthorized ? "revoked" : (syncing ? "syncing" : acc.status);
   return c.json({
     account_id: id,

@@ -923,7 +923,11 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
           </div>
         </div>
       )}
-      {s?.last_error && <p className="mt-2 text-xs text-destructive">{s.last_error}</p>}
+      {(s?.last_error || (s?.last_job?.stats as Record<string,unknown>|undefined)?.queue_error) && (
+        <p className="mt-2 text-xs text-destructive">
+          {s?.last_error ?? String((s!.last_job!.stats as Record<string,unknown>).queue_error)}
+        </p>
+      )}
     </li>
   );
 }

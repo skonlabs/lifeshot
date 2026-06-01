@@ -62,6 +62,20 @@ export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {})
       const retryable = !/(permanent|invalid|unauthorized|forbidden|not found)/i.test(msg);
       const back = retryable ? backoffSeconds(job.attempts) : 24 * 3600;
       await sb.rpc("fail_job", { _id: job.id, _error: msg.slice(0, 500), _backoff_seconds: back });
+      // If the failed job is syncSource, mark source_sync_jobs as failed so the
+      // status endpoint doesn't show a perpetual stale "running" state.
+      if (job.job_name === "syncSource") {
+        const sourceAccountId = (job.payload as Record<string, unknown>)?.source_account_id as string | undefined;
+        if (sourceAccountId) {
+          await sb.from("source_sync_jobs")
+            .update({ status: "failed", finished_at: new Date().toISOString() })
+            .eq("id", job.id)
+            .eq("status", "running");
+          await sb.from("source_accounts")
+            .update({ status: "error" })
+            .eq("id", sourceAccountId);
+        }
+      }
       logger.error("job_failed", { name: job.job_name, id: job.id, attempt: job.attempts, error: msg });
       metric("job.failed", 1, { name: job.job_name });
       failed += 1;
