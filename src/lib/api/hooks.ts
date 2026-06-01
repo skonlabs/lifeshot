@@ -37,6 +37,7 @@ type SourceAccountsResponse = {
     selected_container_count?: number;
     selected_containers?: Array<{ id: string; name?: string }>;
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
+    selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   }>;
 };
 
