@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Square, Trash2, UploadCloud } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Square, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -169,7 +169,7 @@ function Sources() {
   // and switch the card from a Connect button to a Manage button.
   const connectedByKind = new Map<string, { id: string; status: string; asset_count: number }>();
   for (const a of accounts.data?.accounts ?? []) {
-    if (a.status === "active" && !connectedByKind.has(a.provider_kind)) {
+    if (a.status !== "disconnected" && !connectedByKind.has(a.provider_kind)) {
       connectedByKind.set(a.provider_kind, { id: a.id, status: a.status, asset_count: a.asset_count });
     }
   }
@@ -319,13 +319,13 @@ function Sources() {
                 <button key={p.id} onClick={() => onProviderClick(p.id)}
                   className="hairline group flex items-center justify-between gap-3 rounded-md border bg-[color:var(--paper)] p-4 text-left transition-colors hover:bg-[color:var(--paper-2)]">
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className={`grid h-10 w-10 place-items-center rounded-md ${connected ? "bg-emerald-50 text-emerald-700" : "bg-[color:var(--paper-2)] text-[color:var(--umber)] group-hover:text-[color:var(--ink)]"}`}>
-                      {connected ? <Check className="h-4 w-4" strokeWidth={2} /> : <ProviderIcon kind={p.kind} className="h-5 w-5" />}
+                    <div className={`grid h-10 w-10 place-items-center rounded-md ${connected ? "bg-[color:var(--paper-2)] text-[color:var(--ink)]" : "bg-[color:var(--paper-2)] text-[color:var(--umber)] group-hover:text-[color:var(--ink)]"}`}>
+                      <ProviderIcon kind={p.kind} className="h-5 w-5" />
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 font-medium text-[color:var(--ink)]">
                         {p.name}
-                        {connected && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700">Connected</span>}
+                        {connected && <span className="text-[10px] font-medium uppercase tracking-wide text-[color:var(--ink)]">CONNECTED</span>}
                       </div>
                       {connected && (
                         <div className="truncate text-xs text-[color:var(--umber)]">
