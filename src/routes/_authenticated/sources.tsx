@@ -319,7 +319,7 @@ function Sources() {
                 <button key={p.id} onClick={() => onProviderClick(p.id)}
                   className="hairline group relative flex min-h-24 items-start gap-3 rounded-md border bg-[color:var(--paper)] p-4 pr-14 text-left transition-colors hover:bg-[color:var(--paper-2)]">
                   {connected && (
-                    <span className="absolute right-4 top-4 rounded-full bg-success px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
+                    <span className="absolute right-4 top-4 rounded-sm bg-[#e8f7f0] px-2 py-0.5 text-[10px] font-medium tracking-wide text-[#0a8a5f]">
                       CONNECTED
                     </span>
                   )}
