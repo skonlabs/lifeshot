@@ -236,7 +236,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null }
       : { folderIndex: 0, providerCursor: null };
     const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, state.folderIndex ?? 0));
-      const folderPath = folderTargets[folderIndex] === "/" ? "" : (folderTargets[folderIndex] ?? "");
+    const folderPath = folderTargets[folderIndex] === "/" ? "" : (folderTargets[folderIndex] ?? "");
 
     const json = state.providerCursor
       ? await call("/files/list_folder/continue", { cursor: state.providerCursor })
