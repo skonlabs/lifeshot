@@ -212,9 +212,25 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     };
   }
 
-  async function list(cursor: string | null): Promise<{ items: AssetRecord[]; deleted: string[]; nextCursor: string | null }> {
+  async function getCanonicalFolderTargets(): Promise<string[]> {
     const selectedFolders = await getSelectedFolders();
-    const folderTargets = selectedFolders.length ? selectedFolders.map((item) => item.id).filter(Boolean) : [""];
+    if (!selectedFolders.length) return [""];
+
+    const canonicalTargets = await Promise.all(
+      selectedFolders.map((item) => resolveFolderPath(item as { id: string; name?: string; path?: string })),
+    );
+
+    const unique = new Set<string>();
+    for (const target of canonicalTargets) {
+      const normalized = !target || target === "/" ? "" : target;
+      unique.add(normalized);
+    }
+
+    return unique.size ? Array.from(unique) : [""];
+  }
+
+  async function list(cursor: string | null): Promise<{ items: AssetRecord[]; deleted: string[]; nextCursor: string | null }> {
+    const folderTargets = await getCanonicalFolderTargets();
 
     const state = cursor
       ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null }
