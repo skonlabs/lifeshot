@@ -31,6 +31,16 @@ export function generateSearchDocument(rec: CanonicalMetadataRecord): string {
     lines.push(`Camera: ${[exif.cameraMake, exif.cameraModel].filter(Boolean).join(" ")}`);
   }
   if (exif?.lensModel) lines.push(`Lens: ${exif.lensModel}`);
+  // Exposure settings — enables searches like "ISO 400", "f/2.8", "50mm", "flash on".
+  if ((exif as any)?.iso != null)         lines.push(`ISO ${(exif as any).iso}`);
+  const fnum = (exif as any)?.fNumber ?? (exif as any)?.aperture;
+  if (fnum != null)                       lines.push(`f/${Number(fnum).toFixed(1)}`);
+  if ((exif as any)?.shutterSpeed)        lines.push((exif as any).shutterSpeed);
+  if ((exif as any)?.focalLength != null) lines.push(`${(exif as any).focalLength}mm`);
+  if (exif?.focalLength35mm != null)      lines.push(`${exif.focalLength35mm}mm equivalent`);
+  if ((exif as any)?.flash)              lines.push(`Flash: ${(exif as any).flash}`);
+  if ((exif as any)?.whiteBalance)       lines.push(`White balance: ${(exif as any).whiteBalance}`);
+  if (exif?.exposureMode)                lines.push(`Exposure: ${exif.exposureMode}`);
 
   if (gps?.placeName) lines.push(`Place: ${gps.placeName}`);
   if (gps?.reverseGeocodedCity || gps?.reverseGeocodedCountry) {

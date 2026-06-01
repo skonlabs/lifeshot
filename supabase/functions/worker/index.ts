@@ -4,6 +4,12 @@ import { drainOnce, drainUntilEmpty } from "../_pipeline/runner.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { logger } from "../_pipeline/logger.ts";
+import { installOpenAIProviders } from "../_ai/factory.ts";
+
+// Install real OpenAI providers when the environment is configured.
+// Falls back silently to mock providers when OPENAI_API_KEY / LIFESHOT_AI_PROVIDER
+// are absent (e.g. local dev without credentials).
+installOpenAIProviders();
 
 // Supabase Edge Functions forward the full path (incl. /<function-name>) to
 // the handler, so mount Hono under the "/worker" basePath.
