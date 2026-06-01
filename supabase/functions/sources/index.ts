@@ -23,6 +23,27 @@ async function kickWorker() {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
 
+  // Persist worker URL + secret to system_config so pg_cron's drain job
+  // (which has no access to edge function env vars) can call /worker/drain
+  // on its 10s schedule. Best-effort; ignore errors.
+  (async () => {
+    try {
+      const svc = getServiceClient();
+      const base = ENV.SUPABASE_URL;
+      const secret = Deno.env.get("WORKER_SECRET") ?? "";
+      const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
+      if (base) {
+        await svc.from("system_config").upsert([
+          { key: "worker_base_url", value: `${base}/functions/v1/worker` },
+          { key: "worker_secret", value: secret },
+          { key: "service_role_key", value: serviceKey },
+        ], { onConflict: "key" });
+      }
+    } catch (err) {
+      console.warn("kickWorker system_config seed failed", String(err));
+    }
+  })();
+
   const inProcess = (async () => {
     try {
       const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
@@ -824,6 +845,24 @@ app.post("/v1/:id/sync/stop", async (c) => {
   // 2) Remove queued (not-yet-started) syncSource jobs for this account.
   await svc.from("job_queue").delete()
     .eq("status", "pending")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: id });
+
+  // 2b) Force-cancel any RUNNING syncSource jobs in the queue for this
+  // account. Without this, a worker that has been killed mid-await leaves
+  // a row in status='running' that nothing else touches — the UI then shows
+  // a perpetual "syncing" state. Marking it failed lets the next Sync
+  // request start cleanly and the status endpoint stops reporting active.
+  await svc.from("job_queue")
+    .update({
+      status: "failed",
+      dead_letter: true,
+      finished_at: now,
+      last_error: "cancelled by user",
+      locked_at: null,
+      locked_by: null,
+    })
+    .eq("status", "running")
     .eq("job_name", "syncSource")
     .contains("payload", { source_account_id: id });
 

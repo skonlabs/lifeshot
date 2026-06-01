@@ -247,8 +247,13 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         path: folderPath,
         recursive: true,
         include_deleted: true,
-        include_media_info: true,
-        limit: 100,
+        // include_media_info: false — Dropbox's media_info extraction is
+        // notoriously slow (often 30s–2min on 400+ file folders) and isn't
+        // needed here. normalizeMetadata fetches real EXIF on-demand per
+        // asset. Keeping this off keeps listing inside the Edge runtime
+        // budget so the job actually completes.
+        include_media_info: false,
+        limit: 500,
       });
 
     const deleted = (json.entries ?? [])

@@ -6,6 +6,49 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
+// Fire a fire-and-forget HTTP call to /worker/drain so chained jobs are
+// claimed immediately, even when pg_cron's worker drain is not configured.
+// Best-effort: never blocks the caller, never throws.
+function kickWorkerDrain() {
+  try {
+    const url = Deno.env.get("SUPABASE_URL");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const secret = Deno.env.get("WORKER_SECRET") ?? "";
+    if (!url || !serviceKey) return;
+    const target = `${url}/functions/v1/worker/drain`;
+    // Don't await — we want the chain to advance without blocking this job.
+    fetch(target, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${serviceKey}`,
+        ...(secret ? { "x-worker-secret": secret } : {}),
+      },
+      body: JSON.stringify({ batch: 8 }),
+    }).catch(() => {});
+  } catch {
+    // swallow
+  }
+}
+
+// Write a progress heartbeat to source_sync_jobs.stats so the UI can show
+// meaningful progress before a page completes. Never throws.
+async function writeProgress(
+  sb: ReturnType<typeof serviceClient>,
+  jobId: string,
+  patch: Record<string, unknown>,
+) {
+  try {
+    const cur = await sb.from("source_sync_jobs").select("stats").eq("id", jobId).maybeSingle();
+    const prev = (cur.data?.stats && typeof cur.data.stats === "object")
+      ? cur.data.stats as Record<string, unknown>
+      : {};
+    await sb.from("source_sync_jobs").update({ stats: { ...prev, ...patch } }).eq("id", jobId);
+  } catch {
+    // best effort
+  }
+}
+
 function isMissingColumnError(message?: string | null, column?: string) {
   if (!message || !column) return false;
   const normalized = message.toLowerCase();
@@ -125,6 +168,18 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_accounts pending failed: ${accountRunning.error.message}`);
   }
 
+  // Early heartbeat: tell the UI we're past the "discovering" gate and into
+  // active work. discovered=1 keeps the existing UI guard (`> 0`) happy.
+  const currentIndexedCount = await sb.from("asset_source_refs")
+    .select("id", { count: "exact", head: true })
+    .eq("source_account_id", source_account_id);
+  const baseIndexed = currentIndexedCount.count ?? 0;
+  await writeProgress(sb, ctx.jobId, {
+    stage: "connecting",
+    discovered: Math.max(1, baseIndexed),
+    indexed: baseIndexed,
+  });
+
   const accountSelect = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status, sync_cancel_requested_at").eq("id", source_account_id).single();
   const accountSelectFallback = accountSelect.error && isMissingColumnError(accountSelect.error.message, "sync_cancel_requested_at")
@@ -185,6 +240,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const cursorKind = mode === "initial" ? "list" : (caps.supportsDelta ? "delta" : "list");
   const cursor = await loadCursor(sb, source_account_id, cursorKind);
 
+  await writeProgress(sb, ctx.jobId, { stage: "listing", provider_kind: providerKind });
+
   let page;
   try {
     page = cursorKind === "delta" ? await conn.getDeltaChanges(cursor) : await conn.listAssets(cursor);
@@ -202,6 +259,12 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_connector_failed", msg, { stage: "list", provider_kind: providerKind, mode });
     throw e;
   }
+
+  await writeProgress(sb, ctx.jobId, {
+    stage: "indexing",
+    page_items: page.items.length,
+    discovered: Math.max(baseIndexed + page.items.length, baseIndexed, 1),
+  });
 
   // ── Bulk DB work: 4 queries total regardless of page size ───────────────────
   //
@@ -369,6 +432,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   if (page.nextCursor && !stopRequested) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
+    // Without this kick, the next page sits in job_queue until the next
+    // pg_cron drain (which is a no-op on projects without app.worker_base_url
+    // set). Fire-and-forget keeps the chain moving.
+    kickWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
