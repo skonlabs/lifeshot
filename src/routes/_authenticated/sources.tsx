@@ -317,16 +317,18 @@ function Sources() {
               const connected = connectedByKind.get(p.kind);
               return (
                 <button key={p.id} onClick={() => onProviderClick(p.id)}
-                  className="hairline group flex items-center justify-between gap-3 rounded-md border bg-[color:var(--paper)] p-4 text-left transition-colors hover:bg-[color:var(--paper-2)]">
+                  className="hairline group relative flex items-center justify-between gap-3 rounded-md border bg-[color:var(--paper)] p-4 pr-24 text-left transition-colors hover:bg-[color:var(--paper-2)]">
+                  {connected && (
+                    <span className="absolute right-4 top-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-success">
+                      CONNECTED
+                    </span>
+                  )}
                   <div className="flex min-w-0 items-center gap-3">
                     <div className={`grid h-10 w-10 place-items-center rounded-md ${connected ? "bg-[color:var(--paper-2)] text-[color:var(--ink)]" : "bg-[color:var(--paper-2)] text-[color:var(--umber)] group-hover:text-[color:var(--ink)]"}`}>
                       <ProviderIcon kind={p.kind} className="h-5 w-5" />
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 font-medium text-[color:var(--ink)]">
-                        {p.name}
-                        {connected && <span className="text-[10px] font-medium uppercase tracking-wide text-[color:var(--ink)]">CONNECTED</span>}
-                      </div>
+                      <div className="font-medium text-[color:var(--ink)]">{p.name}</div>
                       {connected && (
                         <div className="truncate text-xs text-[color:var(--umber)]">
                           {connected.asset_count.toLocaleString()} indexed · {connected.status}
