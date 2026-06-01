@@ -37,16 +37,23 @@ async function kickWorker() {
     try {
       const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
       const secret = Deno.env.get("WORKER_SECRET") ?? "";
-      await fetch(workerUrl, {
+      // Supabase Edge Functions require an Authorization header even for
+      // internal service-to-service calls. Use the service role key.
+      const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
+      const resp = await fetch(workerUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "authorization": `Bearer ${serviceKey}`,
           ...(secret ? { "x-worker-secret": secret } : {}),
         },
         body: JSON.stringify({ batch: 16 }),
       });
-    } catch {
-      // Best-effort — worker function may not be deployed or reachable.
+      if (!resp.ok) {
+        console.warn("kickWorker HTTP kick failed:", resp.status, await resp.text().catch(() => ""));
+      }
+    } catch (err) {
+      console.warn("kickWorker HTTP kick error:", String(err));
     }
   })();
 

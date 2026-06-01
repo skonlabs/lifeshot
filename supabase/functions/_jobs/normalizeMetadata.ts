@@ -37,7 +37,7 @@ function geohashEncode(lat: number, lng: number, precision = 9): string {
 
 export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { asset_id } = ctx.payload as { asset_id: string };
+  const { asset_id, source_account_id } = ctx.payload as { asset_id: string; source_account_id?: string };
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
@@ -239,6 +239,24 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
         // File-system shell metadata (filename / extension / parent folder) for every cloud asset.
         const rel = (ref.source_relative_path || ref.provider_url || "") as string;
+        if (rel && source_account_id) {
+          // Write the current filename into the running sync job so the UI can
+          // show which file is being processed.
+          const currentFile = rel.split("/").filter(Boolean).pop() ?? rel;
+          const { data: runningJob } = await sb.from("source_sync_jobs")
+            .select("id, stats")
+            .eq("source_account_id", source_account_id)
+            .eq("status", "running")
+            .order("created_at", { ascending: false })
+            .limit(1).maybeSingle();
+          if (runningJob) {
+            const merged = {
+              ...(typeof runningJob.stats === "object" && runningJob.stats !== null ? runningJob.stats as Record<string, unknown> : {}),
+              current_file: currentFile,
+            };
+            await sb.from("source_sync_jobs").update({ stats: merged }).eq("id", runningJob.id);
+          }
+        }
         if (rel) {
           const filename = rel.split("/").filter(Boolean).pop() ?? null;
           const dot = filename ? filename.lastIndexOf(".") : -1;

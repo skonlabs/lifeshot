@@ -322,7 +322,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       name: "normalizeMetadata",
       opts: {
         userId: acct.user_id,
-        payload: { asset_id: assetId },
+        payload: { asset_id: assetId, source_account_id },
         idempotencyKey: `normalize:${assetId}:${modifiedTime ?? "initial"}`,
       },
     })));

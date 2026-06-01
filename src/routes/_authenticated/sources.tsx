@@ -902,7 +902,14 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
             />
           </div>
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
-            <span>Syncing…</span>
+            <span className="flex min-w-0 items-center gap-1">
+              <span>Syncing…</span>
+              {(s?.last_job?.stats as Record<string, unknown> | undefined)?.current_file && (
+                <span className="truncate max-w-[200px] opacity-70">
+                  {String((s!.last_job!.stats as Record<string, unknown>).current_file)}
+                </span>
+              )}
+            </span>
             <span>
               {pct}% · {indexed.toLocaleString()} indexed
             </span>
