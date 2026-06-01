@@ -371,7 +371,7 @@ app.get("/v1/:id/status", async (c) => {
   const [lastJobRes, cursorRes, lastErrRes, activeJobRes, latestQueueJobRes, indexedRes] = await Promise.all([
     svc.from("source_sync_jobs").select("*").eq("source_account_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("source_sync_cursors").select("*").eq("source_account_id", id).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
-    svc.from("source_errors").select("message, occurred_at").eq("source_account_id", id).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
+    svc.from("source_errors").select("message, occurred_at").eq("source_account_id", id).eq("resolved", false).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("job_queue")
       .select("id, status, job_name, payload, created_at, started_at, finished_at, last_error, attempts")
       .eq("job_name", "syncSource")
@@ -735,6 +735,11 @@ app.post("/v1/:id/sync", async (c) => {
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   const svc = getServiceClient();
+  const { error: clearErrorsError } = await svc.from("source_errors")
+    .update({ resolved: true })
+    .eq("source_account_id", id)
+    .eq("resolved", false);
+  if (clearErrorsError) throw new ApiError("internal", clearErrorsError.message);
   const syncStatusAttempt = await svc.from("source_accounts")
     .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
   if (syncStatusAttempt.error) {
