@@ -719,10 +719,19 @@ app.post("/v1/:id/sync", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
-  const { error: syncStatusError } = await getServiceClient().from("source_accounts")
-    .update({ status: "pending" }).eq("id", id);
-  if (syncStatusError) throw new ApiError("internal", syncStatusError.message);
-  const { error: syncJobError } = await getServiceClient().from("source_sync_jobs").upsert({
+  const svc = getServiceClient();
+  const syncStatusAttempt = await svc.from("source_accounts")
+    .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
+  if (syncStatusAttempt.error) {
+    if (/sync_cancel_requested_at/i.test(syncStatusAttempt.error.message)) {
+      const { error: fallbackStatusError } = await svc.from("source_accounts")
+        .update({ status: "pending" }).eq("id", id);
+      if (fallbackStatusError) throw new ApiError("internal", fallbackStatusError.message);
+    } else {
+      throw new ApiError("internal", syncStatusAttempt.error.message);
+    }
+  }
+  const { error: syncJobError } = await svc.from("source_sync_jobs").upsert({
     id: job.id,
     source_account_id: id,
     kind: "incremental",
