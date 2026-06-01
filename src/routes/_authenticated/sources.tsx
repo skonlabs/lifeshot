@@ -857,8 +857,12 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
             {docsCombined.toLocaleString()} doc{docsCombined === 1 ? "" : "s"}
             {" · "}
             <span className="font-medium text-[color:var(--ink)]">{a.asset_count.toLocaleString()} indexed</span>
-            {" · "}
-            <span className={running ? "text-emerald-700" : ""}>{running ? "syncing" : a.status}</span>
+            {!running && (
+              <>
+                {" · "}
+                <span>{a.status}</span>
+              </>
+            )}
             {a.last_sync_at && ` · synced ${new Date(a.last_sync_at).toLocaleString()}`}
           </div>
           </div>
