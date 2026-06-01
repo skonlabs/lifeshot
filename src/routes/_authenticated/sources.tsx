@@ -522,7 +522,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
                   accountId: state.accountId,
                   containers: Object.values(draft),
                 }, {
-                  onSuccess: () => toast.success("Folder scope updated. Re-sync queued."),
+                  onSuccess: () => toast.success("Folder scope saved. Click Sync to index."),
                   onError: (e) => toast.error((e as Error).message || "Failed to save folder scope."),
                 })}
               >
@@ -857,8 +857,12 @@ function SourceRow({ a, onSync, onSelectFolders, onDisconnect, provider }: {
             {docsCombined.toLocaleString()} doc{docsCombined === 1 ? "" : "s"}
             {" · "}
             <span className="font-medium text-[color:var(--ink)]">{a.asset_count.toLocaleString()} indexed</span>
-            {" · "}
-            <span className={running ? "text-emerald-700" : ""}>{running ? "syncing" : a.status}</span>
+            {!running && (
+              <>
+                {" · "}
+                <span>{a.status}</span>
+              </>
+            )}
             {a.last_sync_at && ` · synced ${new Date(a.last_sync_at).toLocaleString()}`}
           </div>
           </div>

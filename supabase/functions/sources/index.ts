@@ -498,22 +498,9 @@ app.patch("/v1/:id/containers", async (c) => {
     }
   }
 
-  const job = await jobEnqueuer.enqueue("syncSource",
-    { source_account_id: acc.id, mode: "initial" },
-    { userId: acc.user_id, priority: 4 },
-  );
-  const { error: accountStatusError } = await svc.from("source_accounts").update({ status: "pending" }).eq("id", acc.id);
-  if (accountStatusError) throw new ApiError("internal", accountStatusError.message);
-  const { error: pendingJobError } = await svc.from("source_sync_jobs").upsert({
-    id: job.id,
-    source_account_id: acc.id,
-    kind: "initial",
-    status: "pending",
-    stats: { discovered: 0, indexed: 0 },
-  }, { onConflict: "id" });
-  if (pendingJobError) throw new ApiError("internal", pendingJobError.message);
-  await kickWorker();
-  return c.json({ updated: true, selected_count: normalized.length, job_id: job.id });
+  // Do NOT auto-enqueue sync here. The user must click the Sync button
+  // explicitly on the source row to trigger indexing.
+  return c.json({ updated: true, selected_count: normalized.length });
 });
 
 app.post("/v1/connect", async (c) => {
