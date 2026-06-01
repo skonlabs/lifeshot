@@ -132,7 +132,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single()
     : null;
   const acct = accountSelect.data ?? accountSelectFallback?.data;
-  const error = accountSelect.error && !accountSelectFallback ? accountSelect.error : accountSelectFallback?.error ?? accountSelect.error;
+  const error = accountSelectFallback
+    ? accountSelectFallback.error
+    : accountSelect.error;
   if (error || !acct) {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
     throw new Error("not found: source_account");
