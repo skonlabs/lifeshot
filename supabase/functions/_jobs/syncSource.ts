@@ -6,6 +6,14 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
+function isMissingColumnError(message?: string | null, column?: string) {
+  return !!message && !!column && message.toLowerCase().includes(`could not find the '${column.toLowerCase()}' column`);
+}
+
+function isInvalidSyncingEnumError(message?: string | null) {
+  return !!message && /invalid input value for enum sync_status:\s*"syncing"/i.test(message);
+}
+
 async function recordSyncError(
   sb: ReturnType<typeof serviceClient>,
   sourceAccountId: string,
@@ -116,7 +124,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const accountSelect = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status, sync_cancel_requested_at").eq("id", source_account_id).single();
-  const accountSelectFallback = accountSelect.error && /sync_cancel_requested_at/i.test(accountSelect.error.message)
+  const accountSelectFallback = accountSelect.error && isMissingColumnError(accountSelect.error.message, "sync_cancel_requested_at")
     ? await sb.from("source_accounts")
       .select("id, user_id, provider_id, provider_kind, status").eq("id", source_account_id).single()
     : null;
@@ -128,7 +136,15 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   // Honor user-requested stop. If a cancel was requested, mark this job
   // cancelled, set account back to active, and do NOT chain another page.
-  if ((acct as any).sync_cancel_requested_at) {
+  const currentJob = await sb.from("source_sync_jobs").select("status, stats").eq("id", ctx.jobId).maybeSingle();
+  const jobStats = currentJob.data?.stats && typeof currentJob.data.stats === "object"
+    ? currentJob.data.stats as Record<string, unknown>
+    : {};
+  const cancellationRequested =
+    (acct as any).sync_cancel_requested_at ||
+    currentJob.data?.status === "cancelled" ||
+    jobStats.cancelled === true;
+  if (cancellationRequested) {
     await sb.from("source_sync_jobs").update({
       status: "cancelled",
       finished_at: new Date().toISOString(),
@@ -138,7 +154,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
   if (markSyncing.error) {
-    if (/sync_status.*syncing/i.test(markSyncing.error.message)) {
+    if (isInvalidSyncingEnumError(markSyncing.error.message)) {
       const fallbackMarkPending = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
       if (fallbackMarkPending.error) {
         await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", fallbackMarkPending.error.message, { stage: "mark_syncing_fallback" });
@@ -284,10 +300,13 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  const currentJobStatus = await sb.from("source_sync_jobs").select("status").eq("id", ctx.jobId).maybeSingle();
-  const cancellationRequested = currentJobStatus.data?.status === "cancelled";
+  const latestJobState = await sb.from("source_sync_jobs").select("status, stats").eq("id", ctx.jobId).maybeSingle();
+  const latestStats = latestJobState.data?.stats && typeof latestJobState.data.stats === "object"
+    ? latestJobState.data.stats as Record<string, unknown>
+    : {};
+  const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
-  if (page.nextCursor && !cancellationRequested) {
+  if (page.nextCursor && !stopRequested) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
