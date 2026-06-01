@@ -848,6 +848,8 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const k = a.selection_counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
   const folders = a.selected_container_count ?? 0;
   const docsCombined = k.document + k.audio + k.other;
+  const currentFileRaw = (s?.last_job?.stats as Record<string, unknown> | undefined)?.current_file;
+  const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   return (
     <li className="hairline rounded-md border bg-[color:var(--paper)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -909,9 +911,9 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
               ) : (
                 <span>Syncing…</span>
               )}
-              {(s?.last_job?.stats as Record<string, unknown> | undefined)?.current_file && (
+              {currentFile && (
                 <span className="truncate max-w-[200px] opacity-70">
-                  {String((s!.last_job!.stats as Record<string, unknown>).current_file)}
+                  {currentFile}
                 </span>
               )}
             </span>
