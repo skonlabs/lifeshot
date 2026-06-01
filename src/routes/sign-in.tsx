@@ -1,0 +1,85 @@
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { useState, type FormEvent } from "react";
+import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
+import { Aperture } from "lucide-react";
+
+export const Route = createFileRoute("/sign-in")({
+  validateSearch: (s: Record<string, unknown>) => ({
+    redirect: typeof s.redirect === "string" ? s.redirect : "/library",
+  }),
+  beforeLoad: async ({ search }) => {
+    const { data } = await supabase.auth.getSession();
+    if (data.session) throw redirect({ to: search.redirect });
+  },
+  component: SignIn,
+});
+
+function SignIn() {
+  const navigate = useNavigate();
+  const search = Route.useSearch();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) { toast.error(error.message); return; }
+    navigate({ to: search.redirect });
+  }
+
+  async function signInWithGoogle() {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${window.location.origin}/callback` },
+    });
+  }
+
+  return (
+    <div className="grid min-h-screen lg:grid-cols-2">
+      <aside className="relative hidden flex-col justify-between bg-[color:var(--ink)] p-12 text-[color:var(--paper)] lg:flex">
+        <div className="flex items-center gap-2">
+          <Aperture className="h-5 w-5" />
+          <span className="font-serif-display text-xl">LifeShot</span>
+        </div>
+        <div className="space-y-4">
+          <p className="font-serif-display text-4xl leading-tight">Your memories, finally in one place — without moving a single file.</p>
+          <p className="max-w-sm text-sm text-[color:var(--paper-2)]/70">A memory atlas across your phone, clouds, chats, and archives. We index, never copy.</p>
+        </div>
+        <p className="text-[11px] uppercase tracking-[0.2em] text-[color:var(--paper-2)]/50">A personal memory platform · est. 2026</p>
+      </aside>
+      <main className="flex items-center justify-center bg-[color:var(--paper)] px-6 py-12">
+        <div className="w-full max-w-sm space-y-8">
+          <div className="lg:hidden flex items-center gap-2 text-[color:var(--ink)]">
+            <Aperture className="h-5 w-5" />
+            <span className="font-serif-display text-xl">LifeShot</span>
+          </div>
+          <div>
+            <div className="text-archive-label">welcome back</div>
+            <h1 className="mt-1 font-serif-display text-3xl text-[color:var(--ink)]">Sign in to your archive</h1>
+          </div>
+          <form onSubmit={onSubmit} className="space-y-3">
+            <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] px-3 py-2.5 text-sm" />
+            <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--paper-2)] px-3 py-2.5 text-sm" />
+            <button type="submit" disabled={loading} className="w-full rounded-full bg-[color:var(--ink)] px-3 py-2.5 text-sm font-medium text-[color:var(--paper)] disabled:opacity-50">
+              {loading ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-[color:var(--border)]" /></div>
+            <div className="relative flex justify-center text-[11px] uppercase tracking-wider"><span className="bg-[color:var(--paper)] px-2 text-[color:var(--umber)]">or</span></div>
+          </div>
+          <button onClick={signInWithGoogle} className="w-full rounded-full border border-[color:var(--border)] bg-[color:var(--paper-2)] px-3 py-2.5 text-sm font-medium text-[color:var(--ink)] hover:bg-[color:var(--paper)]">
+            Continue with Google
+          </button>
+          <p className="text-center text-sm text-[color:var(--umber)]">
+            New here? <a href="/sign-up" className="text-[color:var(--ink)] underline underline-offset-4">Start your archive</a>
+          </p>
+        </div>
+      </main>
+    </div>
+  );
+}

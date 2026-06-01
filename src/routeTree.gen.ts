@@ -9,38 +9,364 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SignUpRouteImport } from './routes/sign-up'
+import { Route as SignInRouteImport } from './routes/sign-in'
+import { Route as OauthPopupRouteImport } from './routes/oauth-popup'
+import { Route as OauthBridgeRouteImport } from './routes/oauth-bridge'
+import { Route as CallbackRouteImport } from './routes/callback'
+import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as InviteTokenRouteImport } from './routes/invite.$token'
+import { Route as AuthenticatedSourcesRouteImport } from './routes/_authenticated/sources'
+import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
+import { Route as AuthenticatedScansRouteImport } from './routes/_authenticated/scans'
+import { Route as AuthenticatedPlacesRouteImport } from './routes/_authenticated/places'
+import { Route as AuthenticatedPeopleRouteImport } from './routes/_authenticated/people'
+import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
+import { Route as AuthenticatedLibraryRouteImport } from './routes/_authenticated/library'
+import { Route as AuthenticatedFamilyRouteImport } from './routes/_authenticated/family'
+import { Route as AuthenticatedEventsRouteImport } from './routes/_authenticated/events'
+import { Route as AuthenticatedDuplicatesRouteImport } from './routes/_authenticated/duplicates'
+import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedSettingsPrivacyRouteImport } from './routes/_authenticated/settings.privacy'
+import { Route as AuthenticatedSettingsDataRouteImport } from './routes/_authenticated/settings.data'
+import { Route as AuthenticatedPeopleIdRouteImport } from './routes/_authenticated/people.$id'
+import { Route as AuthenticatedEventsIdRouteImport } from './routes/_authenticated/events.$id'
+import { Route as AuthenticatedAssetIdRouteImport } from './routes/_authenticated/asset.$id'
 
+const SignUpRoute = SignUpRouteImport.update({
+  id: '/sign-up',
+  path: '/sign-up',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignInRoute = SignInRouteImport.update({
+  id: '/sign-in',
+  path: '/sign-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OauthPopupRoute = OauthPopupRouteImport.update({
+  id: '/oauth-popup',
+  path: '/oauth-popup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OauthBridgeRoute = OauthBridgeRouteImport.update({
+  id: '/oauth-bridge',
+  path: '/oauth-bridge',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CallbackRoute = CallbackRouteImport.update({
+  id: '/callback',
+  path: '/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedSourcesRoute = AuthenticatedSourcesRouteImport.update({
+  id: '/sources',
+  path: '/sources',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedScansRoute = AuthenticatedScansRouteImport.update({
+  id: '/scans',
+  path: '/scans',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedPlacesRoute = AuthenticatedPlacesRouteImport.update({
+  id: '/places',
+  path: '/places',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedPeopleRoute = AuthenticatedPeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedOnboardingRoute = AuthenticatedOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedLibraryRoute = AuthenticatedLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedFamilyRoute = AuthenticatedFamilyRouteImport.update({
+  id: '/family',
+  path: '/family',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedEventsRoute = AuthenticatedEventsRouteImport.update({
+  id: '/events',
+  path: '/events',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedDuplicatesRoute = AuthenticatedDuplicatesRouteImport.update({
+  id: '/duplicates',
+  path: '/duplicates',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedSettingsPrivacyRoute =
+  AuthenticatedSettingsPrivacyRouteImport.update({
+    id: '/settings/privacy',
+    path: '/settings/privacy',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsDataRoute =
+  AuthenticatedSettingsDataRouteImport.update({
+    id: '/settings/data',
+    path: '/settings/data',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedPeopleIdRoute = AuthenticatedPeopleIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AuthenticatedPeopleRoute,
+} as any)
+const AuthenticatedEventsIdRoute = AuthenticatedEventsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AuthenticatedEventsRoute,
+} as any)
+const AuthenticatedAssetIdRoute = AuthenticatedAssetIdRouteImport.update({
+  id: '/asset/$id',
+  path: '/asset/$id',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
+  '/oauth-popup': typeof OauthPopupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/duplicates': typeof AuthenticatedDuplicatesRoute
+  '/events': typeof AuthenticatedEventsRouteWithChildren
+  '/family': typeof AuthenticatedFamilyRoute
+  '/library': typeof AuthenticatedLibraryRoute
+  '/onboarding': typeof AuthenticatedOnboardingRoute
+  '/people': typeof AuthenticatedPeopleRouteWithChildren
+  '/places': typeof AuthenticatedPlacesRoute
+  '/scans': typeof AuthenticatedScansRoute
+  '/search': typeof AuthenticatedSearchRoute
+  '/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
+  '/asset/$id': typeof AuthenticatedAssetIdRoute
+  '/events/$id': typeof AuthenticatedEventsIdRoute
+  '/people/$id': typeof AuthenticatedPeopleIdRoute
+  '/settings/data': typeof AuthenticatedSettingsDataRoute
+  '/settings/privacy': typeof AuthenticatedSettingsPrivacyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
+  '/oauth-popup': typeof OauthPopupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/duplicates': typeof AuthenticatedDuplicatesRoute
+  '/events': typeof AuthenticatedEventsRouteWithChildren
+  '/family': typeof AuthenticatedFamilyRoute
+  '/library': typeof AuthenticatedLibraryRoute
+  '/onboarding': typeof AuthenticatedOnboardingRoute
+  '/people': typeof AuthenticatedPeopleRouteWithChildren
+  '/places': typeof AuthenticatedPlacesRoute
+  '/scans': typeof AuthenticatedScansRoute
+  '/search': typeof AuthenticatedSearchRoute
+  '/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
+  '/asset/$id': typeof AuthenticatedAssetIdRoute
+  '/events/$id': typeof AuthenticatedEventsIdRoute
+  '/people/$id': typeof AuthenticatedPeopleIdRoute
+  '/settings/data': typeof AuthenticatedSettingsDataRoute
+  '/settings/privacy': typeof AuthenticatedSettingsPrivacyRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/_authenticated': typeof AuthenticatedRouteWithChildren
+  '/callback': typeof CallbackRoute
+  '/oauth-bridge': typeof OauthBridgeRoute
+  '/oauth-popup': typeof OauthPopupRoute
+  '/sign-in': typeof SignInRoute
+  '/sign-up': typeof SignUpRoute
+  '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/duplicates': typeof AuthenticatedDuplicatesRoute
+  '/_authenticated/events': typeof AuthenticatedEventsRouteWithChildren
+  '/_authenticated/family': typeof AuthenticatedFamilyRoute
+  '/_authenticated/library': typeof AuthenticatedLibraryRoute
+  '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
+  '/_authenticated/people': typeof AuthenticatedPeopleRouteWithChildren
+  '/_authenticated/places': typeof AuthenticatedPlacesRoute
+  '/_authenticated/scans': typeof AuthenticatedScansRoute
+  '/_authenticated/search': typeof AuthenticatedSearchRoute
+  '/_authenticated/sources': typeof AuthenticatedSourcesRoute
+  '/invite/$token': typeof InviteTokenRoute
+  '/_authenticated/asset/$id': typeof AuthenticatedAssetIdRoute
+  '/_authenticated/events/$id': typeof AuthenticatedEventsIdRoute
+  '/_authenticated/people/$id': typeof AuthenticatedPeopleIdRoute
+  '/_authenticated/settings/data': typeof AuthenticatedSettingsDataRoute
+  '/_authenticated/settings/privacy': typeof AuthenticatedSettingsPrivacyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/callback'
+    | '/oauth-bridge'
+    | '/oauth-popup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/dashboard'
+    | '/duplicates'
+    | '/events'
+    | '/family'
+    | '/library'
+    | '/onboarding'
+    | '/people'
+    | '/places'
+    | '/scans'
+    | '/search'
+    | '/sources'
+    | '/invite/$token'
+    | '/asset/$id'
+    | '/events/$id'
+    | '/people/$id'
+    | '/settings/data'
+    | '/settings/privacy'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/callback'
+    | '/oauth-bridge'
+    | '/oauth-popup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/dashboard'
+    | '/duplicates'
+    | '/events'
+    | '/family'
+    | '/library'
+    | '/onboarding'
+    | '/people'
+    | '/places'
+    | '/scans'
+    | '/search'
+    | '/sources'
+    | '/invite/$token'
+    | '/asset/$id'
+    | '/events/$id'
+    | '/people/$id'
+    | '/settings/data'
+    | '/settings/privacy'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authenticated'
+    | '/callback'
+    | '/oauth-bridge'
+    | '/oauth-popup'
+    | '/sign-in'
+    | '/sign-up'
+    | '/_authenticated/dashboard'
+    | '/_authenticated/duplicates'
+    | '/_authenticated/events'
+    | '/_authenticated/family'
+    | '/_authenticated/library'
+    | '/_authenticated/onboarding'
+    | '/_authenticated/people'
+    | '/_authenticated/places'
+    | '/_authenticated/scans'
+    | '/_authenticated/search'
+    | '/_authenticated/sources'
+    | '/invite/$token'
+    | '/_authenticated/asset/$id'
+    | '/_authenticated/events/$id'
+    | '/_authenticated/people/$id'
+    | '/_authenticated/settings/data'
+    | '/_authenticated/settings/privacy'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
+  CallbackRoute: typeof CallbackRoute
+  OauthBridgeRoute: typeof OauthBridgeRoute
+  OauthPopupRoute: typeof OauthPopupRoute
+  SignInRoute: typeof SignInRoute
+  SignUpRoute: typeof SignUpRoute
+  InviteTokenRoute: typeof InviteTokenRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/sign-up': {
+      id: '/sign-up'
+      path: '/sign-up'
+      fullPath: '/sign-up'
+      preLoaderRoute: typeof SignUpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-in': {
+      id: '/sign-in'
+      path: '/sign-in'
+      fullPath: '/sign-in'
+      preLoaderRoute: typeof SignInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oauth-popup': {
+      id: '/oauth-popup'
+      path: '/oauth-popup'
+      fullPath: '/oauth-popup'
+      preLoaderRoute: typeof OauthPopupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oauth-bridge': {
+      id: '/oauth-bridge'
+      path: '/oauth-bridge'
+      fullPath: '/oauth-bridge'
+      preLoaderRoute: typeof OauthBridgeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/callback': {
+      id: '/callback'
+      path: '/callback'
+      fullPath: '/callback'
+      preLoaderRoute: typeof CallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated': {
+      id: '/_authenticated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthenticatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,12 +374,208 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/sources': {
+      id: '/_authenticated/sources'
+      path: '/sources'
+      fullPath: '/sources'
+      preLoaderRoute: typeof AuthenticatedSourcesRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/search': {
+      id: '/_authenticated/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof AuthenticatedSearchRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/scans': {
+      id: '/_authenticated/scans'
+      path: '/scans'
+      fullPath: '/scans'
+      preLoaderRoute: typeof AuthenticatedScansRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/places': {
+      id: '/_authenticated/places'
+      path: '/places'
+      fullPath: '/places'
+      preLoaderRoute: typeof AuthenticatedPlacesRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/people': {
+      id: '/_authenticated/people'
+      path: '/people'
+      fullPath: '/people'
+      preLoaderRoute: typeof AuthenticatedPeopleRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/onboarding': {
+      id: '/_authenticated/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof AuthenticatedOnboardingRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/library': {
+      id: '/_authenticated/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof AuthenticatedLibraryRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/family': {
+      id: '/_authenticated/family'
+      path: '/family'
+      fullPath: '/family'
+      preLoaderRoute: typeof AuthenticatedFamilyRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/events': {
+      id: '/_authenticated/events'
+      path: '/events'
+      fullPath: '/events'
+      preLoaderRoute: typeof AuthenticatedEventsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/duplicates': {
+      id: '/_authenticated/duplicates'
+      path: '/duplicates'
+      fullPath: '/duplicates'
+      preLoaderRoute: typeof AuthenticatedDuplicatesRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/dashboard': {
+      id: '/_authenticated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/privacy': {
+      id: '/_authenticated/settings/privacy'
+      path: '/settings/privacy'
+      fullPath: '/settings/privacy'
+      preLoaderRoute: typeof AuthenticatedSettingsPrivacyRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/data': {
+      id: '/_authenticated/settings/data'
+      path: '/settings/data'
+      fullPath: '/settings/data'
+      preLoaderRoute: typeof AuthenticatedSettingsDataRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/people/$id': {
+      id: '/_authenticated/people/$id'
+      path: '/$id'
+      fullPath: '/people/$id'
+      preLoaderRoute: typeof AuthenticatedPeopleIdRouteImport
+      parentRoute: typeof AuthenticatedPeopleRoute
+    }
+    '/_authenticated/events/$id': {
+      id: '/_authenticated/events/$id'
+      path: '/$id'
+      fullPath: '/events/$id'
+      preLoaderRoute: typeof AuthenticatedEventsIdRouteImport
+      parentRoute: typeof AuthenticatedEventsRoute
+    }
+    '/_authenticated/asset/$id': {
+      id: '/_authenticated/asset/$id'
+      path: '/asset/$id'
+      fullPath: '/asset/$id'
+      preLoaderRoute: typeof AuthenticatedAssetIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
   }
 }
 
+interface AuthenticatedEventsRouteChildren {
+  AuthenticatedEventsIdRoute: typeof AuthenticatedEventsIdRoute
+}
+
+const AuthenticatedEventsRouteChildren: AuthenticatedEventsRouteChildren = {
+  AuthenticatedEventsIdRoute: AuthenticatedEventsIdRoute,
+}
+
+const AuthenticatedEventsRouteWithChildren =
+  AuthenticatedEventsRoute._addFileChildren(AuthenticatedEventsRouteChildren)
+
+interface AuthenticatedPeopleRouteChildren {
+  AuthenticatedPeopleIdRoute: typeof AuthenticatedPeopleIdRoute
+}
+
+const AuthenticatedPeopleRouteChildren: AuthenticatedPeopleRouteChildren = {
+  AuthenticatedPeopleIdRoute: AuthenticatedPeopleIdRoute,
+}
+
+const AuthenticatedPeopleRouteWithChildren =
+  AuthenticatedPeopleRoute._addFileChildren(AuthenticatedPeopleRouteChildren)
+
+interface AuthenticatedRouteChildren {
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedDuplicatesRoute: typeof AuthenticatedDuplicatesRoute
+  AuthenticatedEventsRoute: typeof AuthenticatedEventsRouteWithChildren
+  AuthenticatedFamilyRoute: typeof AuthenticatedFamilyRoute
+  AuthenticatedLibraryRoute: typeof AuthenticatedLibraryRoute
+  AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
+  AuthenticatedPeopleRoute: typeof AuthenticatedPeopleRouteWithChildren
+  AuthenticatedPlacesRoute: typeof AuthenticatedPlacesRoute
+  AuthenticatedScansRoute: typeof AuthenticatedScansRoute
+  AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
+  AuthenticatedSourcesRoute: typeof AuthenticatedSourcesRoute
+  AuthenticatedAssetIdRoute: typeof AuthenticatedAssetIdRoute
+  AuthenticatedSettingsDataRoute: typeof AuthenticatedSettingsDataRoute
+  AuthenticatedSettingsPrivacyRoute: typeof AuthenticatedSettingsPrivacyRoute
+}
+
+const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedDuplicatesRoute: AuthenticatedDuplicatesRoute,
+  AuthenticatedEventsRoute: AuthenticatedEventsRouteWithChildren,
+  AuthenticatedFamilyRoute: AuthenticatedFamilyRoute,
+  AuthenticatedLibraryRoute: AuthenticatedLibraryRoute,
+  AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
+  AuthenticatedPeopleRoute: AuthenticatedPeopleRouteWithChildren,
+  AuthenticatedPlacesRoute: AuthenticatedPlacesRoute,
+  AuthenticatedScansRoute: AuthenticatedScansRoute,
+  AuthenticatedSearchRoute: AuthenticatedSearchRoute,
+  AuthenticatedSourcesRoute: AuthenticatedSourcesRoute,
+  AuthenticatedAssetIdRoute: AuthenticatedAssetIdRoute,
+  AuthenticatedSettingsDataRoute: AuthenticatedSettingsDataRoute,
+  AuthenticatedSettingsPrivacyRoute: AuthenticatedSettingsPrivacyRoute,
+}
+
+const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
+  AuthenticatedRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  CallbackRoute: CallbackRoute,
+  OauthBridgeRoute: OauthBridgeRoute,
+  OauthPopupRoute: OauthPopupRoute,
+  SignInRoute: SignInRoute,
+  SignUpRoute: SignUpRoute,
+  InviteTokenRoute: InviteTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

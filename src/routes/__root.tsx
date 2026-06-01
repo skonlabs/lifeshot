@@ -11,6 +11,9 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { AuthProvider } from "../lib/auth/AuthProvider";
+import { Toaster } from "../components/ui/sonner";
+import { SiteGate } from "../components/SiteGate";
 
 function NotFoundComponent() {
   return (
@@ -80,20 +83,22 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { title: "LifeShot — Every moment. Beautifully remembered." },
       { name: "description", content: "LifeShot is your private memory platform — capture, organize, and relive a lifetime of moments with the people you love." },
       { name: "author", content: "LifeShot" },
-      { property: "og:title", content: "LifeShot — Your personal memory platform" },
-      { property: "og:description", content: "Capture, organize, and relive a lifetime of moments." },
+      { property: "og:title", content: "LifeShot — Every moment. Beautifully remembered." },
+      { property: "og:description", content: "LifeShot is your private memory platform — capture, organize, and relive a lifetime of moments with the people you love." },
       { property: "og:site_name", content: "LifeShot" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:title", content: "LifeShot — Your personal memory platform" },
-      { name: "twitter:description", content: "Capture, organize, and relive a lifetime of moments." },
+      { name: "twitter:title", content: "LifeShot — Every moment. Beautifully remembered." },
+      { name: "twitter:description", content: "LifeShot is your private memory platform — capture, organize, and relive a lifetime of moments with the people you love." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5a9b150e-1879-4484-a280-0e414d5cf86a/id-preview-a355613b--986e4452-41e1-4176-90a5-bb509fc14571.lovable.app-1780209732021.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5a9b150e-1879-4484-a280-0e414d5cf86a/id-preview-a355613b--986e4452-41e1-4176-90a5-bb509fc14571.lovable.app-1780209732021.png" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Figtree:wght@400;500;600;700&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap",
       },
       {
         rel: "stylesheet",
@@ -126,8 +131,13 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <SiteGate>
+        <AuthProvider>
+          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+          <Outlet />
+          <Toaster />
+        </AuthProvider>
+      </SiteGate>
     </QueryClientProvider>
   );
 }
