@@ -317,13 +317,13 @@ function Sources() {
               const connected = connectedByKind.get(p.kind);
               return (
                 <button key={p.id} onClick={() => onProviderClick(p.id)}
-                  className="hairline group relative flex items-center justify-between gap-3 rounded-md border bg-[color:var(--paper)] p-4 pr-24 text-left transition-colors hover:bg-[color:var(--paper-2)]">
+                  className="hairline group relative flex min-h-24 items-start gap-3 rounded-md border bg-[color:var(--paper)] p-4 pr-14 text-left transition-colors hover:bg-[color:var(--paper-2)]">
                   {connected && (
-                    <span className="absolute right-4 top-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-success">
+                    <span className="absolute right-4 top-4 rounded-full bg-success px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
                       CONNECTED
                     </span>
                   )}
-                  <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
                     <div className={`grid h-10 w-10 place-items-center rounded-md ${connected ? "bg-[color:var(--paper-2)] text-[color:var(--ink)]" : "bg-[color:var(--paper-2)] text-[color:var(--umber)] group-hover:text-[color:var(--ink)]"}`}>
                       <ProviderIcon kind={p.kind} className="h-5 w-5" />
                     </div>
@@ -336,7 +336,7 @@ function Sources() {
                       )}
                     </div>
                   </div>
-                  {connected && <Settings2 className="h-4 w-4 shrink-0 text-[color:var(--umber)]" strokeWidth={1.5} />}
+                  {connected && <Settings2 className="absolute bottom-4 right-4 h-4 w-4 text-[color:var(--umber)]" strokeWidth={1.5} />}
                 </button>
               );
             })}
