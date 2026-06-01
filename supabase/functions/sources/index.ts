@@ -47,10 +47,6 @@ function isMissingColumnError(message?: string | null, column?: string) {
   );
 }
 
-function isInvalidSyncingEnumError(message?: string | null) {
-  return !!message && /invalid input value for enum .*sync_status.*:\s*"syncing"/i.test(message);
-}
-
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
   redirect_uri: z.string().url().max(2048).optional(),
