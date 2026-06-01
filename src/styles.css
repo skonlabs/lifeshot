@@ -48,6 +48,7 @@
   --color-ring-offset-background: var(--background);
   --color-gold: var(--gold);
   --color-teal: var(--teal);
+  --color-success: var(--success);
   --color-ink: var(--ink);
   --color-paper: var(--paper);
   --color-paper-2: var(--paper-2);
@@ -90,6 +91,7 @@
   --accent-foreground: oklch(0.22 0.018 60);
   --gold: oklch(0.72 0.10 70);
   --teal: oklch(0.55 0.08 195);
+  --success: oklch(0.64 0.16 148);
   --ink: oklch(0.22 0.018 60);
   --paper: oklch(0.975 0.008 80);
   --paper-2: oklch(0.935 0.018 80);
@@ -130,6 +132,7 @@
   --muted-foreground: oklch(0.704 0.04 256.788);
   --accent: oklch(0.279 0.041 260.031);
   --accent-foreground: oklch(0.984 0.003 247.858);
+  --success: oklch(0.76 0.17 148);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.984 0.003 247.858);
   --border: oklch(1 0 0 / 10%);

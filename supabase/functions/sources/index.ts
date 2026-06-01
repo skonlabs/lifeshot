@@ -36,6 +36,21 @@ async function kickWorker() {
   await run;
 }
 
+function isMissingColumnError(message?: string | null, column?: string) {
+  if (!message || !column) return false;
+  const normalized = message.toLowerCase();
+  const target = column.toLowerCase();
+  return (
+    normalized.includes(`could not find the '${target}' column`) ||
+    (normalized.includes(target) && normalized.includes("schema cache")) ||
+    (normalized.includes(target) && normalized.includes("does not exist"))
+  );
+}
+
+function isInvalidSyncingEnumError(message?: string | null) {
+  return !!message && /invalid input value for enum .*sync_status.*:\s*"syncing"/i.test(message);
+}
+
 const ConnectIn = z.object({
   provider_id: z.string().uuid(),
   redirect_uri: z.string().url().max(2048).optional(),
@@ -723,7 +738,7 @@ app.post("/v1/:id/sync", async (c) => {
   const syncStatusAttempt = await svc.from("source_accounts")
     .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
   if (syncStatusAttempt.error) {
-    if (/sync_cancel_requested_at/i.test(syncStatusAttempt.error.message)) {
+    if (isMissingColumnError(syncStatusAttempt.error.message, "sync_cancel_requested_at")) {
       const { error: fallbackStatusError } = await svc.from("source_accounts")
         .update({ status: "pending" }).eq("id", id);
       if (fallbackStatusError) throw new ApiError("internal", fallbackStatusError.message);
@@ -761,7 +776,7 @@ app.post("/v1/:id/sync/stop", async (c) => {
   const { error: cancelFlagError } = await svc.from("source_accounts")
     .update({ sync_cancel_requested_at: now, status: "active" }).eq("id", id);
   if (cancelFlagError) {
-    if (/sync_cancel_requested_at/i.test(cancelFlagError.message)) {
+    if (isMissingColumnError(cancelFlagError.message, "sync_cancel_requested_at")) {
       const { error: fallbackCancelError } = await svc.from("source_accounts")
         .update({ status: "active" }).eq("id", id);
       if (fallbackCancelError) throw new ApiError("internal", fallbackCancelError.message);
@@ -778,7 +793,7 @@ app.post("/v1/:id/sync/stop", async (c) => {
 
   // 3) Mark current pending/running source_sync_jobs rows as cancelled.
   await svc.from("source_sync_jobs")
-    .update({ status: "cancelled", finished_at: now })
+    .update({ status: "cancelled", finished_at: now, stats: { cancelled: true, cancelled_at: now } })
     .eq("source_account_id", id)
     .in("status", ["pending", "running"]);
 
