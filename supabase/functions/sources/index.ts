@@ -827,6 +827,24 @@ app.post("/v1/:id/sync/stop", async (c) => {
     .eq("job_name", "syncSource")
     .contains("payload", { source_account_id: id });
 
+  // 2b) Force-cancel any RUNNING syncSource jobs in the queue for this
+  // account. Without this, a worker that has been killed mid-await leaves
+  // a row in status='running' that nothing else touches — the UI then shows
+  // a perpetual "syncing" state. Marking it failed lets the next Sync
+  // request start cleanly and the status endpoint stops reporting active.
+  await svc.from("job_queue")
+    .update({
+      status: "failed",
+      dead_letter: true,
+      finished_at: now,
+      last_error: "cancelled by user",
+      locked_at: null,
+      locked_by: null,
+    })
+    .eq("status", "running")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: id });
+
   // 3) Mark current pending/running source_sync_jobs rows as cancelled.
   await svc.from("source_sync_jobs")
     .update({ status: "cancelled", finished_at: now, stats: { cancelled: true, cancelled_at: now } })
