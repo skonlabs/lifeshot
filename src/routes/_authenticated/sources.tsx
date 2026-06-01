@@ -522,7 +522,7 @@ function ManageDialog({ state, onClose, onSync, onDisconnect, onReconnect }: {
                   accountId: state.accountId,
                   containers: Object.values(draft),
                 }, {
-                  onSuccess: () => toast.success("Folder scope updated. Re-sync queued."),
+                  onSuccess: () => toast.success("Folder scope saved. Click Sync to index."),
                   onError: (e) => toast.error((e as Error).message || "Failed to save folder scope."),
                 })}
               >
