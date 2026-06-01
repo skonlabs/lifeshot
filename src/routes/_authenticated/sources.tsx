@@ -1,12 +1,12 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useStopSync, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Trash2, UploadCloud } from "lucide-react";
+import { Check, ChevronRight, Folder, FolderOpen, Plug, RefreshCcw, Settings2, Square, Trash2, UploadCloud } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -68,6 +68,7 @@ function Sources() {
   const providers = useProviders();
   const connect = useConnectSource();
   const sync = useSyncSource();
+  const stopSync = useStopSync();
   const disconnect = useDisconnectSource();
   const qc = useQueryClient();
   const popupRef = useRef<Window | null>(null);
@@ -286,6 +287,10 @@ function Sources() {
                 onSync={() => sync.mutate(a.id, {
                   onSuccess: () => toast.success("Sync queued. Indexing your folders…"),
                   onError: (e) => toast.error((e as Error).message || "Sync failed to start."),
+                })}
+                onStop={() => stopSync.mutate(a.id, {
+                  onSuccess: () => toast.success("Stopping sync…"),
+                  onError: (e) => toast.error((e as Error).message || "Failed to stop sync."),
                 })}
                 onSelectFolders={() => {
                   const provider = providers.data?.providers?.find(p => p.kind === a.provider_kind);
