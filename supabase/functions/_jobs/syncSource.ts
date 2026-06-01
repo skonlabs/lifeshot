@@ -7,11 +7,18 @@ import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.t
 import type { JobContext } from "../_pipeline/runner.ts";
 
 function isMissingColumnError(message?: string | null, column?: string) {
-  return !!message && !!column && message.toLowerCase().includes(`could not find the '${column.toLowerCase()}' column`);
+  if (!message || !column) return false;
+  const normalized = message.toLowerCase();
+  const target = column.toLowerCase();
+  return (
+    normalized.includes(`could not find the '${target}' column`) ||
+    (normalized.includes(target) && normalized.includes("schema cache")) ||
+    (normalized.includes(target) && normalized.includes("does not exist"))
+  );
 }
 
 function isInvalidSyncingEnumError(message?: string | null) {
-  return !!message && /invalid input value for enum sync_status:\s*"syncing"/i.test(message);
+  return !!message && /invalid input value for enum .*sync_status.*:\s*"syncing"/i.test(message);
 }
 
 async function recordSyncError(
