@@ -17,10 +17,6 @@ function isMissingColumnError(message?: string | null, column?: string) {
   );
 }
 
-function isInvalidSyncingEnumError(message?: string | null) {
-  return !!message && /invalid input value for enum .*sync_status.*:\s*"syncing"/i.test(message);
-}
-
 async function recordSyncError(
   sb: ReturnType<typeof serviceClient>,
   sourceAccountId: string,
