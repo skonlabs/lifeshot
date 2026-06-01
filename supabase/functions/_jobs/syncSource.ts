@@ -138,8 +138,16 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
   if (markSyncing.error) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
-    throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
+    if (/sync_status.*syncing/i.test(markSyncing.error.message)) {
+      const fallbackMarkPending = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
+      if (fallbackMarkPending.error) {
+        await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", fallbackMarkPending.error.message, { stage: "mark_syncing_fallback" });
+        throw new Error(`source_accounts pending fallback failed: ${fallbackMarkPending.error.message}`);
+      }
+    } else {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
+      throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
+    }
   }
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
@@ -276,7 +284,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  if (page.nextCursor) {
+  const currentJobStatus = await sb.from("source_sync_jobs").select("status").eq("id", ctx.jobId).maybeSingle();
+  const cancellationRequested = currentJobStatus.data?.status === "cancelled";
+
+  if (page.nextCursor && !cancellationRequested) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
