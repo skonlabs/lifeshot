@@ -716,7 +716,8 @@ app.post("/v1/:id/sync", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const job = await jobEnqueuer.enqueue("syncSource",
     { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
-  const { error: syncStatusError } = await getServiceClient().from("source_accounts").update({ status: "pending" }).eq("id", id);
+  const { error: syncStatusError } = await getServiceClient().from("source_accounts")
+    .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
   if (syncStatusError) throw new ApiError("internal", syncStatusError.message);
   const { error: syncJobError } = await getServiceClient().from("source_sync_jobs").upsert({
     id: job.id,
@@ -729,6 +730,40 @@ app.post("/v1/:id/sync", async (c) => {
   emitEvent(c, "sources.sync_enqueued", { id });
   await kickWorker();
   return c.json({ job_id: job.id }, 202);
+});
+
+// Request cancellation of any in-flight sync for this account. The running
+// worker checks `sync_cancel_requested_at` at the start of each chained
+// page-run and exits early; queued (not-yet-started) jobs are removed so
+// nothing new fires.
+app.post("/v1/:id/sync/stop", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+  const svc = getServiceClient();
+  const now = new Date().toISOString();
+
+  // 1) Mark the account so the worker bails out on its next page.
+  const { error: cancelFlagError } = await svc.from("source_accounts")
+    .update({ sync_cancel_requested_at: now, status: "active" }).eq("id", id);
+  if (cancelFlagError) throw new ApiError("internal", cancelFlagError.message);
+
+  // 2) Remove queued (not-yet-started) syncSource jobs for this account.
+  await svc.from("job_queue").delete()
+    .eq("status", "pending")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: id });
+
+  // 3) Mark current pending/running source_sync_jobs rows as cancelled.
+  await svc.from("source_sync_jobs")
+    .update({ status: "cancelled", finished_at: now })
+    .eq("source_account_id", id)
+    .in("status", ["pending", "running"]);
+
+  emitEvent(c, "sources.sync_cancelled", { id });
+  return c.json({ cancelled: true });
 });
 
 // After client-side upload to the source_uploads storage bucket, scan the
