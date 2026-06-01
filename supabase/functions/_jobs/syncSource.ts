@@ -17,10 +17,6 @@ function isMissingColumnError(message?: string | null, column?: string) {
   );
 }
 
-function isInvalidSyncingEnumError(message?: string | null) {
-  return !!message && /invalid input value for enum .*sync_status.*:\s*"syncing"/i.test(message);
-}
-
 async function recordSyncError(
   sb: ReturnType<typeof serviceClient>,
   sourceAccountId: string,
@@ -159,19 +155,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     await sb.from("source_accounts").update({ status: "active" }).eq("id", source_account_id);
     return { cancelled: true };
   }
-  const markSyncing = await sb.from("source_accounts").update({ status: "syncing" }).eq("id", source_account_id);
-  if (markSyncing.error) {
-    if (isInvalidSyncingEnumError(markSyncing.error.message)) {
-      const fallbackMarkPending = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
-      if (fallbackMarkPending.error) {
-        await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", fallbackMarkPending.error.message, { stage: "mark_syncing_fallback" });
-        throw new Error(`source_accounts pending fallback failed: ${fallbackMarkPending.error.message}`);
-      }
-    } else {
-      await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_syncing_failed", markSyncing.error.message, { stage: "mark_syncing" });
-      throw new Error(`source_accounts syncing failed: ${markSyncing.error.message}`);
-    }
-  }
   if (acct.status === "disconnected" || acct.status === "revoked") return { skipped: "disconnected" };
 
   let providerKind = acct.provider_kind;
@@ -305,6 +288,17 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (finishJob.error) {
     await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_job_finish_failed", finishJob.error.message, { stage: "finish" });
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
+  }
+
+  if (!page.nextCursor) {
+    const { error: resolveErrorsError } = await sb.from("source_errors")
+      .update({ resolved: true })
+      .eq("source_account_id", source_account_id)
+      .eq("resolved", false);
+    if (resolveErrorsError) {
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_error_resolve_failed", resolveErrorsError.message, { stage: "resolve_errors" });
+      throw new Error(`source_errors resolve failed: ${resolveErrorsError.message}`);
+    }
   }
 
   const latestJobState = await sb.from("source_sync_jobs").select("status, stats").eq("id", ctx.jobId).maybeSingle();
