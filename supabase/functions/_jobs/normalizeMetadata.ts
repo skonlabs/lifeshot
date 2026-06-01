@@ -243,10 +243,11 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           // Write the current filename into the running sync job so the UI can
           // show which file is being processed.
           const currentFile = rel.split("/").filter(Boolean).pop() ?? rel;
+          // Don't filter by status="running" — the syncSource job may already
+          // be "completed" (listed first page) by the time we run here.
           const { data: runningJob } = await sb.from("source_sync_jobs")
             .select("id, stats")
             .eq("source_account_id", source_account_id)
-            .eq("status", "running")
             .order("created_at", { ascending: false })
             .limit(1).maybeSingle();
           if (runningJob) {

@@ -440,7 +440,7 @@ export function useSourceStatus(accountId: string | undefined) {
       const status = s?.last_job?.status;
       const accStatus = s?.status;
       const running = status === "running" || status === "pending" || accStatus === "syncing";
-      return running ? 5_000 : false;
+      return running ? 2_000 : false;
     },
     refetchIntervalInBackground: true,
     retry: false,
