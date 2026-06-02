@@ -396,15 +396,36 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     .select("id", { count: "exact", head: true })
     .eq("source_account_id", source_account_id);
 
+  // Merge with previous stats so `stage` (set by writeProgress) is preserved
+  // and counters like `seen_total` / `deleted` / `normalized` accumulate across
+  // chained pages. Replacing stats wholesale wiped `stage` every page and reset
+  // `discovered` to 0 whenever a page returned 0 file entries (common with
+  // Dropbox recursive listings that interleave folders + files), which left the
+  // UI stuck on "Discovering files…" forever.
+  const prevStatsRes = await sb.from("source_sync_jobs").select("stats").eq("id", ctx.jobId).maybeSingle();
+  const prevStats = (prevStatsRes.data?.stats && typeof prevStatsRes.data.stats === "object")
+    ? prevStatsRes.data.stats as Record<string, unknown>
+    : {};
+  const prevSeen = Number(prevStats.seen_total ?? 0);
+  const prevDeleted = Number(prevStats.deleted ?? 0);
+  const prevNormalized = Number(prevStats.normalized ?? 0);
+  const seenTotal = prevSeen + page.items.length;
+  const indexedCount = indexedTotal ?? 0;
+  const discovered = Math.max(seenTotal, indexedCount, 1);
+
   const finishJob = await sb.from("source_sync_jobs").update({
     status: page.nextCursor ? "running" : "completed",
     finished_at: page.nextCursor ? null : new Date().toISOString(),
     stats: {
+      ...prevStats,
+      stage: page.nextCursor ? "indexing" : "completed",
+      provider_kind: providerKind,
       page_items: page.items.length,
-      deleted: deleted.length,
-      discovered: indexedTotal ?? page.items.length,
-      indexed: indexedTotal ?? page.items.length,
-      normalized: needsNormalize.length,
+      seen_total: seenTotal,
+      deleted: prevDeleted + deleted.length,
+      discovered,
+      indexed: indexedCount,
+      normalized: prevNormalized + needsNormalize.length,
       has_more: !!page.nextCursor,
     },
   }).eq("id", ctx.jobId);
