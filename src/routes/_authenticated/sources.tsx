@@ -813,6 +813,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
     id: string; provider_kind: string; status: string; display_label: string | null;
     asset_count: number; last_sync_at: string | null;
     selected_container_count?: number;
+    selected_containers?: Array<{ id: string; name?: string; path?: string }>;
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
     selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   };
@@ -845,8 +846,8 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
   const discovered = s?.progress.discovered ?? indexed;
   const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : 0;
-  const k = a.selection_counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
-  const folders = a.selected_container_count ?? 0;
+  const k = a.selection_counts_by_kind ?? a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+  const folders = a.selected_container_count ?? a.selected_containers?.length ?? 0;
   const docsCombined = k.document + k.audio + k.other;
   const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
   const currentFileRaw = stats.current_file;
