@@ -6,22 +6,6 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-const WORKER_DRAIN_URL = `${Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? ""}/functions/v1/worker/drain`;
-const WORKER_AUTH = `Bearer ${Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? ""}`;
-const WORKER_SECRET = Deno.env.get("WORKER_SECRET") ?? "";
-
-function nudgeWorker() {
-  if (!WORKER_DRAIN_URL) return;
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (WORKER_AUTH !== "Bearer ") headers.authorization = WORKER_AUTH;
-  if (WORKER_SECRET) headers["x-worker-secret"] = WORKER_SECRET;
-  return fetch(WORKER_DRAIN_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({}),
-  }).catch(() => undefined);
-}
-
 // Worker continuation: simply enqueue the next page; pg_cron's /drain tick
 // (every 15s) picks it up. No in-process drain, no HTTP nudge — those races
 // were the root cause of jobs stuck in `pending` after the first page.
@@ -448,7 +432,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   if (page.nextCursor && !stopRequested) {
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
-    await nudgeWorker();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
