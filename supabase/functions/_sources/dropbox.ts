@@ -33,6 +33,23 @@ const CAPS: SourceCapabilities = {
 };
 
 const API = "https://api.dropboxapi.com/2";
+const DROPBOX_REQUEST_TIMEOUT_MS = 20_000;
+
+function normalizeDropboxPath(path: string | null | undefined): string {
+  if (!path || path === "/") return "";
+  return path;
+}
+
+function enqueueUniquePaths(queue: string[], paths: Array<string | null | undefined>) {
+  const seen = new Set(queue.map((value) => normalizeDropboxPath(value).toLowerCase()));
+  for (const value of paths) {
+    const normalized = normalizeDropboxPath(value);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    queue.push(normalized);
+  }
+}
 
 function inferMimeType(name: string): string | undefined {
   const ext = name.split(".").pop()?.toLowerCase();
@@ -161,14 +178,27 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
 
   async function call(path: string, body: Record<string, unknown>): Promise<any> {
     const token = await getAccessToken();
-    const res = await fetch(`${API}${path}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DROPBOX_REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${API}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new ConnectorTransientError(`dropbox ${path} timed out after ${Math.round(DROPBOX_REQUEST_TIMEOUT_MS / 1000)}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (res.status === 401) throw new ConnectorAuthError("unauthorized", true);
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after") ?? "30");
@@ -229,23 +259,40 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       unique.add(normalized);
     }
 
-    return unique.size ? Array.from(unique) : [""];
+    const ordered = Array.from(unique).sort((a, b) => a.length - b.length || a.localeCompare(b));
+    const pruned: string[] = [];
+    for (const target of ordered) {
+      const normalized = normalizeDropboxPath(target);
+      const lower = normalized.toLowerCase();
+      const covered = pruned.some((existing) => {
+        const base = normalizeDropboxPath(existing).toLowerCase();
+        return base === "" || lower === base || lower.startsWith(`${base}/`);
+      });
+      if (!covered) pruned.push(normalized);
+    }
+
+    return pruned.length ? pruned : [""];
   }
 
   async function list(cursor: string | null): Promise<{ items: AssetRecord[]; deleted: string[]; nextCursor: string | null }> {
     const folderTargets = await getCanonicalFolderTargets();
 
-    const state = cursor
-      ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null }
-      : { folderIndex: 0, providerCursor: null };
-    const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, state.folderIndex ?? 0));
-    const folderPath = folderTargets[folderIndex] === "/" ? "" : (folderTargets[folderIndex] ?? "");
+    const parsed = cursor
+      ? JSON.parse(cursor) as { folderIndex?: number; currentPath?: string | null; providerCursor?: string | null; pendingPaths?: string[] }
+      : { folderIndex: 0, currentPath: folderTargets[0] ?? "", providerCursor: null, pendingPaths: [] };
+    const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, parsed.folderIndex ?? 0));
+    const currentPath = normalizeDropboxPath(parsed.currentPath ?? folderTargets[folderIndex] ?? "");
+    const pendingPaths = Array.isArray(parsed.pendingPaths)
+      ? parsed.pendingPaths
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => normalizeDropboxPath(value))
+      : [];
 
-    const json = state.providerCursor
-      ? await call("/files/list_folder/continue", { cursor: state.providerCursor })
+    const json = parsed.providerCursor
+      ? await call("/files/list_folder/continue", { cursor: parsed.providerCursor })
       : await call("/files/list_folder", {
-        path: folderPath,
-        recursive: true,
+        path: currentPath,
+        recursive: false,
         include_deleted: true,
         // include_media_info: false — Dropbox's media_info extraction is
         // notoriously slow (often 30s–2min on 400+ file folders) and isn't
@@ -267,14 +314,41 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         .map((entry: any) => mapEntry(entry)),
     );
 
+    enqueueUniquePaths(
+      pendingPaths,
+      (json.entries ?? [])
+        .filter((entry: any) => entry[".tag"] === "folder")
+        .map((entry: any) => entry.path_lower ?? entry.path_display ?? null),
+    );
+
+    const nextFolderPath = (() => {
+      while (pendingPaths.length > 0) {
+        const next = normalizeDropboxPath(pendingPaths.shift());
+        if (next.toLowerCase() !== currentPath.toLowerCase()) return next;
+      }
+      return null;
+    })();
+
     return {
       items: mapped.filter(Boolean) as AssetRecord[],
       deleted,
       nextCursor: json.has_more
-        ? JSON.stringify({ folderIndex, providerCursor: json.cursor as string })
-        : folderIndex < folderTargets.length - 1
-          ? JSON.stringify({ folderIndex: folderIndex + 1, providerCursor: null })
-          : null,
+        ? JSON.stringify({
+          folderIndex,
+          currentPath,
+          providerCursor: json.cursor as string,
+          pendingPaths,
+        })
+        : nextFolderPath !== null
+          ? JSON.stringify({ folderIndex, currentPath: nextFolderPath, providerCursor: null, pendingPaths })
+          : folderIndex < folderTargets.length - 1
+            ? JSON.stringify({
+              folderIndex: folderIndex + 1,
+              currentPath: folderTargets[folderIndex + 1] ?? "",
+              providerCursor: null,
+              pendingPaths: [],
+            })
+            : null,
     };
   }
 
