@@ -28,11 +28,16 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.json({ ok: true, service: "lifeshot-worker" }));
 
-/** Drain N jobs (called by pg_cron every 10s). */
+/** Drain pending jobs. Called by pg_cron every 15s and as a nudge from
+ * /sources/.../sync. Budget is generous (50s of the 60s Edge Function limit)
+ * so a single Dropbox list_folder call (~20s timeout) plus DB writes fits
+ * comfortably inside one drain invocation. batch=4 keeps connector
+ * concurrency reasonable. */
 app.post("/drain", async (c) => {
   const url = new URL(c.req.url);
-  const batch = Number(url.searchParams.get("batch") ?? "16");
-  const r = await drainUntilEmpty(7000, batch);
+  const batch = Number(url.searchParams.get("batch") ?? "4");
+  const budgetMs = Number(url.searchParams.get("budget_ms") ?? "50000");
+  const r = await drainUntilEmpty(budgetMs, batch);
   return c.json(r);
 });
 
