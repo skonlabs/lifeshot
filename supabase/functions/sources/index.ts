@@ -323,16 +323,24 @@ app.get("/v1/accounts", async (c) => {
       scopesByAccount.set(row.source_account_id, Array.isArray(selected?.containers) ? selected!.containers : []);
     }
   }
+  // Selection counts: previously we did a full recursive Dropbox/OneDrive
+  // crawl on EVERY /v1/accounts request (often 10–60s per account) which
+  // blocked the UI from rendering. The selected-folder count is already in
+  // `scopesByAccount`; the per-kind file counts can come from the indexed
+  // `breakdown` map (assets we've actually persisted). This is accurate
+  // once the first sync runs and never makes a provider API call.
   const liveStatsByAccount = new Map<string, SourceSelectionStats>();
-  await Promise.all(ids.map(async (accountId) => {
-    const meta = accountMeta.get(accountId);
-    if (!meta?.providerKind) {
-      liveStatsByAccount.set(accountId, ZERO_SELECTION_STATS);
-      return;
-    }
-    const stats = await getSelectionStats(meta.providerKind, accountId, meta.userId);
-    liveStatsByAccount.set(accountId, stats);
-  }));
+  for (const accountId of ids) {
+    const b = breakdown[accountId] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+    liveStatsByAccount.set(accountId, {
+      folder_count: (scopesByAccount.get(accountId) ?? []).length,
+      photo: b.photo,
+      video: b.video,
+      document: b.document,
+      audio: b.audio,
+      other: b.other,
+    });
+  }
   return c.json({
     accounts: (data ?? []).map((r: any) => {
       const selectionStats = liveStatsByAccount.get(r.id) ?? ZERO_SELECTION_STATS;
