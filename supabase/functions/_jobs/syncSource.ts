@@ -163,15 +163,24 @@ async function saveCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
     ? { delta_token: nextCursor, updated_at: new Date().toISOString() }
     : { cursor: nextCursor, updated_at: new Date().toISOString() };
 
-  const legacyUpdate = await sb.from("source_sync_cursors").update(patch).eq("source_account_id", sourceAccountId);
-  if (legacyUpdate.error) {
-    const legacyInsert = await sb.from("source_sync_cursors").insert({
-      source_account_id: sourceAccountId,
-      cursor: cursorKind === "delta" ? null : nextCursor,
-      delta_token: cursorKind === "delta" ? nextCursor : null,
-    });
-    if (legacyInsert.error) throw new Error(`save cursor: ${legacyInsert.error.message}`);
+  const legacyRow = await sb.from("source_sync_cursors")
+    .select("id")
+    .eq("source_account_id", sourceAccountId)
+    .maybeSingle();
+  if (legacyRow.error) throw new Error(`save cursor legacy lookup: ${legacyRow.error.message}`);
+
+  if (legacyRow.data?.id) {
+    const legacyUpdate = await sb.from("source_sync_cursors").update(patch).eq("id", legacyRow.data.id);
+    if (legacyUpdate.error) throw new Error(`save cursor legacy update: ${legacyUpdate.error.message}`);
+    return;
   }
+
+  const legacyInsert = await sb.from("source_sync_cursors").insert({
+    source_account_id: sourceAccountId,
+    cursor: cursorKind === "delta" ? null : nextCursor,
+    delta_token: cursorKind === "delta" ? nextCursor : null,
+  });
+  if (legacyInsert.error) throw new Error(`save cursor legacy insert: ${legacyInsert.error.message}`);
 }
 
 /**
