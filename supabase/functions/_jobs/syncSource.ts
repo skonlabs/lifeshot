@@ -431,18 +431,12 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
   if (page.nextCursor && !stopRequested) {
-    // Re-enqueue the next page immediately so the current drain loop can
-    // claim it in the same invocation. A 1s delay makes drainUntilEmpty()
-    // exit before the next page becomes eligible, which leaves the chain
-    // dependent on a second worker wake-up. If that wake-up misses (for
-    // example a secret/config mismatch on /worker/drain), sync appears stuck
-    // forever after the first page.
+    // Enqueue the next page. pg_cron drains every 15s and the worker will
+    // pick it up on the next tick (typically <15s, often <5s if a drain is
+    // already running). This is intentionally simple — no in-process drain,
+    // no HTTP nudge — because those races were causing pages to stall in
+    // `pending` forever.
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
-    // Drain the next queued page inline before returning. The previous
-    // fire-and-forget wake-up was leaving follow-up jobs in `pending`
-    // indefinitely, which matches the user's stuck "Discovering files..."
-    // state after the first batch.
-    await kickWorkerDrain({ inline: true });
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
