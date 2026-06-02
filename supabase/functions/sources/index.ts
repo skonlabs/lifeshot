@@ -815,6 +815,27 @@ app.post("/v1/:id/sync", async (c) => {
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
   await kickWorker(c.req.header("Authorization"), c.req.url);
+  // If the best-effort nudge is ignored by the runtime or network, do one
+  // synchronous tiny drain so the just-enqueued syncSource job leaves the
+  // queued state immediately instead of waiting for the next cron tick.
+  const workerBase = (() => {
+    try {
+      return new URL(ENV.SUPABASE_URL).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (workerBase) {
+    await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(c.req.header("Authorization") ? { "authorization": c.req.header("Authorization")! } : {}),
+        ...(Deno.env.get("WORKER_SECRET") ? { "x-worker-secret": Deno.env.get("WORKER_SECRET")! } : {}),
+      },
+      body: JSON.stringify({}),
+    }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
+  }
   return c.json({ job_id: job.id }, 202);
 });
 
