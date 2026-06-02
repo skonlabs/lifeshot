@@ -40,17 +40,6 @@ function normalizeDropboxPath(path: string | null | undefined): string {
   return path;
 }
 
-function enqueueUniquePaths(queue: string[], paths: Array<string | null | undefined>) {
-  const seen = new Set(queue.map((value) => normalizeDropboxPath(value).toLowerCase()));
-  for (const value of paths) {
-    const normalized = normalizeDropboxPath(value);
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    queue.push(normalized);
-  }
-}
-
 function inferMimeType(name: string): string | undefined {
   const ext = name.split(".").pop()?.toLowerCase();
   if (!ext) return undefined;
@@ -278,29 +267,34 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const folderTargets = await getCanonicalFolderTargets();
 
     const parsed = cursor
-      ? JSON.parse(cursor) as { folderIndex?: number; currentPath?: string | null; providerCursor?: string | null; pendingPaths?: string[] }
-      : { folderIndex: 0, currentPath: folderTargets[0] ?? "", providerCursor: null, pendingPaths: [] };
+      ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null; pendingPaths?: unknown }
+      : { folderIndex: 0, providerCursor: null };
+    // Old-format cursors used a BFS pendingPaths bookkeeping with
+    // recursive:false. Dropbox continue-cursors are bound to the original
+    // call's parameters, so reusing one of those would keep skipping
+    // subfolders even though we now request recursive:true. Detect the old
+    // shape and start fresh.
+    const isLegacyCursor = parsed && typeof parsed === "object" && "pendingPaths" in parsed;
+    const safeParsed = isLegacyCursor
+      ? { folderIndex: 0, providerCursor: null }
+      : parsed;
     const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, parsed.folderIndex ?? 0));
-    const currentPath = normalizeDropboxPath(parsed.currentPath ?? folderTargets[folderIndex] ?? "");
-    const pendingPaths = Array.isArray(parsed.pendingPaths)
-      ? parsed.pendingPaths
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => normalizeDropboxPath(value))
-      : [];
+    const currentPath = normalizeDropboxPath(folderTargets[folderIndex] ?? "");
 
-    const json = parsed.providerCursor
-      ? await call("/files/list_folder/continue", { cursor: parsed.providerCursor })
+    // Use Dropbox's NATIVE recursive listing (recursive: true) + its built-in
+    // cursor pagination. This is the same approach `countSelectionStats` uses
+    // and is the only way to guarantee every file under the selected folder
+    // (including all subfolders, at any depth) gets indexed. The previous
+    // implementation manually BFS-walked subfolders via `pendingPaths` and
+    // silently dropped entries when the bookkeeping went sideways.
+    const json = safeParsed.providerCursor
+      ? await call("/files/list_folder/continue", { cursor: safeParsed.providerCursor })
       : await call("/files/list_folder", {
         path: currentPath,
-        recursive: false,
+        recursive: true,
         include_deleted: true,
-        // include_media_info: false — Dropbox's media_info extraction is
-        // notoriously slow (often 30s–2min on 400+ file folders) and isn't
-        // needed here. normalizeMetadata fetches real EXIF on-demand per
-        // asset. Keeping this off keeps listing inside the Edge runtime
-        // budget so the job actually completes.
         include_media_info: false,
-        limit: 500,
+        limit: 1000,
       });
 
     const deleted = (json.entries ?? [])
@@ -314,52 +308,14 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         .map((entry: any) => mapEntry(entry)),
     );
 
-    enqueueUniquePaths(
-      pendingPaths,
-      (json.entries ?? [])
-        .filter((entry: any) => entry[".tag"] === "folder")
-        .map((entry: any) => entry.path_lower ?? entry.path_display ?? null),
-    );
-
-    // Compute the next folder to walk WITHOUT mutating pendingPaths when the
-    // current folder still has more pages. Previously this shifted entries
-    // off pendingPaths unconditionally and then persisted the mutated array
-    // back into the cursor when has_more=true, silently dropping subfolders
-    // and leaving many files unindexed.
-    let consumedPending = 0;
-    let nextFolderPath: string | null = null;
-    for (let i = 0; i < pendingPaths.length; i++) {
-      const candidate = normalizeDropboxPath(pendingPaths[i]);
-      consumedPending = i + 1;
-      if (candidate.toLowerCase() !== currentPath.toLowerCase()) {
-        nextFolderPath = candidate;
-        break;
-      }
-    }
-    const remainingPending = nextFolderPath === null
-      ? []
-      : pendingPaths.slice(consumedPending);
-
     return {
       items: mapped.filter(Boolean) as AssetRecord[],
       deleted,
       nextCursor: json.has_more
-        ? JSON.stringify({
-          folderIndex,
-          currentPath,
-          providerCursor: json.cursor as string,
-          pendingPaths,
-        })
-        : nextFolderPath !== null
-          ? JSON.stringify({ folderIndex, currentPath: nextFolderPath, providerCursor: null, pendingPaths: remainingPending })
-          : folderIndex < folderTargets.length - 1
-            ? JSON.stringify({
-              folderIndex: folderIndex + 1,
-              currentPath: folderTargets[folderIndex + 1] ?? "",
-              providerCursor: null,
-              pendingPaths: [],
-            })
-            : null,
+        ? JSON.stringify({ folderIndex, providerCursor: json.cursor as string })
+        : folderIndex < folderTargets.length - 1
+          ? JSON.stringify({ folderIndex: folderIndex + 1, providerCursor: null })
+          : null,
     };
   }
 
