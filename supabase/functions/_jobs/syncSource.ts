@@ -6,62 +6,9 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-// Wake the worker for chained pages using the same two-path strategy as the
-// initial /sync request:
-// 1) in-process drain via runner.ts so continuation works even if /worker/drain
-//    is misconfigured or unavailable;
-// 2) best-effort HTTP kick to the dedicated worker endpoint.
-//
-// This fixes the failure mode where page 1 completes, enqueues page 2, but the
-// continuation stays pending forever because only the HTTP wake-up path is used
-// and that path silently fails.
-async function kickWorkerDrain(options: { inline?: boolean } = {}) {
-  try {
-    // deno-lint-ignore no-explicit-any
-    const globalAny = globalThis as any;
-    const url = Deno.env.get("SUPABASE_URL");
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const secret = Deno.env.get("WORKER_SECRET") ?? "";
-    const inProcess = (async () => {
-      try {
-        const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
-        if (options.inline) {
-          await drainOnce({ batch: 1 });
-          return;
-        }
-        await drainOnce({ batch: 1 });
-        await drainUntilEmpty(55_000, 16);
-      } catch {
-        // swallow
-      }
-    })();
-
-    const httpKick = (!url || !serviceKey)
-      ? Promise.resolve()
-      : fetch(`${url}/functions/v1/worker/drain`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "authorization": `Bearer ${serviceKey}`,
-          ...(secret ? { "x-worker-secret": secret } : {}),
-        },
-        body: JSON.stringify({ batch: 8 }),
-      }).then(() => undefined).catch(() => undefined);
-
-    const combined = Promise.all([inProcess, httpKick]);
-    if (options.inline) {
-      await combined;
-      return;
-    }
-    if (globalAny.EdgeRuntime?.waitUntil) {
-      globalAny.EdgeRuntime.waitUntil(combined);
-      return;
-    }
-    await combined.catch(() => {});
-  } catch {
-    // swallow
-  }
-}
+// Worker continuation: simply enqueue the next page; pg_cron's /drain tick
+// (every 15s) picks it up. No in-process drain, no HTTP nudge — those races
+// were the root cause of jobs stuck in `pending` after the first page.
 
 // Write a progress heartbeat to source_sync_jobs.stats so the UI can show
 // meaningful progress before a page completes. Never throws.
