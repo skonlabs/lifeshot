@@ -21,11 +21,19 @@ export async function enqueueJob(jobName: string, opts: EnqueueOpts = {}): Promi
     const { data: prior } = await sb.from("job_ledger")
       .select("id").eq("job_name", jobName).eq("idempotency_key", opts.idempotencyKey).maybeSingle();
     if (prior) return { id: prior.id, deduped: true };
+    // Also check job_queue — a pending/running job with the same idempotency
+    // key would violate the unique constraint on insert.
+    const { data: queued } = await sb.from("job_queue")
+      .select("id")
+      .eq("job_name", jobName)
+      .eq("idempotency_key", opts.idempotencyKey)
+      .maybeSingle();
+    if (queued) return { id: queued.id as string, deduped: true };
   }
   const laneKey = opts.laneOverride ?? laneFor(jobName);
   const lane = LANES[laneKey];
   const next = new Date(Date.now() + (opts.delaySeconds ?? 0) * 1000).toISOString();
-  const { data, error } = await sb.from("job_queue").insert({
+  const { data, error } = await sb.from("job_queue").upsert({
     user_id: opts.userId ?? null,
     job_name: jobName,
     payload: opts.payload ?? {},
@@ -35,8 +43,17 @@ export async function enqueueJob(jobName: string, opts: EnqueueOpts = {}): Promi
     next_attempt_at: next,
     idempotency_key: opts.idempotencyKey ?? null,
     max_attempts: opts.maxAttempts ?? 5,
-  }).select("id").single();
+  }, { onConflict: "user_id,job_name,idempotency_key", ignoreDuplicates: true }).select("id").maybeSingle();
   if (error) throw new Error(`enqueueJob(${jobName}): ${error.message}`);
+  if (!data) {
+    // Race: another worker inserted concurrently. Look it up.
+    const { data: existing } = await sb.from("job_queue")
+      .select("id")
+      .eq("job_name", jobName)
+      .eq("idempotency_key", opts.idempotencyKey ?? "")
+      .maybeSingle();
+    return { id: (existing?.id as string) ?? "", deduped: true };
+  }
   return { id: data.id as string, deduped: false };
 }
 
@@ -59,7 +76,12 @@ export async function enqueueMany(jobs: Array<{ name: string; opts?: EnqueueOpts
       max_attempts: opts.maxAttempts ?? 5,
     };
   });
-  const { data, error } = await sb.from("job_queue").insert(rows).select("id");
+  // Use upsert with ignoreDuplicates so re-enqueueing the same idempotency
+  // key (e.g. a sync page that touches an unchanged asset, or a retry) does
+  // not violate the unique constraint job_queue_user_id_job_name_idempotency_key_key.
+  const { data, error } = await sb.from("job_queue")
+    .upsert(rows, { onConflict: "user_id,job_name,idempotency_key", ignoreDuplicates: true })
+    .select("id");
   if (error) throw new Error(`enqueueMany: ${error.message}`);
   return (data ?? []).map((r: any) => r.id);
 }
