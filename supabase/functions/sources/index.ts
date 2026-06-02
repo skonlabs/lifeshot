@@ -808,7 +808,11 @@ app.post("/v1/:id/sync", async (c) => {
     source_account_id: id,
     kind: "incremental",
     status: "pending",
-    stats: { discovered: 0, indexed: 0 },
+    // Seed `stage` + non-zero `discovered` so the UI immediately shows
+    // "Queued for sync…" instead of "Discovering files…" while the worker
+    // is still picking up the job. The handler overwrites these on first
+    // progress write.
+    stats: { stage: "queued", discovered: 1, indexed: 0 },
   }, { onConflict: "id" });
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
