@@ -14,7 +14,7 @@ import { getConnector } from "../_sources/registry.ts";
 // waiting for the next pg_cron tick (~15s). The request must go to the
 // Supabase Functions origin, not the public app URL; otherwise it 404s and
 // the job sits in `pending` until cron eventually picks it up.
-function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
+async function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
   const candidates = [requestUrl, ENV.SUPABASE_URL].filter(Boolean) as string[];
@@ -44,7 +44,9 @@ function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
   }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
   if (globalAny.EdgeRuntime?.waitUntil) {
     globalAny.EdgeRuntime.waitUntil(nudge);
+    return;
   }
+  await nudge;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
