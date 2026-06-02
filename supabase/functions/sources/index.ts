@@ -435,6 +435,9 @@ app.get("/v1/:id/status", async (c) => {
   // possible. Previously we mixed the latest queued job status with a different
   // source_sync_jobs row, which could leave the UI stuck on stale stats.
   const matchingPersistedJob = queueJob && lastJob?.id === queueJob.id ? lastJob : null;
+  const persistedJobStats = ((matchingPersistedJob ?? lastJob)?.stats && typeof (matchingPersistedJob ?? lastJob)?.stats === "object")
+    ? ((matchingPersistedJob ?? lastJob)?.stats as Record<string, unknown>)
+    : {};
   const queueJobError = typeof queueJob?.last_error === "string" ? queueJob.last_error : null;
   const cancelled =
     lastJob?.status === "cancelled" ||
@@ -444,9 +447,6 @@ app.get("/v1/:id/status", async (c) => {
     ? "cancelled"
     : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null);
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
-  const persistedJobStats = ((matchingPersistedJob ?? lastJob)?.stats && typeof (matchingPersistedJob ?? lastJob)?.stats === "object")
-    ? ((matchingPersistedJob ?? lastJob)?.stats as Record<string, unknown>)
-    : {};
   const queueJobStats = queueJob ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
     discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
