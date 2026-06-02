@@ -479,7 +479,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         has_more: true,
       },
     }, { onConflict: "id" });
-    nudgeWorkerDrain();
+    await nudgeWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
