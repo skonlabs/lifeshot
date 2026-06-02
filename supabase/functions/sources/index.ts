@@ -10,81 +10,29 @@ import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
-// Kick the worker drain immediately so newly enqueued jobs start within
-// the same request lifetime. Two strategies run in parallel:
-//
-// 1. In-process drain via _pipeline/runner (no HTTP hop, works even without
-//    WORKER_SECRET).  Runs for up to 55s via EdgeRuntime.waitUntil.
-//
-// 2. HTTP POST to the dedicated worker function (/worker/drain) so it can
-//    run independently for the full Edge Function time limit.  Falls back
-//    silently if the worker URL or secret is not configured.
-async function kickWorker() {
+// Wake the worker so the job claims within a couple of seconds instead of
+// waiting for the next pg_cron tick (~15s). Best-effort fire-and-forget HTTP
+// POST wrapped in waitUntil so the Edge runtime doesn't kill it after the
+// response returns. If this misses, pg_cron will pick the job up on its
+// next tick — sync still progresses, just with up to 15s of latency.
+function kickWorker() {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
-
-  // Persist worker URL + secret to system_config so pg_cron's drain job
-  // (which has no access to edge function env vars) can call /worker/drain
-  // on its 10s schedule. Best-effort; ignore errors.
-  (async () => {
-    try {
-      const svc = getServiceClient();
-      const base = ENV.SUPABASE_URL;
-      const secret = Deno.env.get("WORKER_SECRET") ?? "";
-      const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
-      if (base) {
-        await svc.from("system_config").upsert([
-          { key: "worker_base_url", value: `${base}/functions/v1/worker` },
-          { key: "worker_secret", value: secret },
-          { key: "service_role_key", value: serviceKey },
-        ], { onConflict: "key" });
-      }
-    } catch (err) {
-      console.warn("kickWorker system_config seed failed", String(err));
-    }
-  })();
-
-  const inProcess = (async () => {
-    try {
-      const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
-      await drainOnce({ batch: 1 });
-      await drainUntilEmpty(55000, 16);
-    } catch (err) {
-      console.error("kickWorker in-process drain failed", err);
-    }
-  })();
-
-  const httpKick = (async () => {
-    try {
-      const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
-      const secret = Deno.env.get("WORKER_SECRET") ?? "";
-      // Supabase Edge Functions require an Authorization header even for
-      // internal service-to-service calls. Use the service role key.
-      const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
-      const resp = await fetch(workerUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "authorization": `Bearer ${serviceKey}`,
-          ...(secret ? { "x-worker-secret": secret } : {}),
-        },
-        body: JSON.stringify({ batch: 16 }),
-      });
-      if (!resp.ok) {
-        console.warn("kickWorker HTTP kick failed:", resp.status, await resp.text().catch(() => ""));
-      }
-    } catch (err) {
-      console.warn("kickWorker HTTP kick error:", String(err));
-    }
-  })();
-
-  const combined = Promise.all([inProcess, httpKick]);
-
+  const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
+  const secret = Deno.env.get("WORKER_SECRET") ?? "";
+  const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
+  const nudge = fetch(workerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${serviceKey}`,
+      ...(secret ? { "x-worker-secret": secret } : {}),
+    },
+    body: JSON.stringify({}),
+  }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
   if (globalAny.EdgeRuntime?.waitUntil) {
-    globalAny.EdgeRuntime.waitUntil(combined);
-    return;
+    globalAny.EdgeRuntime.waitUntil(nudge);
   }
-  await combined;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
