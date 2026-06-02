@@ -112,9 +112,14 @@ function decodeStoredCursor(value: unknown): string | null {
   if (typeof value === "string") {
     if (!value.trim()) return null;
     try {
-      const parsed = JSON.parse(value) as { token?: unknown } | null;
-      if (parsed && typeof parsed === "object" && typeof parsed.token === "string") {
-        return parsed.token;
+      const parsed = JSON.parse(value) as { token?: unknown; providerCursor?: unknown; folderIndex?: unknown } | null;
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.token === "string") {
+          return parsed.token;
+        }
+        if (typeof parsed.providerCursor === "string") {
+          return value;
+        }
       }
     } catch {
       // Legacy rows store the raw provider cursor as plain text.
@@ -123,8 +128,15 @@ function decodeStoredCursor(value: unknown): string | null {
   }
 
   if (value && typeof value === "object") {
-    const token = (value as { token?: unknown }).token;
-    return typeof token === "string" ? token : null;
+    const parsed = value as { token?: unknown; providerCursor?: unknown; folderIndex?: unknown };
+    if (typeof parsed.token === "string") return parsed.token;
+    if (
+      typeof parsed.providerCursor === "string" ||
+      typeof parsed.folderIndex === "number"
+    ) {
+      return JSON.stringify(value);
+    }
+    return null;
   }
 
   return null;
@@ -137,7 +149,7 @@ async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
     .eq("kind", cursorKind)
     .maybeSingle();
 
-  if (!modern.error) {
+  if (!modern.error && modern.data) {
     return decodeStoredCursor(modern.data?.cursor ?? null);
   }
 
