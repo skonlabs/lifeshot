@@ -465,16 +465,42 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevSeen = Number(prevStats.seen_total ?? 0);
   const prevDeleted = Number(prevStats.deleted ?? 0);
   const prevNormalized = Number(prevStats.normalized ?? 0);
+  const prevPageCount = Number(prevStats.page_count ?? 0);
+  const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
+  const newCursor = page.nextCursor ?? null;
+  const pageCount = prevPageCount + 1;
+
+  // Safety net: terminate if the connector returns the SAME continuation
+  // cursor we just processed (infinite loop) or if we've chained more than
+  // 10,000 pages without finishing. Either case indicates a connector bug
+  // and should not keep the sync "running" forever.
+  const loopDetected =
+    !!newCursor && !!prevCursor && newCursor === prevCursor;
+  const exceededCap = pageCount > 10_000;
+  const forceTerminate = loopDetected || exceededCap;
+  const effectiveNextCursor = forceTerminate ? null : newCursor;
+  if (forceTerminate) {
+    await recordSyncError(
+      sb,
+      source_account_id,
+      loopDetected ? "sync_cursor_loop_detected" : "sync_page_cap_exceeded",
+      loopDetected
+        ? `Connector returned the same continuation cursor twice; terminating sync to avoid infinite loop.`
+        : `Sync exceeded ${10_000} pages without completing; terminating.`,
+      { provider_kind: providerKind, page_count: pageCount },
+    );
+  }
+
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
   const discovered = Math.max(seenTotal, indexedCount, 1);
 
   const finishJob = await sb.from("source_sync_jobs").update({
-    status: page.nextCursor ? "running" : "completed",
-    finished_at: page.nextCursor ? null : new Date().toISOString(),
+    status: effectiveNextCursor ? "running" : "completed",
+    finished_at: effectiveNextCursor ? null : new Date().toISOString(),
     stats: {
       ...prevStats,
-      stage: page.nextCursor ? "indexing" : "completed",
+      stage: effectiveNextCursor ? "indexing" : "completed",
       provider_kind: providerKind,
       page_items: page.items.length,
       seen_total: seenTotal,
@@ -482,7 +508,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       discovered,
       indexed: indexedCount,
       normalized: prevNormalized + needsNormalize.length,
-      has_more: !!page.nextCursor,
+      has_more: !!effectiveNextCursor,
+      page_count: pageCount,
+      last_cursor: newCursor,
     },
   }).eq("id", ctx.jobId);
   if (finishJob.error) {
@@ -490,7 +518,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  if (!page.nextCursor) {
+  if (!effectiveNextCursor) {
     const { error: resolveErrorsError } = await sb.from("source_errors")
       .update({ resolved: true })
       .eq("source_account_id", source_account_id)
@@ -507,7 +535,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     : {};
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
-  if (page.nextCursor && !stopRequested) {
+  if (effectiveNextCursor && !stopRequested) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
@@ -526,6 +554,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           indexed: indexedCount,
           normalized: prevNormalized + needsNormalize.length,
           has_more: true,
+          page_count: pageCount,
+          last_cursor: newCursor,
         },
       }, { onConflict: "id" });
     }
@@ -539,5 +569,12 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  return { items: page.items.length, normalized: needsNormalize.length, deleted: deleted.length, more: !!page.nextCursor };
+  return {
+    items: page.items.length,
+    normalized: needsNormalize.length,
+    deleted: deleted.length,
+    more: !!effectiveNextCursor,
+    page_count: pageCount,
+    ...(forceTerminate ? { terminated: loopDetected ? "loop_detected" : "page_cap" } : {}),
+  };
 }
