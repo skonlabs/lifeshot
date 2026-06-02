@@ -47,11 +47,14 @@ export async function enqueueJob(jobName: string, opts: EnqueueOpts = {}): Promi
   if (error) throw new Error(`enqueueJob(${jobName}): ${error.message}`);
   if (!data) {
     // Race: another worker inserted concurrently. Look it up.
-    const { data: existing } = await sb.from("job_queue")
+    const lookup = sb.from("job_queue")
       .select("id")
       .eq("job_name", jobName)
-      .eq("idempotency_key", opts.idempotencyKey ?? "")
-      .maybeSingle();
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const { data: existing } = opts.idempotencyKey
+      ? await lookup.eq("idempotency_key", opts.idempotencyKey).maybeSingle()
+      : await lookup.is("idempotency_key", null).maybeSingle();
     return { id: (existing?.id as string) ?? "", deduped: true };
   }
   return { id: data.id as string, deduped: false };
