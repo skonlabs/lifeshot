@@ -1,0 +1,10 @@
+# Per-function configuration for Supabase Edge Functions.
+#
+# The worker is invoked by pg_cron and by other edge functions using the
+# x-worker-secret header (verified inside the function itself). It is NOT
+# called by end-user browsers with a user JWT, so the platform's JWT
+# verification must be disabled — otherwise every nudge / cron tick is
+# rejected with HTTP 401 ("Unauthorized") at the gateway before our code
+# even runs, leaving sync jobs stuck in "Queued — waiting for worker…".
+[functions.worker]
+verify_jwt = false
