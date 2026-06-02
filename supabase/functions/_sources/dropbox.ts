@@ -278,7 +278,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const safeParsed = isLegacyCursor
       ? { folderIndex: 0, providerCursor: null }
       : parsed;
-    const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, parsed.folderIndex ?? 0));
+    const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, safeParsed.folderIndex ?? 0));
     const currentPath = normalizeDropboxPath(folderTargets[folderIndex] ?? "");
 
     // Use Dropbox's NATIVE recursive listing (recursive: true) + its built-in
