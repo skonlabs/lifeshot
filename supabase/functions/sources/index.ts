@@ -15,17 +15,19 @@ import { getConnector } from "../_sources/registry.ts";
 // POST wrapped in waitUntil so the Edge runtime doesn't kill it after the
 // response returns. If this misses, pg_cron will pick the job up on its
 // next tick — sync still progresses, just with up to 15s of latency.
-function kickWorker() {
+function kickWorker(authHeader?: string | null) {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
   const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const serviceKey = ENV.SUPABASE_SERVICE_ROLE_KEY;
+  const authorization = authHeader && authHeader.startsWith("Bearer ")
+    ? authHeader
+    : `Bearer ${ENV.SUPABASE_ANON_KEY}`;
   const nudge = fetch(workerUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "authorization": `Bearer ${serviceKey}`,
+      ...(authorization ? { "authorization": authorization } : {}),
       ...(secret ? { "x-worker-secret": secret } : {}),
     },
     body: JSON.stringify({}),
@@ -778,7 +780,7 @@ app.post("/v1/:id/sync", async (c) => {
   }, { onConflict: "id" });
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
-  await kickWorker();
+  await kickWorker(c.req.header("Authorization"));
   return c.json({ job_id: job.id }, 202);
 });
 
@@ -875,7 +877,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
   }, { onConflict: "id" });
   if (uploadJobError) throw new ApiError("internal", uploadJobError.message);
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
-  await kickWorker();
+  await kickWorker(c.req.header("Authorization"));
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 

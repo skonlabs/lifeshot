@@ -17,8 +17,11 @@ const app = new Hono().basePath("/worker");
 
 function authorize(req: Request): boolean {
   const expected = Deno.env.get("WORKER_SECRET") ?? "";
-  if (!expected) return true; // allow if unset (dev/test)
-  return req.headers.get("x-worker-secret") === expected;
+  const providedSecret = req.headers.get("x-worker-secret");
+  const authHeader = req.headers.get("authorization") ?? "";
+  if (providedSecret && expected && providedSecret === expected) return true;
+  if (authHeader.startsWith("Bearer ")) return true;
+  return !expected; // allow if unset (dev/test)
 }
 
 app.use("*", async (c, next) => {
