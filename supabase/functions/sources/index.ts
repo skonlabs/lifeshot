@@ -5,6 +5,7 @@ import { sendError, ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
+import { LANES, laneFor } from "../_pipeline/lanes.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
