@@ -49,6 +49,10 @@ async function kickWorkerDrain(options: { inline?: boolean } = {}) {
       }).then(() => undefined).catch(() => undefined);
 
     const combined = Promise.all([inProcess, httpKick]);
+    if (options.inline) {
+      await combined;
+      return;
+    }
     if (globalAny.EdgeRuntime?.waitUntil) {
       globalAny.EdgeRuntime.waitUntil(combined);
       return;
