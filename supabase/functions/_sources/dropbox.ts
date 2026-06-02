@@ -40,17 +40,6 @@ function normalizeDropboxPath(path: string | null | undefined): string {
   return path;
 }
 
-function enqueueUniquePaths(queue: string[], paths: Array<string | null | undefined>) {
-  const seen = new Set(queue.map((value) => normalizeDropboxPath(value).toLowerCase()));
-  for (const value of paths) {
-    const normalized = normalizeDropboxPath(value);
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    queue.push(normalized);
-  }
-}
-
 function inferMimeType(name: string): string | undefined {
   const ext = name.split(".").pop()?.toLowerCase();
   if (!ext) return undefined;
