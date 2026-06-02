@@ -6,26 +6,50 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-// Fire a fire-and-forget HTTP call to /worker/drain so chained jobs are
-// claimed immediately, even when pg_cron's worker drain is not configured.
-// Best-effort: never blocks the caller, never throws.
+// Wake the worker for chained pages using the same two-path strategy as the
+// initial /sync request:
+// 1) in-process drain via runner.ts so continuation works even if /worker/drain
+//    is misconfigured or unavailable;
+// 2) best-effort HTTP kick to the dedicated worker endpoint.
+//
+// This fixes the failure mode where page 1 completes, enqueues page 2, but the
+// continuation stays pending forever because only the HTTP wake-up path is used
+// and that path silently fails.
 function kickWorkerDrain() {
   try {
+    // deno-lint-ignore no-explicit-any
+    const globalAny = globalThis as any;
     const url = Deno.env.get("SUPABASE_URL");
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const secret = Deno.env.get("WORKER_SECRET") ?? "";
-    if (!url || !serviceKey) return;
-    const target = `${url}/functions/v1/worker/drain`;
-    // Don't await — we want the chain to advance without blocking this job.
-    fetch(target, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "authorization": `Bearer ${serviceKey}`,
-        ...(secret ? { "x-worker-secret": secret } : {}),
-      },
-      body: JSON.stringify({ batch: 8 }),
-    }).catch(() => {});
+    const inProcess = (async () => {
+      try {
+        const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
+        await drainOnce({ batch: 1 });
+        await drainUntilEmpty(55_000, 16);
+      } catch {
+        // swallow
+      }
+    })();
+
+    const httpKick = (!url || !serviceKey)
+      ? Promise.resolve()
+      : fetch(`${url}/functions/v1/worker/drain`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "authorization": `Bearer ${serviceKey}`,
+          ...(secret ? { "x-worker-secret": secret } : {}),
+        },
+        body: JSON.stringify({ batch: 8 }),
+      }).then(() => undefined).catch(() => undefined);
+
+    const combined = Promise.all([inProcess, httpKick]);
+    if (globalAny.EdgeRuntime?.waitUntil) {
+      globalAny.EdgeRuntime.waitUntil(combined);
+      return;
+    }
+    combined.catch(() => {});
   } catch {
     // swallow
   }
