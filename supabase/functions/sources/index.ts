@@ -435,22 +435,29 @@ app.get("/v1/:id/status", async (c) => {
   // possible. Previously we mixed the latest queued job status with a different
   // source_sync_jobs row, which could leave the UI stuck on stale stats.
   const matchingPersistedJob = queueJob && lastJob?.id === queueJob.id ? lastJob : null;
-  const effectiveJobStatus = activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null;
-  const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const persistedJobStats = ((matchingPersistedJob ?? lastJob)?.stats && typeof (matchingPersistedJob ?? lastJob)?.stats === "object")
     ? ((matchingPersistedJob ?? lastJob)?.stats as Record<string, unknown>)
     : {};
+  const queueJobError = typeof queueJob?.last_error === "string" ? queueJob.last_error : null;
+  const cancelled =
+    lastJob?.status === "cancelled" ||
+    persistedJobStats.cancelled === true ||
+    /cancelled by user/i.test(queueJobError ?? "");
+  const effectiveJobStatus = cancelled
+    ? "cancelled"
+    : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null);
+  const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob ? {
-    stage: activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued"),
+    stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
     discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
     indexed,
     queue_attempts: Number(queueJob.attempts ?? 0),
-    queue_error: queueJob.last_error ?? null,
+    queue_error: cancelled ? null : (queueJob.last_error ?? null),
   } : {};
   const jobStats = { ...persistedJobStats, ...queueJobStats };
   const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
   const progressIndexed = indexed;
-  const lastErrorMessage = lastErr?.message ?? queueJob?.last_error ?? null;
+  const lastErrorMessage = cancelled ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
