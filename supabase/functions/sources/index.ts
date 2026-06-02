@@ -449,18 +449,24 @@ app.get("/v1/:id/status", async (c) => {
   const latestQueueJob = latestQueueJobRes.data;
   const queueJob = activeJob ?? latestQueueJob ?? null;
   const indexed = indexedRes.count ?? 0;
-  // Prefer the live job_queue status over source_sync_jobs, which can get stuck
-  // at "running" if the job fails unexpectedly (runner.ts never updates it).
+  // Keep queue state and persisted sync-job state aligned to the same job when
+  // possible. Previously we mixed the latest queued job status with a different
+  // source_sync_jobs row, which could leave the UI stuck on stale stats.
+  const matchingPersistedJob = queueJob && lastJob?.id === queueJob.id ? lastJob : null;
   const effectiveJobStatus = activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null;
-  const effectiveJobKind = lastJob?.kind ?? (queueJob ? "syncSource" : null);
-  const persistedJobStats = (lastJob?.stats && typeof lastJob.stats === "object") ? lastJob.stats as Record<string, unknown> : {};
+  const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
+  const persistedJobStats = ((matchingPersistedJob ?? lastJob)?.stats && typeof (matchingPersistedJob ?? lastJob)?.stats === "object")
+    ? ((matchingPersistedJob ?? lastJob)?.stats as Record<string, unknown>)
+    : {};
   const queueJobStats = queueJob ? {
+    stage: activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued"),
+    discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
     indexed,
     queue_attempts: Number(queueJob.attempts ?? 0),
     queue_error: queueJob.last_error ?? null,
   } : {};
   const jobStats = { ...persistedJobStats, ...queueJobStats };
-  const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed);
+  const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
   const progressIndexed = indexed;
   const lastErrorMessage = lastErr?.message ?? queueJob?.last_error ?? null;
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
@@ -473,10 +479,10 @@ app.get("/v1/:id/status", async (c) => {
     account_id: id,
     status: accountStatus,
     last_job: {
-      id: activeJob?.id ?? lastJob?.id ?? queueJob?.id ?? null,
+      id: queueJob?.id ?? lastJob?.id ?? null,
       kind: effectiveJobKind,
       status: effectiveJobStatus,
-      started_at: activeJob?.started_at ?? lastJob?.started_at ?? queueJob?.started_at ?? null,
+      started_at: queueJob?.started_at ?? matchingPersistedJob?.started_at ?? lastJob?.started_at ?? null,
       finished_at: syncing ? null : (lastJob?.finished_at ?? queueJob?.finished_at ?? null),
       stats: jobStats,
     },

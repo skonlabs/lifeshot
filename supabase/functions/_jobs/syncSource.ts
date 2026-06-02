@@ -15,7 +15,7 @@ import type { JobContext } from "../_pipeline/runner.ts";
 // This fixes the failure mode where page 1 completes, enqueues page 2, but the
 // continuation stays pending forever because only the HTTP wake-up path is used
 // and that path silently fails.
-function kickWorkerDrain() {
+async function kickWorkerDrain(options: { inline?: boolean } = {}) {
   try {
     // deno-lint-ignore no-explicit-any
     const globalAny = globalThis as any;
@@ -25,6 +25,10 @@ function kickWorkerDrain() {
     const inProcess = (async () => {
       try {
         const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
+        if (options.inline) {
+          await drainOnce({ batch: 1 });
+          return;
+        }
         await drainOnce({ batch: 1 });
         await drainUntilEmpty(55_000, 16);
       } catch {
@@ -45,11 +49,15 @@ function kickWorkerDrain() {
       }).then(() => undefined).catch(() => undefined);
 
     const combined = Promise.all([inProcess, httpKick]);
+    if (options.inline) {
+      await combined;
+      return;
+    }
     if (globalAny.EdgeRuntime?.waitUntil) {
       globalAny.EdgeRuntime.waitUntil(combined);
       return;
     }
-    combined.catch(() => {});
+    await combined.catch(() => {});
   } catch {
     // swallow
   }
@@ -483,8 +491,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     // example a secret/config mismatch on /worker/drain), sync appears stuck
     // forever after the first page.
     await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
-    // Best-effort extra nudge for environments that rely on external drains.
-    kickWorkerDrain();
+    // Drain the next queued page inline before returning. The previous
+    // fire-and-forget wake-up was leaving follow-up jobs in `pending`
+    // indefinitely, which matches the user's stuck "Discovering files..."
+    // state after the first batch.
+    await kickWorkerDrain({ inline: true });
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
