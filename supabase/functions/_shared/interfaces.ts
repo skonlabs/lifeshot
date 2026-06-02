@@ -1,7 +1,6 @@
 // Mocks for JobEnqueuer, QueryParser, Embedder. Real implementations replace
 // these via env (LIFESHOT_USE_REAL_*=1) — not implemented in this prompt.
-import { getServiceClient } from "./clients.ts";
-import { LANES, laneFor } from "../_pipeline/lanes.ts";
+import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { installOpenAIProviders } from "../_ai/factory.ts";
 import { parseQuery as openaiParse } from "../_ai/parser.ts";
 import { embedText as openaiEmbed } from "../_ai/embedder.ts";
@@ -18,23 +17,13 @@ export interface JobEnqueuer {
 
 export const jobEnqueuer: JobEnqueuer = {
   async enqueue(name, payload, opts = {}) {
-    const s = getServiceClient();
-    const lane = LANES[laneFor(name)];
-    const row = {
-      user_id: opts.userId ?? null,
-      job_name: name,
+    const result = await enqueueJob(name, {
+      userId: opts.userId,
       payload,
-      idempotency_key: opts.idempotencyKey ?? crypto.randomUUID(),
-      priority: opts.priority ?? lane.priority,
-      lane: lane.name,
-      status: "pending",
-      next_attempt_at: new Date().toISOString(),
-    };
-    const { data, error } = await s.from("job_queue")
-      .upsert(row, { onConflict: "user_id,job_name,idempotency_key" })
-      .select("id").single();
-    if (error) throw new Error(`enqueue failed: ${error.message}`);
-    return { id: data!.id };
+      idempotencyKey: opts.idempotencyKey ?? crypto.randomUUID(),
+      priorityOverride: opts.priority,
+    });
+    return { id: result.id };
   },
 };
 
