@@ -29,6 +29,18 @@ export function useSourceProgress() {
           qc.invalidateQueries({ queryKey: ["dashboard"] });
         },
       )
+      .on(
+        // source_sync_jobs.stats holds the live `stage` + `discovered` /
+        // `indexed` counters. Subscribing here lets the UI react the
+        // instant the worker writes a progress heartbeat instead of
+        // waiting for the 2s status poll.
+        "postgres_changes",
+        { event: "*", schema: "public", table: "source_sync_jobs" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["source-status"] });
+          qc.invalidateQueries({ queryKey: ["source-accounts"] });
+        },
+      )
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
