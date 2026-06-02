@@ -466,24 +466,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   if (page.nextCursor && !stopRequested) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
-    await sb.from("source_sync_jobs").upsert({
-      id: nextJob.id,
-      source_account_id,
-      kind: syncKind,
-      status: "pending",
-      stats: {
-        ...prevStats,
-        stage: "queued",
-        provider_kind: providerKind,
-        page_items: page.items.length,
-        seen_total: seenTotal,
-        deleted: prevDeleted + deleted.length,
-        discovered,
-        indexed: indexedCount,
-        normalized: prevNormalized + needsNormalize.length,
-        has_more: true,
-      },
-    }, { onConflict: "id" });
+    if (nextJob.id) {
+      await sb.from("source_sync_jobs").upsert({
+        id: nextJob.id,
+        source_account_id,
+        kind: syncKind,
+        status: "pending",
+        stats: {
+          ...prevStats,
+          stage: "queued",
+          provider_kind: providerKind,
+          page_items: page.items.length,
+          seen_total: seenTotal,
+          deleted: prevDeleted + deleted.length,
+          discovered,
+          indexed: indexedCount,
+          normalized: prevNormalized + needsNormalize.length,
+          has_more: true,
+        },
+      }, { onConflict: "id" });
+    }
     await nudgeWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
