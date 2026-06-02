@@ -108,6 +108,28 @@ async function failSyncJob(
   await sb.from("source_accounts").update({ status: "error" }).eq("id", sourceAccountId);
 }
 
+function decodeStoredCursor(value: unknown): string | null {
+  if (typeof value === "string") {
+    if (!value.trim()) return null;
+    try {
+      const parsed = JSON.parse(value) as { token?: unknown } | null;
+      if (parsed && typeof parsed === "object" && typeof parsed.token === "string") {
+        return parsed.token;
+      }
+    } catch {
+      // Legacy rows store the raw provider cursor as plain text.
+    }
+    return value;
+  }
+
+  if (value && typeof value === "object") {
+    const token = (value as { token?: unknown }).token;
+    return typeof token === "string" ? token : null;
+  }
+
+  return null;
+}
+
 async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId: string, cursorKind: string): Promise<string | null> {
   const modern = await sb.from("source_sync_cursors")
     .select("cursor")
@@ -116,7 +138,7 @@ async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
     .maybeSingle();
 
   if (!modern.error) {
-    return ((modern.data?.cursor as { token?: string } | null)?.token ?? null);
+    return decodeStoredCursor(modern.data?.cursor ?? null);
   }
 
   const legacy = await sb.from("source_sync_cursors")
@@ -124,7 +146,7 @@ async function loadCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
     .eq("source_account_id", sourceAccountId)
     .maybeSingle();
   if (legacy.error) throw new Error(`load cursor: ${legacy.error.message}`);
-  return cursorKind === "delta" ? (legacy.data?.delta_token ?? null) : (legacy.data?.cursor ?? null);
+   return decodeStoredCursor(cursorKind === "delta" ? legacy.data?.delta_token ?? null : legacy.data?.cursor ?? null);
 }
 
 async function saveCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId: string, cursorKind: string, nextCursor: string | null) {
