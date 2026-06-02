@@ -296,7 +296,7 @@ app.get("/v1/accounts", async (c) => {
     const assetIds = Array.from(new Set((refs ?? []).map((r: any) => r.asset_id).filter(Boolean)));
     const mediaByAsset = new Map<string, string>();
     // Chunk the IN(...) to stay under URL length limits.
-    const CHUNK = 500;
+    const CHUNK = 100;
     for (let i = 0; i < assetIds.length; i += CHUNK) {
       const slice = assetIds.slice(i, i + CHUNK);
       const { data: rows, error: aErr } = await svc.from("assets")
