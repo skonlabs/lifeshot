@@ -853,9 +853,11 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   const stage = typeof stats.stage === "string" ? stats.stage : null;
   const stageLabel =
+    stage === "queued"     ? "Queued for sync…" :
     stage === "connecting" ? "Connecting to source…" :
     stage === "listing"    ? "Listing files…" :
     stage === "indexing"   ? "Indexing files…" :
+    stage === "completed"  ? "Sync complete" :
     discovered === 0       ? "Discovering files…" :
                               "Syncing…";
   const queueError = stats.queue_error;
