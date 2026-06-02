@@ -530,6 +530,7 @@ app.patch("/v1/:id/containers", async (c) => {
     .map((item) => ({ id: item.id, name: item.name, path: item.path }));
 
   await setSelectedContainers(svc, acc.id, normalized);
+  await cache.del(c, `v1:source-selection-stats:${acc.id}`);
 
   const { data: refs, error: refsError } = await svc.from("asset_source_refs")
     .select("asset_id")
@@ -804,7 +805,7 @@ app.post("/v1/:id/sync", async (c) => {
   }, { onConflict: "id" });
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
-  await kickWorker(c.req.header("Authorization"));
+  await kickWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: job.id }, 202);
 });
 
