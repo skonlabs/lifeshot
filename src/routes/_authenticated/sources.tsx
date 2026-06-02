@@ -853,13 +853,14 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   const stage = typeof stats.stage === "string" ? stats.stage : null;
   const stageLabel =
-    stage === "queued"     ? "Queued for sync…" :
+    stage === "queued"     ? "Queued — worker will pick this up within ~15s…" :
     stage === "connecting" ? "Connecting to source…" :
-    stage === "listing"    ? "Listing files…" :
-    stage === "indexing"   ? "Indexing files…" :
+    stage === "listing"    ? `Listing files… (${discovered.toLocaleString()} found so far)` :
+    stage === "indexing"   ? `Indexing files… (${indexed.toLocaleString()} of ${discovered.toLocaleString()})` :
     stage === "completed"  ? "Sync complete" :
-    discovered === 0       ? "Discovering files…" :
-                              "Syncing…";
+    stage === "failed"     ? "Sync failed — see error below" :
+    stage === "cancelled"  ? "Sync cancelled" :
+                              "Queued — waiting for worker…";
   const queueError = stats.queue_error;
   const queueErrorText = typeof queueError === "string" ? queueError : null;
   return (
