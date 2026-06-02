@@ -14,7 +14,7 @@ import { getConnector } from "../_sources/registry.ts";
 // waiting for the next pg_cron tick (~15s). The request must go to the
 // Supabase Functions origin, not the public app URL; otherwise it 404s and
 // the job sits in `pending` until cron eventually picks it up.
-function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
+async function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
   const candidates = [requestUrl, ENV.SUPABASE_URL].filter(Boolean) as string[];
@@ -44,7 +44,9 @@ function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
   }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
   if (globalAny.EdgeRuntime?.waitUntil) {
     globalAny.EdgeRuntime.waitUntil(nudge);
+    return;
   }
+  await nudge;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
@@ -813,6 +815,27 @@ app.post("/v1/:id/sync", async (c) => {
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
   await kickWorker(c.req.header("Authorization"), c.req.url);
+  // If the best-effort nudge is ignored by the runtime or network, do one
+  // synchronous tiny drain so the just-enqueued syncSource job leaves the
+  // queued state immediately instead of waiting for the next cron tick.
+  const workerBase = (() => {
+    try {
+      return new URL(ENV.SUPABASE_URL).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (workerBase) {
+    await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(c.req.header("Authorization") ? { "authorization": c.req.header("Authorization")! } : {}),
+        ...(Deno.env.get("WORKER_SECRET") ? { "x-worker-secret": Deno.env.get("WORKER_SECRET")! } : {}),
+      },
+      body: JSON.stringify({}),
+    }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
+  }
   return c.json({ job_id: job.id }, 202);
 });
 
