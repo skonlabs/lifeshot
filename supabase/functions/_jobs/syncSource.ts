@@ -6,9 +6,8 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-// Worker continuation: simply enqueue the next page; pg_cron's /drain tick
-// (every 15s) picks it up. No in-process drain, no HTTP nudge — those races
-// were the root cause of jobs stuck in `pending` after the first page.
+// Worker continuation enqueues the next page and nudges /worker/drain so the
+// queue keeps moving immediately instead of waiting for the next cron tick.
 
 // Write a progress heartbeat to source_sync_jobs.stats so the UI can show
 // meaningful progress before a page completes. Never throws.
@@ -26,6 +25,36 @@ async function writeProgress(
   } catch {
     // best effort
   }
+}
+
+async function nudgeWorkerDrain() {
+  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
+  const secret = Deno.env.get("WORKER_SECRET") ?? "";
+  if (!base) return;
+
+  let workerUrl = "";
+  try {
+    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=1&budget_ms=50000`;
+  } catch {
+    return;
+  }
+
+  const request = fetch(workerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(secret ? { "x-worker-secret": secret } : {}),
+    },
+    body: JSON.stringify({}),
+  }).catch(() => undefined);
+
+  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) {
+    edgeRuntime.waitUntil(request);
+    return;
+  }
+
+  await request;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
@@ -431,7 +460,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
   if (page.nextCursor && !stopRequested) {
-    await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
+    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
+    await sb.from("source_sync_jobs").upsert({
+      id: nextJob.id,
+      source_account_id,
+      kind: syncKind,
+      status: "pending",
+      stats: {
+        ...prevStats,
+        stage: "queued",
+        provider_kind: providerKind,
+        page_items: page.items.length,
+        seen_total: seenTotal,
+        deleted: prevDeleted + deleted.length,
+        discovered,
+        indexed: indexedCount,
+        normalized: prevNormalized + needsNormalize.length,
+        has_more: true,
+      },
+    }, { onConflict: "id" });
+    await nudgeWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);

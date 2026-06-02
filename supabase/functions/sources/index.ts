@@ -437,9 +437,14 @@ app.get("/v1/:id/status", async (c) => {
   // Keep queue state and persisted sync-job state aligned to the same job when
   // possible. Previously we mixed the latest queued job status with a different
   // source_sync_jobs row, which could leave the UI stuck on stale stats.
-  const matchingPersistedJob = queueJob && lastJob?.id === queueJob.id ? lastJob : null;
-  const persistedJobStats = ((matchingPersistedJob ?? lastJob)?.stats && typeof (matchingPersistedJob ?? lastJob)?.stats === "object")
-    ? ((matchingPersistedJob ?? lastJob)?.stats as Record<string, unknown>)
+  const queueMatchedPersistedJob = queueJob?.id
+    ? await svc.from("source_sync_jobs").select("*").eq("id", queueJob.id).maybeSingle()
+    : null;
+  if (queueMatchedPersistedJob?.error) throw new ApiError("internal", queueMatchedPersistedJob.error.message);
+  const matchingPersistedJob = queueMatchedPersistedJob?.data ?? null;
+  const statsSource = matchingPersistedJob ?? lastJob;
+  const persistedJobStats = (statsSource?.stats && typeof statsSource.stats === "object")
+    ? (statsSource.stats as Record<string, unknown>)
     : {};
   const queueJobError = typeof queueJob?.last_error === "string" ? queueJob.last_error : null;
   const cancelled =
