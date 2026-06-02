@@ -30,6 +30,7 @@ async function writeProgress(
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
   if (!base) return;
 
   let workerUrl = "";
@@ -43,10 +44,14 @@ async function nudgeWorkerDrain() {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
       ...(secret ? { "x-worker-secret": secret } : {}),
     },
     body: JSON.stringify({}),
-  }).catch(() => undefined);
+  }).catch((error) => {
+    console.warn("syncSource continuation nudge failed:", String(error));
+    return undefined;
+  });
 
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
   if (edgeRuntime?.waitUntil) {
