@@ -11,14 +11,24 @@ import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 
 // Wake the worker so the job claims within a couple of seconds instead of
-// waiting for the next pg_cron tick (~15s). Best-effort fire-and-forget HTTP
-// POST wrapped in waitUntil so the Edge runtime doesn't kill it after the
-// response returns. If this misses, pg_cron will pick the job up on its
-// next tick — sync still progresses, just with up to 15s of latency.
-function kickWorker(authHeader?: string | null) {
+// waiting for the next pg_cron tick (~15s). The request must go to the
+// Supabase Functions origin, not the public app URL; otherwise it 404s and
+// the job sits in `pending` until cron eventually picks it up.
+function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
   // deno-lint-ignore no-explicit-any
   const globalAny = globalThis as any;
-  const workerUrl = `${ENV.SUPABASE_URL}/functions/v1/worker/drain`;
+  const candidates = [requestUrl, ENV.SUPABASE_URL].filter(Boolean) as string[];
+  const base = candidates
+    .map((value) => {
+      try {
+        return new URL(value).origin;
+      } catch {
+        return "";
+      }
+    })
+    .find((origin) => origin.includes(".supabase.co"));
+  if (!base) return;
+  const workerUrl = `${base}/functions/v1/worker/drain`;
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
   const authorization = authHeader && authHeader.startsWith("Bearer ")
     ? authHeader
@@ -221,7 +231,7 @@ async function listSelectableContainers(
   }
 }
 
-async function getSelectionStats(providerKind: string, sourceAccountId: string, userId: string): Promise<SourceSelectionStats> {
+async function getSelectionStats(providerKind: string, sourceAccountId: string, userId: string): Promise<SourceSelectionStats | null> {
   const API_LISTABLE = new Set(["google_photos", "dropbox", "onedrive"]);
   if (!API_LISTABLE.has(providerKind)) return ZERO_SELECTION_STATS;
   try {
@@ -234,7 +244,7 @@ async function getSelectionStats(providerKind: string, sourceAccountId: string, 
     return await connector.countSelectionStats();
   } catch (err) {
     console.error("countSelectionStats failed", providerKind, sourceAccountId, err);
-    return ZERO_SELECTION_STATS;
+    return null;
   }
 }
 
@@ -325,24 +335,38 @@ app.get("/v1/accounts", async (c) => {
       scopesByAccount.set(row.source_account_id, Array.isArray(selected?.containers) ? selected!.containers : []);
     }
   }
-  // Selection counts: previously we did a full recursive Dropbox/OneDrive
-  // crawl on EVERY /v1/accounts request (often 10–60s per account) which
-  // blocked the UI from rendering. The selected-folder count is already in
-  // `scopesByAccount`; the per-kind file counts can come from the indexed
-  // `breakdown` map (assets we've actually persisted). This is accurate
-  // once the first sync runs and never makes a provider API call.
-  const liveStatsByAccount = new Map<string, SourceSelectionStats>();
-  for (const accountId of ids) {
-    const b = breakdown[accountId] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
-    liveStatsByAccount.set(accountId, {
-      folder_count: (scopesByAccount.get(accountId) ?? []).length,
-      photo: b.photo,
-      video: b.video,
-      document: b.document,
-      audio: b.audio,
-      other: b.other,
-    });
-  }
+  // Selection totals should reflect the provider's TOTAL contents inside the
+  // selected folders/albums, not just the subset already indexed locally.
+  // Cache the provider count briefly so the Sources page can refresh often
+  // without repeatedly crawling Dropbox/OneDrive on every poll tick.
+  const liveStatsByAccount = new Map<string, SourceSelectionStats>(await Promise.all(
+    (data ?? []).map(async (row: any) => {
+      const b = breakdown[row.id] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const fallback: SourceSelectionStats = {
+        folder_count: (scopesByAccount.get(row.id) ?? []).length,
+        photo: b.photo,
+        video: b.video,
+        document: b.document,
+        audio: b.audio,
+        other: b.other,
+      };
+      const selectedContainers = scopesByAccount.get(row.id) ?? [];
+      if (!selectedContainers.length || !row.provider?.kind) {
+        return [row.id, fallback] as const;
+      }
+
+      const cacheKey = `v1:source-selection-stats:${row.id}`;
+      const cached = await cache.get<SourceSelectionStats>(c, cacheKey);
+      if (cached) return [row.id, cached] as const;
+
+      const liveStats = await getSelectionStats(row.provider.kind, row.id, row.user_id ?? uid);
+      const resolved = liveStats ?? fallback;
+      if (liveStats) {
+        await cache.set(c, cacheKey, liveStats, 300, row.user_id ?? uid);
+      }
+      return [row.id, resolved] as const;
+    }),
+  ));
   return c.json({
     accounts: (data ?? []).map((r: any) => {
       const selectionStats = liveStatsByAccount.get(r.id) ?? ZERO_SELECTION_STATS;
