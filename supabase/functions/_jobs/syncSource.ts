@@ -6,9 +6,8 @@ import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-// Worker continuation: simply enqueue the next page; pg_cron's /drain tick
-// (every 15s) picks it up. No in-process drain, no HTTP nudge — those races
-// were the root cause of jobs stuck in `pending` after the first page.
+// Worker continuation enqueues the next page and nudges /worker/drain so the
+// queue keeps moving immediately instead of waiting for the next cron tick.
 
 // Write a progress heartbeat to source_sync_jobs.stats so the UI can show
 // meaningful progress before a page completes. Never throws.
@@ -28,7 +27,7 @@ async function writeProgress(
   }
 }
 
-function nudgeWorkerDrain() {
+async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
   if (!base) return;
@@ -52,7 +51,10 @@ function nudgeWorkerDrain() {
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
   if (edgeRuntime?.waitUntil) {
     edgeRuntime.waitUntil(request);
+    return;
   }
+
+  await request;
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
