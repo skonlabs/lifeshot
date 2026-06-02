@@ -267,8 +267,17 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const folderTargets = await getCanonicalFolderTargets();
 
     const parsed = cursor
-      ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null }
+      ? JSON.parse(cursor) as { folderIndex?: number; providerCursor?: string | null; pendingPaths?: unknown }
       : { folderIndex: 0, providerCursor: null };
+    // Old-format cursors used a BFS pendingPaths bookkeeping with
+    // recursive:false. Dropbox continue-cursors are bound to the original
+    // call's parameters, so reusing one of those would keep skipping
+    // subfolders even though we now request recursive:true. Detect the old
+    // shape and start fresh.
+    const isLegacyCursor = parsed && typeof parsed === "object" && "pendingPaths" in parsed;
+    const safeParsed = isLegacyCursor
+      ? { folderIndex: 0, providerCursor: null }
+      : parsed;
     const folderIndex = Math.max(0, Math.min(folderTargets.length - 1, parsed.folderIndex ?? 0));
     const currentPath = normalizeDropboxPath(folderTargets[folderIndex] ?? "");
 
@@ -278,8 +287,8 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     // (including all subfolders, at any depth) gets indexed. The previous
     // implementation manually BFS-walked subfolders via `pendingPaths` and
     // silently dropped entries when the bookkeeping went sideways.
-    const json = parsed.providerCursor
-      ? await call("/files/list_folder/continue", { cursor: parsed.providerCursor })
+    const json = safeParsed.providerCursor
+      ? await call("/files/list_folder/continue", { cursor: safeParsed.providerCursor })
       : await call("/files/list_folder", {
         path: currentPath,
         recursive: true,
