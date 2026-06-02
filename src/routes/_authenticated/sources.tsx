@@ -844,9 +844,14 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
     wasRunningRef.current = running;
   }, [running, qc]);
   const indexed = s?.progress.indexed ?? a.asset_count ?? 0;
-  const discovered = s?.progress.discovered ?? indexed;
-  const pct = discovered > 0 ? Math.min(100, Math.round((indexed / discovered) * 100)) : 0;
   const k = a.selection_counts_by_kind ?? a.counts_by_kind ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+  // Total expected = provider's total contents inside the selected folders.
+  // Fall back to whatever the worker has "discovered" so far when selection
+  // stats aren't available yet.
+  const selectionTotal = (k.photo ?? 0) + (k.video ?? 0) + (k.document ?? 0) + (k.audio ?? 0) + (k.other ?? 0);
+  const discoveredRaw = s?.progress.discovered ?? indexed;
+  const total = Math.max(selectionTotal, discoveredRaw, indexed);
+  const pct = total > 0 ? Math.min(100, Math.round((indexed / total) * 100)) : 0;
   const folders = a.selected_container_count ?? a.selected_containers?.length ?? 0;
   const docsCombined = k.document + k.audio + k.other;
   const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
@@ -856,8 +861,8 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const stageLabel =
     stage === "queued"     ? "Queued — worker will pick this up within ~15s…" :
     stage === "connecting" ? "Connecting to source…" :
-    stage === "listing"    ? `Listing files… (${discovered.toLocaleString()} found so far)` :
-    stage === "indexing"   ? `Indexing files… (${indexed.toLocaleString()} of ${discovered.toLocaleString()})` :
+    stage === "listing"    ? `Listing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
+    stage === "indexing"   ? `Indexing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "completed"  ? "Sync complete" :
     stage === "failed"     ? "Sync failed — see error below" :
     stage === "cancelled"  ? "Sync cancelled" :
@@ -928,7 +933,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
               )}
             </span>
             <span>
-              {discovered > 0 ? `${pct}% · ` : ""}{indexed.toLocaleString()} indexed
+              {total > 0 ? `${pct}% · ` : ""}{indexed.toLocaleString()} indexed
             </span>
           </div>
         </div>

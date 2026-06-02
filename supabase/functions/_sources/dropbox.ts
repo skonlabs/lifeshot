@@ -321,13 +321,24 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         .map((entry: any) => entry.path_lower ?? entry.path_display ?? null),
     );
 
-    const nextFolderPath = (() => {
-      while (pendingPaths.length > 0) {
-        const next = normalizeDropboxPath(pendingPaths.shift());
-        if (next.toLowerCase() !== currentPath.toLowerCase()) return next;
+    // Compute the next folder to walk WITHOUT mutating pendingPaths when the
+    // current folder still has more pages. Previously this shifted entries
+    // off pendingPaths unconditionally and then persisted the mutated array
+    // back into the cursor when has_more=true, silently dropping subfolders
+    // and leaving many files unindexed.
+    let consumedPending = 0;
+    let nextFolderPath: string | null = null;
+    for (let i = 0; i < pendingPaths.length; i++) {
+      const candidate = normalizeDropboxPath(pendingPaths[i]);
+      consumedPending = i + 1;
+      if (candidate.toLowerCase() !== currentPath.toLowerCase()) {
+        nextFolderPath = candidate;
+        break;
       }
-      return null;
-    })();
+    }
+    const remainingPending = nextFolderPath === null
+      ? []
+      : pendingPaths.slice(consumedPending);
 
     return {
       items: mapped.filter(Boolean) as AssetRecord[],
@@ -340,7 +351,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
           pendingPaths,
         })
         : nextFolderPath !== null
-          ? JSON.stringify({ folderIndex, currentPath: nextFolderPath, providerCursor: null, pendingPaths })
+          ? JSON.stringify({ folderIndex, currentPath: nextFolderPath, providerCursor: null, pendingPaths: remainingPending })
           : folderIndex < folderTargets.length - 1
             ? JSON.stringify({
               folderIndex: folderIndex + 1,
