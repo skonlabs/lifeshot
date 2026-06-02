@@ -128,8 +128,15 @@ function decodeStoredCursor(value: unknown): string | null {
   }
 
   if (value && typeof value === "object") {
-    const token = (value as { token?: unknown }).token;
-    return typeof token === "string" ? token : null;
+    const parsed = value as { token?: unknown; providerCursor?: unknown; folderIndex?: unknown };
+    if (typeof parsed.token === "string") return parsed.token;
+    if (
+      typeof parsed.providerCursor === "string" ||
+      typeof parsed.folderIndex === "number"
+    ) {
+      return JSON.stringify(value);
+    }
+    return null;
   }
 
   return null;
