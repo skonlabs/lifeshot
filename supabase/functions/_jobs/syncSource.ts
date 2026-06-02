@@ -30,6 +30,7 @@ async function writeProgress(
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
   if (!base) return;
 
   let workerUrl = "";
@@ -43,10 +44,14 @@ async function nudgeWorkerDrain() {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
       ...(secret ? { "x-worker-secret": secret } : {}),
     },
     body: JSON.stringify({}),
-  }).catch(() => undefined);
+  }).catch((error) => {
+    console.warn("syncSource continuation nudge failed:", String(error));
+    return undefined;
+  });
 
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
   if (edgeRuntime?.waitUntil) {
@@ -461,24 +466,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   if (page.nextCursor && !stopRequested) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
-    await sb.from("source_sync_jobs").upsert({
-      id: nextJob.id,
-      source_account_id,
-      kind: syncKind,
-      status: "pending",
-      stats: {
-        ...prevStats,
-        stage: "queued",
-        provider_kind: providerKind,
-        page_items: page.items.length,
-        seen_total: seenTotal,
-        deleted: prevDeleted + deleted.length,
-        discovered,
-        indexed: indexedCount,
-        normalized: prevNormalized + needsNormalize.length,
-        has_more: true,
-      },
-    }, { onConflict: "id" });
+    if (nextJob.id) {
+      await sb.from("source_sync_jobs").upsert({
+        id: nextJob.id,
+        source_account_id,
+        kind: syncKind,
+        status: "pending",
+        stats: {
+          ...prevStats,
+          stage: "queued",
+          provider_kind: providerKind,
+          page_items: page.items.length,
+          seen_total: seenTotal,
+          deleted: prevDeleted + deleted.length,
+          discovered,
+          indexed: indexedCount,
+          normalized: prevNormalized + needsNormalize.length,
+          has_more: true,
+        },
+      }, { onConflict: "id" });
+    }
     await nudgeWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
