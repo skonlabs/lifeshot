@@ -858,6 +858,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const currentFileRaw = stats.current_file;
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   const stage = typeof stats.stage === "string" ? stats.stage : null;
+  const showProgressNumbers = stage === "listing" || stage === "indexing" || stage === "completed";
   const stageLabel =
     stage === "queued"     ? "Queued — worker will pick this up within ~15s…" :
     stage === "connecting" ? "Connecting to source…" :
@@ -933,7 +934,9 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
               )}
             </span>
             <span>
-              {total > 0 ? `${pct}% · ` : ""}{indexed.toLocaleString()} indexed
+              {showProgressNumbers
+                ? `${total > 0 ? `${pct}% · ` : ""}${indexed.toLocaleString()} indexed`
+                : `${selectionTotal.toLocaleString()} selected`}
             </span>
           </div>
         </div>

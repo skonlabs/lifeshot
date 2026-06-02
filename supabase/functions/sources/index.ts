@@ -5,6 +5,7 @@ import { sendError, ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
+import { LANES, laneFor } from "../_pipeline/lanes.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
@@ -782,9 +783,22 @@ app.post("/v1/:id/sync", async (c) => {
   await enforceRateLimit(uid, "general");
   const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
-  const job = await jobEnqueuer.enqueue("syncSource",
-    { source_account_id: id, mode: "incremental" }, { userId: uid, priority: 5 });
   const svc = getServiceClient();
+  const lane = LANES[laneFor("syncSource")];
+  const jobId = crypto.randomUUID();
+  const { error: queueInsertError } = await svc.from("job_queue").insert({
+    id: jobId,
+    user_id: uid,
+    job_name: "syncSource",
+    payload: { source_account_id: id, mode: "incremental" },
+    status: "pending",
+    priority: 5,
+    lane: lane.name,
+    next_attempt_at: new Date().toISOString(),
+    idempotency_key: `sync:${id}:${jobId}`,
+    max_attempts: 5,
+  });
+  if (queueInsertError) throw new ApiError("internal", queueInsertError.message);
   const { error: clearErrorsError } = await svc.from("source_errors")
     .update({ resolved: true })
     .eq("source_account_id", id)
@@ -802,7 +816,7 @@ app.post("/v1/:id/sync", async (c) => {
     }
   }
   const { error: syncJobError } = await svc.from("source_sync_jobs").upsert({
-    id: job.id,
+    id: jobId,
     source_account_id: id,
     kind: "incremental",
     status: "pending",
@@ -836,7 +850,7 @@ app.post("/v1/:id/sync", async (c) => {
       body: JSON.stringify({}),
     }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
   }
-  return c.json({ job_id: job.id }, 202);
+  return c.json({ job_id: jobId }, 202);
 });
 
 // Request cancellation of any in-flight sync for this account. The running
