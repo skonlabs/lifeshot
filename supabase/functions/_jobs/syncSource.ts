@@ -25,6 +25,10 @@ async function kickWorkerDrain(options: { inline?: boolean } = {}) {
     const inProcess = (async () => {
       try {
         const { drainOnce, drainUntilEmpty } = await import("../_pipeline/runner.ts");
+        if (options.inline) {
+          await drainOnce({ batch: 1 });
+          return;
+        }
         await drainOnce({ batch: 1 });
         await drainUntilEmpty(55_000, 16);
       } catch {
@@ -45,10 +49,6 @@ async function kickWorkerDrain(options: { inline?: boolean } = {}) {
       }).then(() => undefined).catch(() => undefined);
 
     const combined = Promise.all([inProcess, httpKick]);
-    if (options.inline) {
-      await combined;
-      return;
-    }
     if (globalAny.EdgeRuntime?.waitUntil) {
       globalAny.EdgeRuntime.waitUntil(combined);
       return;
