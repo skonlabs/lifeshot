@@ -452,10 +452,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
   if (page.nextCursor && !stopRequested) {
-    await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload, delaySeconds: 1 });
-    // Without this kick, the next page sits in job_queue until the next
-    // pg_cron drain (which is a no-op on projects without app.worker_base_url
-    // set). Fire-and-forget keeps the chain moving.
+    // Re-enqueue the next page immediately so the current drain loop can
+    // claim it in the same invocation. A 1s delay makes drainUntilEmpty()
+    // exit before the next page becomes eligible, which leaves the chain
+    // dependent on a second worker wake-up. If that wake-up misses (for
+    // example a secret/config mismatch on /worker/drain), sync appears stuck
+    // forever after the first page.
+    await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
+    // Best-effort extra nudge for environments that rely on external drains.
     kickWorkerDrain();
   } else {
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
