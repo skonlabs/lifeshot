@@ -285,36 +285,23 @@ app.get("/v1/accounts", async (c) => {
   const counts: Record<string, number> = {};
   const breakdown: Record<string, { photo: number; video: number; document: number; audio: number; other: number }> = {};
   if (ids.length) {
-    // Use the service client to avoid RLS/embedding pitfalls when joining
-    // asset_source_refs -> assets. Fetch the two tables separately and
-    // aggregate in code so each account gets accurate per-kind counts.
+    // Aggregate per-account counts entirely in Postgres via an RPC to
+    // avoid sending thousands of asset ids through a PostgREST IN(...)
+    // URL (which exceeds gateway URL/header limits and surfaces as a
+    // "TypeError: error sending request" from Deno's fetch).
     const svc = getServiceClient();
-    const { data: refs, error: refsErr } = await svc.from("asset_source_refs")
-      .select("source_account_id, asset_id")
-      .in("source_account_id", ids);
-    if (refsErr) throw new ApiError("internal", refsErr.message);
-    const assetIds = Array.from(new Set((refs ?? []).map((r: any) => r.asset_id).filter(Boolean)));
-    const mediaByAsset = new Map<string, string>();
-    // Chunk the IN(...) to stay under URL length limits.
-    const CHUNK = 100;
-    for (let i = 0; i < assetIds.length; i += CHUNK) {
-      const slice = assetIds.slice(i, i + CHUNK);
-      const { data: rows, error: aErr } = await svc.from("assets")
-        .select("id, media_type").in("id", slice);
-      if (aErr) throw new ApiError("internal", aErr.message);
-      for (const row of (rows ?? []) as Array<{ id: string; media_type: string }>) {
-        mediaByAsset.set(row.id, row.media_type);
-      }
-    }
-    for (const row of (refs ?? []) as Array<{ source_account_id: string; asset_id: string }>) {
-      counts[row.source_account_id] = (counts[row.source_account_id] ?? 0) + 1;
+    const { data: agg, error: aggErr } = await svc.rpc("account_media_counts", { _account_ids: ids });
+    if (aggErr) throw new ApiError("internal", aggErr.message);
+    for (const row of (agg ?? []) as Array<{ source_account_id: string; media_type: string; count: number }>) {
+      const n = Number(row.count) || 0;
+      counts[row.source_account_id] = (counts[row.source_account_id] ?? 0) + n;
       const bucket = breakdown[row.source_account_id] ??= { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
-      const kind = mediaByAsset.get(row.asset_id) ?? "unknown";
-      if (kind === "photo" || kind === "live_photo" || kind === "animation") bucket.photo += 1;
-      else if (kind === "video") bucket.video += 1;
-      else if (kind === "document") bucket.document += 1;
-      else if (kind === "audio") bucket.audio += 1;
-      else bucket.other += 1;
+      const kind = row.media_type ?? "unknown";
+      if (kind === "photo" || kind === "image" || kind === "live_photo" || kind === "animation") bucket.photo += n;
+      else if (kind === "video") bucket.video += n;
+      else if (kind === "document") bucket.document += n;
+      else if (kind === "audio") bucket.audio += n;
+      else bucket.other += n;
     }
   }
   const accountMeta = new Map<string, { providerKind: string; userId: string }>();
