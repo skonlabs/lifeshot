@@ -300,7 +300,7 @@ app.get("/v1/accounts", async (c) => {
   const { data, error } = await supa.from("source_accounts").select(`
     id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
-  `).order("connected_at", { ascending: false });
+  `).neq("status", "disconnected").order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
   // Per-account counts, broken out by media_type so the UI can show
   // photos / videos / documents / other in addition to the total indexed.
