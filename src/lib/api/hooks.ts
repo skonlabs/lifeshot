@@ -286,8 +286,70 @@ export function useSyncSource() {
 export function useForceSyncSource() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (accountId: string) =>
-      api.sources(`/${accountId}/sync/force`, { method: "POST", body: {} }),
+    mutationFn: async (accountId: string) => {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+
+      const userId = sessionData.session?.user?.id;
+      if (!userId) throw new Error("You must be signed in to force sync a source.");
+
+      const queueTime = new Date().toISOString();
+      const jobId = crypto.randomUUID();
+      const idempotencyKey = `force-sync:${accountId}:${jobId}`;
+
+      const { error: cursorError } = await supabase
+        .from("source_sync_cursors")
+        .delete()
+        .eq("source_account_id", accountId);
+      if (cursorError) throw new Error(cursorError.message);
+
+      const { error: queueError } = await supabase.from("job_queue").insert({
+        id: jobId,
+        user_id: userId,
+        job_name: "syncSource",
+        payload: { source_account_id: accountId, mode: "initial", force: true },
+        status: "pending",
+        priority: 100,
+        lane: "user",
+        next_attempt_at: queueTime,
+        scheduled_at: queueTime,
+        idempotency_key: idempotencyKey,
+        max_attempts: 5,
+      });
+      if (queueError) throw new Error(queueError.message);
+
+      const { error: syncJobError } = await supabase.from("source_sync_jobs").upsert({
+        id: jobId,
+        source_account_id: accountId,
+        kind: "initial",
+        status: "pending",
+        stats: { stage: "queued", discovered: 1, indexed: 0, force: true },
+      }, { onConflict: "id" });
+      if (syncJobError) throw new Error(syncJobError.message);
+
+      const { error: accountError } = await supabase
+        .from("source_accounts")
+        .update({ status: "pending", sync_cancel_requested_at: null })
+        .eq("id", accountId)
+        .eq("user_id", userId);
+      if (accountError) {
+        const { error: fallbackAccountError } = await supabase
+          .from("source_accounts")
+          .update({ status: "pending" })
+          .eq("id", accountId)
+          .eq("user_id", userId);
+        if (fallbackAccountError) throw new Error(fallbackAccountError.message);
+      }
+
+      const { error: sourceErrorError } = await supabase
+        .from("source_errors")
+        .update({ resolved: true })
+        .eq("source_account_id", accountId)
+        .eq("resolved", false);
+      if (sourceErrorError) throw new Error(sourceErrorError.message);
+
+      return { job_id: jobId };
+    },
     onSuccess: (_d, accountId) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
       qc.invalidateQueries({ queryKey: ["source-status", accountId] });
