@@ -1,5 +1,5 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useStopSync, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useForceSyncSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useStopSync, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -69,6 +69,7 @@ function Sources() {
   const providers = useProviders();
   const connect = useConnectSource();
   const sync = useSyncSource();
+  const forceSync = useForceSyncSource();
   const stopSync = useStopSync();
   const disconnect = useDisconnectSource();
   const qc = useQueryClient();
@@ -288,6 +289,10 @@ function Sources() {
                 onSync={() => sync.mutate(a.id, {
                   onSuccess: () => toast.success("Sync queued. Indexing your folders…"),
                   onError: (e) => toast.error((e as Error).message || "Sync failed to start."),
+                })}
+                onForceSync={() => forceSync.mutate(a.id, {
+                  onSuccess: () => toast.success("Force sync queued. Re-indexing all selected folders…"),
+                  onError: (e) => toast.error((e as Error).message || "Force sync failed to start."),
                 })}
                 onStop={() => stopSync.mutate(a.id, {
                   onSuccess: () => toast.success("Stopping sync…"),
@@ -809,7 +814,7 @@ function UploadDialog({ state, onClose }: { state: UploadState; onClose: () => v
   );
 }
 
-function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider }: {
+function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconnect, provider }: {
   a: {
     id: string; provider_kind: string; status: string; display_label: string | null;
     asset_count: number; last_sync_at: string | null;
@@ -818,7 +823,7 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
     selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   };
-  onSync: () => void; onStop: () => void; onSelectFolders: () => void; onDisconnect: () => void;
+  onSync: () => void; onForceSync: () => void; onStop: () => void; onSelectFolders: () => void; onDisconnect: () => void;
   provider?: { name: string; kind: string };
 }) {
   const qc = useQueryClient();
@@ -918,9 +923,14 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
               <Square className="h-3 w-3" /> Stop Sync
             </button>
           ) : (
-            <button onClick={onSync} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
-              <RefreshCcw className="h-3 w-3" /> Sync
-            </button>
+            <>
+              <button onClick={onSync} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
+                <RefreshCcw className="h-3 w-3" /> Sync
+              </button>
+              <button onClick={onForceSync} title="Re-index every selected file, even unchanged ones" className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
+                <RefreshCcw className="h-3 w-3" /> Force Sync
+              </button>
+            </>
           )}
           <button onClick={onDisconnect}
             className="inline-flex items-center gap-1 rounded-full border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10">

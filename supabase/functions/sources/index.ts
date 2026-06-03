@@ -908,6 +908,64 @@ app.post("/v1/:id/sync", async (c) => {
   return c.json({ job_id: jobId }, 202);
 });
 
+// Force-sync: clear cursors and re-process every selected file/folder regardless
+// of whether it changed since the last sync.
+app.post("/v1/:id/sync/force", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
+  await enforceRateLimit(uid, "general");
+  const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
+  if (!acc) throw new ApiError("not_found", "Source account not found");
+  const svc = getServiceClient();
+
+  // Wipe cursors so the worker re-discovers everything from scratch.
+  await svc.from("source_sync_cursors").delete().eq("source_account_id", id);
+
+  const lane = LANES[laneFor("syncSource")];
+  const jobId = crypto.randomUUID();
+  const { error: queueInsertError } = await svc.from("job_queue").insert({
+    id: jobId,
+    user_id: uid,
+    job_name: "syncSource",
+    payload: { source_account_id: id, mode: "initial", force: true },
+    status: "pending",
+    priority: 5,
+    lane: lane.name,
+    next_attempt_at: new Date().toISOString(),
+    idempotency_key: `force-sync:${id}:${jobId}`,
+    max_attempts: 5,
+  });
+  if (queueInsertError) throw new ApiError("internal", queueInsertError.message);
+
+  await svc.from("source_errors")
+    .update({ resolved: true })
+    .eq("source_account_id", id)
+    .eq("resolved", false);
+
+  const statusAttempt = await svc.from("source_accounts")
+    .update({ status: "pending", sync_cancel_requested_at: null }).eq("id", id);
+  if (statusAttempt.error) {
+    if (isMissingColumnError(statusAttempt.error.message, "sync_cancel_requested_at")) {
+      await svc.from("source_accounts").update({ status: "pending" }).eq("id", id);
+    } else {
+      throw new ApiError("internal", statusAttempt.error.message);
+    }
+  }
+
+  const { error: syncJobError } = await svc.from("source_sync_jobs").upsert({
+    id: jobId,
+    source_account_id: id,
+    kind: "initial",
+    status: "pending",
+    stats: { stage: "queued", discovered: 1, indexed: 0, force: true },
+  }, { onConflict: "id" });
+  if (syncJobError) throw new ApiError("internal", syncJobError.message);
+
+  emitEvent(c, "sources.force_sync_enqueued", { id });
+  await kickWorker(c.req.header("Authorization"), c.req.url);
+  return c.json({ job_id: jobId }, 202);
+});
+
 // Request cancellation of any in-flight sync for this account. The running
 // worker checks `sync_cancel_requested_at` at the start of each chained
 // page-run and exits early; queued (not-yet-started) jobs are removed so
