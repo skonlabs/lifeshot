@@ -73,7 +73,7 @@ app.get("/assets/:id/sources", async (c) => {
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
   const { data } = await supa.from("asset_source_refs").select(`
-    id, asset_id, source_account_id, source_asset_id, provider_url,
+    id, asset_id, source_account_id, source_asset_id, provider_url, provider_web_url, provider_download_url, source_relative_path,
     match_confidence, is_primary, first_seen_at, last_seen_at,
     account:source_accounts(display_label, provider:source_providers(kind, name))
   `).eq("asset_id", id);
@@ -83,7 +83,8 @@ app.get("/assets/:id/sources", async (c) => {
       provider_kind: r.account?.provider?.kind ?? null,
       provider_name: r.account?.provider?.name ?? null,
       label: r.account?.display_label ?? null,
-      provider_url: r.provider_url ?? null,
+      provider_url: r.provider_web_url ?? r.provider_download_url ?? r.provider_url ?? null,
+      relative_path: r.source_relative_path ?? null,
       is_primary: r.is_primary, match_confidence: r.match_confidence,
       first_seen_at: r.first_seen_at, last_seen_at: r.last_seen_at,
     })),
