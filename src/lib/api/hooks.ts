@@ -35,12 +35,56 @@ type SourceAccountsResponse = {
     display_label: string | null;
     asset_count: number;
     last_sync_at: string | null;
+    connected_at?: string | null;
+    disconnected_at?: string | null;
     selected_container_count?: number;
     selected_containers?: Array<{ id: string; name?: string }>;
     counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
     selection_counts_by_kind?: { photo: number; video: number; document: number; audio: number; other: number };
   }>;
 };
+
+function normalizeSourceAccounts(data: SourceAccountsResponse): SourceAccountsResponse {
+  const visible = data.accounts.filter((account) => account.status === "active" || account.status === "pending");
+  const byProvider = new Map<string, SourceAccountsResponse["accounts"][number]>();
+
+  const score = (account: SourceAccountsResponse["accounts"][number]) => {
+    const selectedCount = account.selected_container_count ?? account.selected_containers?.length ?? 0;
+    const hasSyncHistory = account.last_sync_at ? 1 : 0;
+    const isActive = account.status === "active" ? 1 : 0;
+    const connectedAt = account.connected_at ? new Date(account.connected_at).getTime() : 0;
+
+    return [selectedCount, account.asset_count ?? 0, hasSyncHistory, isActive, connectedAt] as const;
+  };
+
+  const compareScore = (
+    a: SourceAccountsResponse["accounts"][number],
+    b: SourceAccountsResponse["accounts"][number],
+  ) => {
+    const aScore = score(a);
+    const bScore = score(b);
+    for (let i = 0; i < aScore.length; i += 1) {
+      if (aScore[i] !== bScore[i]) return aScore[i] - bScore[i];
+    }
+    return 0;
+  };
+
+  for (const account of visible) {
+    const current = byProvider.get(account.provider_kind);
+    if (!current || compareScore(account, current) > 0) {
+      byProvider.set(account.provider_kind, account);
+    }
+  }
+
+  return {
+    ...data,
+    accounts: Array.from(byProvider.values()).sort((a, b) => {
+      const aTime = a.connected_at ? new Date(a.connected_at).getTime() : 0;
+      const bTime = b.connected_at ? new Date(b.connected_at).getTime() : 0;
+      return bTime - aTime;
+    }),
+  };
+}
 
 // ---------- me / privacy ----------
 export function useMe() {
@@ -194,6 +238,7 @@ export function useSourceAccounts() {
   return useQuery({
     queryKey: ["source-accounts"],
     queryFn: () => api.sources<SourceAccountsResponse>("/accounts"),
+    select: normalizeSourceAccounts,
     staleTime: 30_000,
   });
 }
