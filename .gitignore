@@ -31,3 +31,4 @@ dist-ssr
 *.sln
 *.sw?
 .lovable/secrets.local.env
+.claude/
