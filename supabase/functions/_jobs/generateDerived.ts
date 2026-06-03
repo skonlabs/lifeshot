@@ -82,5 +82,23 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     mime_type: w.mime, blurhash: w.blurhash ?? null,
   })), { onConflict: "asset_id,kind" });
 
+  const thumb = written.find((item) => item.name === "thumb") ?? null;
+  const preview = written.find((item) => item.name === "preview") ?? null;
+
+  await sb.from("asset_preview_metadata").upsert({
+    asset_id,
+    user_id: asset.user_id,
+    blurhash: thumb?.blurhash ?? preview?.blurhash ?? null,
+    thumbnail_generated: !!thumb,
+    preview_generated: !!preview,
+    thumbnail_cache_key: thumb ? `${asset.user_id}/${asset_id}/${thumb.name}.${thumb.mime.split("/")[1] ?? "bin"}` : null,
+    preview_cache_key: preview ? `${asset.user_id}/${asset_id}/${preview.name}.${preview.mime.split("/")[1] ?? "bin"}` : null,
+  }, { onConflict: "asset_id" });
+
+  await sb.from("assets").update({
+    thumbnail_cache_key: thumb?.path ?? asset.thumbnail_cache_key ?? null,
+    proxy_cache_key: preview?.path ?? asset.proxy_cache_key ?? null,
+  }).eq("id", asset_id);
+
   return { asset_id, derivatives: written.length };
 }
