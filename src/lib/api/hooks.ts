@@ -306,12 +306,17 @@ export function useDisconnectSource() {
       ]);
 
       const previousAccounts = qc.getQueryData<SourceAccountsResponse>(["source-accounts"]);
+      const providerKind = previousAccounts?.accounts.find((account) => account.id === accountId)?.provider_kind;
 
       qc.setQueryData<SourceAccountsResponse | undefined>(["source-accounts"], (current) => {
         if (!current) return current;
         return {
           ...current,
-          accounts: current.accounts.filter((account) => account.id !== accountId),
+          accounts: current.accounts.filter((account) => {
+            if (account.id === accountId) return false;
+            if (providerKind && account.provider_kind === providerKind) return false;
+            return true;
+          }),
         };
       });
       qc.removeQueries({ queryKey: ["source-status", accountId] });
