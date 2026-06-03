@@ -1010,16 +1010,18 @@ app.delete("/v1/:id", async (c) => {
   await enforceRateLimit(uid, "delete");
   // Ownership check via user client (RLS)
   const { data: acc } = await supa.from("source_accounts")
-    .select("id, user_id, provider_kind")
+    .select("id, user_id, provider:source_providers(kind)")
     .eq("id", id)
     .maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
+  const providerKind = (acc as any).provider?.kind as string | undefined;
   try {
-    const connector = getConnector(acc.provider_kind as any, {
+    if (!providerKind) throw new Error("provider kind unavailable");
+    const connector = getConnector(providerKind as any, {
       source_account_id: id,
       user_id: acc.user_id,
-      provider_kind: acc.provider_kind as any,
+      provider_kind: providerKind as any,
     }, svc);
     await connector.revoke();
   } catch (revokeError) {
