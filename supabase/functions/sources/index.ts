@@ -438,11 +438,16 @@ app.get("/v1/:id/status", async (c) => {
     lastJob?.status === "cancelled" ||
     persistedJobStats.cancelled === true ||
     /cancelled by user/i.test(queueJobError ?? "");
+  const selectionDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
+  const queueLooksStale = !!queueJob && (
+    (queueJob.status === "pending" && indexed > 0 && indexed >= selectionDiscovered) ||
+    (queueJob.status === "running" && persistedJobStats.stage === "completed")
+  );
   const effectiveJobStatus = cancelled
     ? "cancelled"
-    : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null);
+    : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
-  const queueJobStats = queueJob ? {
+  const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
     discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
     indexed,
@@ -452,12 +457,12 @@ app.get("/v1/:id/status", async (c) => {
   const jobStats = { ...persistedJobStats, ...queueJobStats };
   const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
   const progressIndexed = indexed;
-  const lastErrorMessage = cancelled ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
+  const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = !unauthorized && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
+  const syncing = !unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
   const accountStatus = unauthorized ? "revoked" : (syncing ? "syncing" : acc.status);
   return c.json({
     account_id: id,
