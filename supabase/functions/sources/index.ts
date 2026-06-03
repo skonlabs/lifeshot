@@ -755,19 +755,47 @@ async function handleOAuthCallback(c: Context) {
     return c.redirect(callbackUrl.toString());
   }
 
-  const { data: account, error: accErr } = await svc.from("source_accounts").insert({
-    user_id: st.user_id,
-    provider_id: st.provider_id,
-    provider_kind: provider.kind,
-    status: "active",
-    external_account_id: `acct_${state.slice(0, 8)}`,
-  } as Record<string, unknown>).select().single();
-  if (accErr) {
-    callbackUrl.searchParams.set("error", "account_create_failed");
-    callbackUrl.searchParams.set("detail", accErr.message.slice(0, 120));
-    return c.redirect(callbackUrl.toString());
+  // Dedupe: reuse any existing non-disconnected account for this
+  // (user, provider). Re-authorizing should refresh tokens on the
+  // existing row, not create a second Dropbox/Google Photos/etc.
+  const { data: existing } = await svc.from("source_accounts")
+    .select("id, external_account_id")
+    .eq("user_id", st.user_id)
+    .eq("provider_id", st.provider_id)
+    .neq("status", "disconnected")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  let account: { id: string };
+  if (existing) {
+    const { error: updErr } = await svc.from("source_accounts")
+      .update({ status: "active", disconnected_at: null })
+      .eq("id", existing.id);
+    if (updErr) {
+      callbackUrl.searchParams.set("error", "account_update_failed");
+      callbackUrl.searchParams.set("detail", updErr.message.slice(0, 120));
+      return c.redirect(callbackUrl.toString());
+    }
+    account = { id: existing.id };
+  } else {
+    const { data: created, error: accErr } = await svc.from("source_accounts").insert({
+      user_id: st.user_id,
+      provider_id: st.provider_id,
+      provider_kind: provider.kind,
+      status: "active",
+      external_account_id: `acct_${state.slice(0, 8)}`,
+    } as Record<string, unknown>).select().single();
+    if (accErr || !created) {
+      callbackUrl.searchParams.set("error", "account_create_failed");
+      callbackUrl.searchParams.set("detail", (accErr?.message ?? "unknown").slice(0, 120));
+      return c.redirect(callbackUrl.toString());
+    }
+    account = { id: created.id };
   }
 
+  // Upsert tokens — on reconnect we must replace the stored access/refresh.
+  await svc.from("source_tokens").delete().eq("source_account_id", account.id);
   if (access_token) {
     await svc.from("source_tokens").insert({
       source_account_id: account.id,
@@ -776,19 +804,22 @@ async function handleOAuthCallback(c: Context) {
       expires_at,
     });
   } else {
-    // Placeholder so the FK row exists (non-OAuth or pending providers).
     await svc.from("source_tokens").insert({
       source_account_id: account.id,
       access_token_encrypted: "",
     });
   }
-  await svc.from("source_permissions").insert({
-    source_account_id: account.id, can_cache_thumbnail: false, can_cache_preview: false, ai_allowed: false,
-  });
 
-  await svc.from("source_capabilities").insert({
-    source_account_id: account.id, capability: provider?.default_capabilities ?? {},
-  });
+  // Only seed permissions/capabilities on fresh accounts; preserve user
+  // settings on reconnect.
+  if (!existing) {
+    await svc.from("source_permissions").insert({
+      source_account_id: account.id, can_cache_thumbnail: false, can_cache_preview: false, ai_allowed: false,
+    });
+    await svc.from("source_capabilities").insert({
+      source_account_id: account.id, capability: provider?.default_capabilities ?? {},
+    });
+  }
 
   // Do NOT auto-enqueue sync here. User must first select folders to index;
   // sync is queued when they save their folder scope (see /v1/:id/containers).
