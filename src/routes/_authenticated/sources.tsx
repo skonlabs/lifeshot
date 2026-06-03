@@ -1,5 +1,5 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useConnectSource, useDisconnectSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useStopSync, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
+import { useConnectSource, useDisconnectSource, useForceSyncSource, useImportUploaded, useProviders, useSourceAccounts, useSourceContainerChildren, useSourceContainers, useSourceStatus, useStopSync, useSyncSource, useUpdateSourceContainers } from "@/lib/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -69,6 +69,7 @@ function Sources() {
   const providers = useProviders();
   const connect = useConnectSource();
   const sync = useSyncSource();
+  const forceSync = useForceSyncSource();
   const stopSync = useStopSync();
   const disconnect = useDisconnectSource();
   const qc = useQueryClient();
@@ -288,6 +289,10 @@ function Sources() {
                 onSync={() => sync.mutate(a.id, {
                   onSuccess: () => toast.success("Sync queued. Indexing your folders…"),
                   onError: (e) => toast.error((e as Error).message || "Sync failed to start."),
+                })}
+                onForceSync={() => forceSync.mutate(a.id, {
+                  onSuccess: () => toast.success("Force sync queued. Re-indexing all selected folders…"),
+                  onError: (e) => toast.error((e as Error).message || "Force sync failed to start."),
                 })}
                 onStop={() => stopSync.mutate(a.id, {
                   onSuccess: () => toast.success("Stopping sync…"),
