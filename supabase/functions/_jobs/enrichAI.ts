@@ -80,6 +80,17 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // Record the failure but do not throw — enrichment is best-effort.
   }
 
+  // Derive face detections from person/face object labels. We have no dedicated
+  // face-embedding provider yet, so each person-like detection becomes a face
+  // record (bbox/vector left null until a real model is wired in). clusterPeople
+  // consumes these to populate the People surface.
+  const faces = objects
+    .filter((o) => {
+      const label = (o?.label ?? "").toLowerCase();
+      return label === "person" || label === "face" || label === "people";
+    })
+    .map((o) => ({ bbox: (o as any).bbox ?? null, score: o.score ?? null }));
+
   if (!error) {
     await sb.from("asset_ai_enrichment").upsert({
       asset_id,
@@ -87,17 +98,36 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       caption,
       tags,
       objects,
+      faces,
       enriched_at: new Date().toISOString(),
     }, { onConflict: "asset_id" });
 
-    // Re-index search document now that caption/tags are available.
     const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
+
+    // Re-index search document now that caption/tags are available.
     await enqueueJob("indexSearchDocument", {
       userId: ctx.userId,
       payload: { asset_id },
       idempotencyKey: `index-post-ai:${asset_id}`,
     });
+
+    // Cluster faces into people when this asset has face signals (consent-gated
+    // inside the job). Scoped to this asset so it runs incrementally.
+    if (faces.length) {
+      await enqueueJob("clusterPeople", {
+        userId: ctx.userId,
+        payload: { user_id: asset.user_id, asset_id },
+        idempotencyKey: `people-post-ai:${asset_id}`,
+      });
+    }
+
+    // Re-detect events for this user so new assets fold into moments/stories.
+    await enqueueJob("detectEvents", {
+      userId: ctx.userId,
+      payload: { user_id: asset.user_id },
+      idempotencyKey: `events-post-ai:${asset.user_id}`,
+    });
   }
 
-  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, error };
+  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };
 }

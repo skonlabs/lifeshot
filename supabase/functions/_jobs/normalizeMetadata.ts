@@ -402,6 +402,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}` });
   await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}` });
   await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}` });
+  // Reverse-geocode + place clustering (no-ops when this asset has no GPS).
+  await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}` });
 
   return { asset_id, normalized: true, extracted: extractedAny };
 }
