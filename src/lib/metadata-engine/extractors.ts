@@ -46,7 +46,14 @@ export async function streamingSha256(file: File): Promise<string | null> {
 export async function quickHash(file: File): Promise<string | null> {
   try {
     const head = new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer());
-    return `qh1:${file.size}:${await sha256Hex(head.buffer)}`;
+    const tailStart = Math.max(0, file.size - 64 * 1024);
+    const tail = tailStart > 0 ? new Uint8Array(await file.slice(tailStart, file.size).arrayBuffer()) : new Uint8Array();
+    const modifiedAt = new TextEncoder().encode(String(file.lastModified));
+    const combined = new Uint8Array(head.byteLength + tail.byteLength + modifiedAt.byteLength);
+    combined.set(head, 0);
+    combined.set(tail, head.byteLength);
+    combined.set(modifiedAt, head.byteLength + tail.byteLength);
+    return `qh1:${file.size}:${await sha256Hex(combined.buffer)}`;
   } catch { return null; }
 }
 
