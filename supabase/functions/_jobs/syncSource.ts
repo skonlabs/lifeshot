@@ -344,6 +344,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     (existingRefs ?? []).map((r: any) => [r.source_asset_id, r]),
   );
 
+  const existingAssetIds = Array.from(new Set((existingRefs ?? []).map((r: any) => r.asset_id).filter(Boolean)));
+  const metadataCompleteness = new Map<string, { hasFileMetadata: boolean; hasMediaMetadata: boolean }>();
+  if (existingAssetIds.length > 0) {
+    const [{ data: fileMetadataRows, error: fileMetadataError }, { data: mediaMetadataRows, error: mediaMetadataError }] = await Promise.all([
+      sb.from("asset_file_metadata").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_media_metadata").select("asset_id").in("asset_id", existingAssetIds),
+    ]);
+    if (fileMetadataError) throw new Error(`load file metadata completeness: ${fileMetadataError.message}`);
+    if (mediaMetadataError) throw new Error(`load media metadata completeness: ${mediaMetadataError.message}`);
+
+    const fileIds = new Set((fileMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const mediaIds = new Set((mediaMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    for (const assetId of existingAssetIds) {
+      metadataCompleteness.set(assetId, {
+        hasFileMetadata: fileIds.has(assetId),
+        hasMediaMetadata: mediaIds.has(assetId),
+      });
+    }
+  }
+
   // 2) Bulk-insert new assets (those without an existing ref).
   const newItems = page.items.filter((a) => !refMap.has(a.provider_asset_id));
   let newAssetMap = new Map<string, string>(); // provider_asset_id → asset_id
@@ -413,9 +433,16 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     if (!assetId) continue;
     const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
     const isNew = !existing;
-    const hasChanged = isNew || !existing.source_modified_at ||
-      (providerModifiedAt && providerModifiedAt > existing.source_modified_at);
-    if (hasChanged) needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
+    const currentMetadata = metadataCompleteness.get(assetId);
+    const missingMetadata = isNew || !currentMetadata?.hasFileMetadata || !currentMetadata?.hasMediaMetadata;
+    const timestampChanged = !isNew && (
+      !existing.source_modified_at ||
+      !providerModifiedAt ||
+      providerModifiedAt !== existing.source_modified_at
+    );
+    if (missingMetadata || timestampChanged) {
+      needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
+    }
   }
 
   // Cascade deletions via refs.
@@ -467,6 +494,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevNormalized = Number(prevStats.normalized ?? 0);
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
+  const prevIndexed = Number(prevStats.indexed ?? 0);
   const newCursor = page.nextCursor ?? null;
   const pageCount = prevPageCount + 1;
 
@@ -491,13 +519,25 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
   const discovered = Math.max(seenTotal, indexedCount, 1);
+  const indexedAdvanced = indexedCount > prevIndexed;
+  const noForwardProgress = !!newCursor && page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
+
+  if (noForwardProgress) {
+    await recordSyncError(
+      sb,
+      source_account_id,
+      "sync_no_progress_terminated",
+      "Connector reported more pages but this page produced no new files, deletions, or metadata work; terminating sync to avoid a stale loop.",
+      { provider_kind: providerKind, page_count: pageCount, cursor: newCursor },
+    );
+  }
 
   const finishJob = await sb.from("source_sync_jobs").update({
-    status: effectiveNextCursor ? "running" : "completed",
-    finished_at: effectiveNextCursor ? null : new Date().toISOString(),
+    status: effectiveNextCursor && !noForwardProgress ? "running" : "completed",
+    finished_at: effectiveNextCursor && !noForwardProgress ? null : new Date().toISOString(),
     stats: {
       ...prevStats,
-      stage: effectiveNextCursor ? "indexing" : "completed",
+      stage: effectiveNextCursor && !noForwardProgress ? "indexing" : "completed",
       provider_kind: providerKind,
       page_items: page.items.length,
       seen_total: seenTotal,
@@ -505,7 +545,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       discovered,
       indexed: indexedCount,
       normalized: prevNormalized + needsNormalize.length,
-      has_more: !!effectiveNextCursor,
+      has_more: !!effectiveNextCursor && !noForwardProgress,
       page_count: pageCount,
       last_cursor: newCursor,
     },
@@ -515,7 +555,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  if (!effectiveNextCursor) {
+  if (!effectiveNextCursor || noForwardProgress) {
     const { error: resolveErrorsError } = await sb.from("source_errors")
       .update({ resolved: true })
       .eq("source_account_id", source_account_id)
@@ -532,7 +572,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     : {};
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
-  if (effectiveNextCursor && !stopRequested) {
+  if (effectiveNextCursor && !noForwardProgress && !stopRequested) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
