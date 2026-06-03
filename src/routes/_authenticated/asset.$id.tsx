@@ -39,7 +39,7 @@ function AssetDetail() {
     label: string | null; provider_url: string | null; is_primary: boolean;
   }>;
   const primarySource = srcs.find((s) => s.is_primary && s.provider_url) ?? srcs.find((s) => s.provider_url);
-  const metadataSections = metadata.data ? [
+  const metadataSections: Array<[string, Record<string, unknown>]> = metadata.data ? [
     ["Core", metadata.data.asset],
     ["File system", metadata.data.fileSystem],
     ["Media", metadata.data.media],
@@ -53,7 +53,10 @@ function AssetDetail() {
     ["Preview", metadata.data.preview],
     ["AI readiness", metadata.data.aiReady],
     ["Organization", metadata.data.organization],
-  ].filter(([, value]) => value && Object.values(value).some((entry) => entry !== null && entry !== "" && !(Array.isArray(entry) && entry.length === 0))) : [];
+  ].filter((entry): entry is [string, Record<string, unknown>] => {
+    const value = entry[1];
+    return !!value && Object.values(value).some((item) => item !== null && item !== "" && !(Array.isArray(item) && item.length === 0));
+  }) : [];
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
