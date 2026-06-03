@@ -914,7 +914,7 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
           </div>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2 ml-auto">
           <button onClick={onSelectFolders} className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] px-3 py-1.5 text-xs hover:bg-[color:var(--paper-2)]">
             <Settings2 className="h-3 w-3" /> Select folders
           </button>
