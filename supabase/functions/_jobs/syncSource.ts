@@ -437,8 +437,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     const missingMetadata = isNew || !currentMetadata?.hasFileMetadata || !currentMetadata?.hasMediaMetadata;
     const timestampChanged = !isNew && (
       !existing.source_modified_at ||
-      !providerModifiedAt ||
-      providerModifiedAt !== existing.source_modified_at
+      (providerModifiedAt !== null && providerModifiedAt !== existing.source_modified_at)
     );
     if (missingMetadata || timestampChanged) {
       needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
@@ -555,7 +554,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
-  if (!effectiveNextCursor || noForwardProgress) {
+  if (!effectiveNextCursor) {
     const { error: resolveErrorsError } = await sb.from("source_errors")
       .update({ resolved: true })
       .eq("source_account_id", source_account_id)
