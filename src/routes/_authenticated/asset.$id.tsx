@@ -20,6 +20,12 @@ function humanize(key: string) {
   return FIELD_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function formatValue(value: unknown) {
+  if (value == null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+}
+
 export const Route = createFileRoute("/_authenticated/asset/$id")({ component: AssetDetail });
 
 function AssetDetail() {
@@ -113,7 +119,7 @@ function AssetDetail() {
                           .map(([k, v]) => (
                             <div key={`${title}-${k}`} className="flex justify-between gap-3 px-4 py-2">
                               <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
-                              <dd className="truncate text-right text-[color:var(--ink)]">{String(v)}</dd>
+                              <dd className="truncate text-right text-[color:var(--ink)]">{formatValue(v)}</dd>
                             </div>
                           ))}
                         {Object.entries(section as Record<string, unknown>)
@@ -136,7 +142,7 @@ function AssetDetail() {
                     .map(([k, v]) => (
                       <div key={k} className="flex justify-between gap-3 px-4 py-2">
                         <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
-                        <dd className="truncate text-right text-[color:var(--ink)]">{String(v ?? "—")}</dd>
+                        <dd className="truncate text-right text-[color:var(--ink)]">{formatValue(v)}</dd>
                       </div>
                     ))}
                 </dl>
