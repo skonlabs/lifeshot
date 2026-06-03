@@ -10,6 +10,7 @@ import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
+import { isStaleSyncQueueState } from "../../../src/lib/api/sync-status.logic.ts";
 
 // Wake the worker so the job claims within a couple of seconds instead of
 // waiting for the next pg_cron tick (~15s). The request must go to the
@@ -439,10 +440,13 @@ app.get("/v1/:id/status", async (c) => {
     persistedJobStats.cancelled === true ||
     /cancelled by user/i.test(queueJobError ?? "");
   const selectionDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
-  const queueLooksStale = !!queueJob && (
-    (queueJob.status === "pending" && indexed > 0 && indexed >= selectionDiscovered) ||
-    (queueJob.status === "running" && persistedJobStats.stage === "completed")
-  );
+  const queueLooksStale = isStaleSyncQueueState({
+    queueStatus: queueJob?.status ?? null,
+    persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
+    indexed,
+    discovered: selectionDiscovered,
+    hasQueueJob: !!queueJob,
+  });
   const effectiveJobStatus = cancelled
     ? "cancelled"
     : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null));
