@@ -131,6 +131,29 @@ export function useAsset(id: string | undefined) {
   });
 }
 
+export function useAssetMetadata(id: string | undefined) {
+  return useQuery({
+    queryKey: ["asset-metadata", id],
+    enabled: !!id,
+    queryFn: () => api.scans<{
+      asset: Record<string, unknown>;
+      fileSystem: Record<string, unknown> | null;
+      media: Record<string, unknown> | null;
+      exif: Record<string, unknown> | null;
+      gps: Record<string, unknown> | null;
+      xmpIptc: Record<string, unknown> | null;
+      video: Record<string, unknown> | null;
+      document: Record<string, unknown> | null;
+      audio: Record<string, unknown> | null;
+      hashes: Record<string, unknown> | null;
+      preview: Record<string, unknown> | null;
+      aiReady: Record<string, unknown> | null;
+      organization: Record<string, unknown> | null;
+      sources: Array<Record<string, unknown>>;
+    }>(`/assets/${id}/metadata`),
+  });
+}
+
 export function useAssetSources(id: string | undefined) {
   return useQuery({
     queryKey: ["asset-sources", id],
