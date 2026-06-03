@@ -32,6 +32,7 @@ export class ApiError extends Error {
 export type ApiFn =
   | "catalog"
   | "search"
+  | "scans"
   | "sources"
   | "me"
   | "organization"
@@ -140,6 +141,7 @@ function sleep(ms: number) {
 export const api = {
   catalog: <T,>(p: string, o?: RequestOpts) => apiCall<T>("catalog", p, o),
   search: <T,>(p: string, o?: RequestOpts) => apiCall<T>("search", p, o),
+  scans: <T,>(p: string, o?: RequestOpts) => apiCall<T>("scans", p, o),
   sources: <T,>(p: string, o?: RequestOpts) => apiCall<T>("sources", p, o),
   me: <T,>(p: string, o?: RequestOpts) => apiCall<T>("me", p, o),
   organization: <T,>(p: string, o?: RequestOpts) => apiCall<T>("organization", p, o),
