@@ -1,13 +1,33 @@
 export function shouldResyncAsset(input: {
   isNew: boolean;
+  mediaType?: string | null;
   existingSourceModifiedAt: string | null;
   providerModifiedAt: string | null;
   hasFileMetadata: boolean;
   hasMediaMetadata: boolean;
+  hasPreviewMetadata?: boolean;
+  hasAiReadyMetadata?: boolean;
+  hasOrganizationSignals?: boolean;
+  hasVideoMetadata?: boolean;
+  hasDocumentMetadata?: boolean;
+  hasAudioMetadata?: boolean;
 }): boolean {
   if (input.isNew) return true;
 
-  const missingMetadata = !input.hasFileMetadata || !input.hasMediaMetadata;
+  const baseMetadataMissing =
+    !input.hasFileMetadata ||
+    !input.hasMediaMetadata ||
+    !input.hasAiReadyMetadata ||
+    !input.hasOrganizationSignals;
+
+  const needsPreview = input.mediaType === "photo" || input.mediaType === "video" || input.mediaType === "document";
+  const previewMissing = needsPreview && !input.hasPreviewMetadata;
+  const typeSpecificMissing =
+    (input.mediaType === "video" && !input.hasVideoMetadata) ||
+    (input.mediaType === "document" && !input.hasDocumentMetadata) ||
+    (input.mediaType === "audio" && !input.hasAudioMetadata);
+
+  const missingMetadata = baseMetadataMissing || previewMissing || typeSpecificMissing;
   if (missingMetadata) return true;
 
   return !input.existingSourceModifiedAt || (

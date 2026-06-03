@@ -54,8 +54,17 @@ app.get("/assets/:id", async (c) => {
   await enforceRateLimit(uid, "general");
   const { data: a } = await supa.from("assets").select("*").eq("id", id).maybeSingle();
   if (!a) throw new ApiError("not_found", "Asset not found");
-  const { data: bh } = await supa.from("asset_blurhashes").select("*").eq("asset_id", id).maybeSingle();
-  const descriptor = await descriptorFromRow(c, supa, uid, { ...a, ...(bh ?? {}), asset_id: id });
+  const { data: preview } = await supa.from("asset_preview_metadata")
+    .select("blurhash, dominant_color, thumbnail_cache_key, preview_cache_key")
+    .eq("asset_id", id)
+    .maybeSingle();
+  const descriptor = await descriptorFromRow(c, supa, uid, {
+    ...a,
+    ...(preview ?? {}),
+    thumbnail_cache_key: preview?.thumbnail_cache_key ?? a.thumbnail_cache_key,
+    asset_id: id,
+  });
+  if (preview?.preview_cache_key) descriptor.next_quality_url = await resolveThumbUrl(c, supa, uid, id, preview.preview_cache_key, "preview");
   return c.json({ asset: a, descriptor });
 });
 
@@ -64,7 +73,7 @@ app.get("/assets/:id/sources", async (c) => {
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   await enforceRateLimit(uid, "general");
   const { data } = await supa.from("asset_source_refs").select(`
-    id, asset_id, source_account_id, source_asset_id, provider_url,
+    id, asset_id, source_account_id, source_asset_id, provider_url, provider_web_url, provider_download_url, source_relative_path,
     match_confidence, is_primary, first_seen_at, last_seen_at,
     account:source_accounts(display_label, provider:source_providers(kind, name))
   `).eq("asset_id", id);
@@ -74,7 +83,8 @@ app.get("/assets/:id/sources", async (c) => {
       provider_kind: r.account?.provider?.kind ?? null,
       provider_name: r.account?.provider?.name ?? null,
       label: r.account?.display_label ?? null,
-      provider_url: r.provider_url ?? null,
+      provider_url: r.provider_web_url ?? r.provider_download_url ?? r.provider_url ?? null,
+      relative_path: r.source_relative_path ?? null,
       is_primary: r.is_primary, match_confidence: r.match_confidence,
       first_seen_at: r.first_seen_at, last_seen_at: r.last_seen_at,
     })),
@@ -92,17 +102,27 @@ app.get("/timeline", async (c) => {
   // hydrate first asset of each bucket as cover
   const coverIds = (data ?? []).map(b => b.asset_ids?.[0]).filter(Boolean);
   const covers: Record<string, any> = {};
+  const previewMap: Record<string, any> = {};
   if (coverIds.length) {
     const { data: cs } = await supa.from("assets")
       .select("id, capture_time, media_type, thumbnail_cache_key, blurhash, dominant_color, width, height")
       .in("id", coverIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
+    const { data: previews } = await supa.from("asset_preview_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+      .in("asset_id", coverIds);
+    for (const item of previews ?? []) previewMap[item.asset_id] = item;
   }
   const buckets = await Promise.all((data ?? []).map(async b => ({
     bucket: b.bucket, asset_count: b.asset_count,
     start_time: b.start_time, end_time: b.end_time,
     cover: b.asset_ids?.[0] && covers[b.asset_ids[0]]
-      ? await descriptorFromRow(c, supa, uid, { ...covers[b.asset_ids[0]], asset_id: b.asset_ids[0] })
+      ? await descriptorFromRow(c, supa, uid, {
+          ...covers[b.asset_ids[0]],
+          ...(previewMap[b.asset_ids[0]] ?? {}),
+          thumbnail_cache_key: previewMap[b.asset_ids[0]]?.thumbnail_cache_key ?? covers[b.asset_ids[0]].thumbnail_cache_key,
+          asset_id: b.asset_ids[0],
+        })
       : null,
   })));
   return c.json({ granularity, buckets });
@@ -159,8 +179,21 @@ app.post("/memory/viewport", async (c) => {
 
   const { data, error } = await q;
   if (error) throw new ApiError("internal", error.message);
+  const previewIds = (data ?? []).map((row: any) => row.id);
+  const previewRows = previewIds.length
+    ? await supa.from("asset_preview_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+      .in("asset_id", previewIds)
+    : { data: [] as any[] };
+  const previewMap: Record<string, any> = {};
+  for (const row of previewRows.data ?? []) previewMap[row.asset_id] = row;
   const items = await Promise.all((data ?? []).map(r =>
-    descriptorFromRow(c, supa, uid, { ...r, asset_id: r.id })));
+    descriptorFromRow(c, supa, uid, {
+      ...r,
+      ...(previewMap[r.id] ?? {}),
+      thumbnail_cache_key: previewMap[r.id]?.thumbnail_cache_key ?? r.thumbnail_cache_key,
+      asset_id: r.id,
+    })));
   const last = data?.[data.length - 1];
   const next_cursor = last?.capture_time ? encodeCursor({ before: last.capture_time }) : null;
   const out = { items, next_cursor };

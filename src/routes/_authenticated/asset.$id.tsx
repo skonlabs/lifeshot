@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useAsset, useAssetSources } from "@/lib/api/hooks";
+import { useAsset, useAssetMetadata, useAssetSources } from "@/lib/api/hooks";
 import { ArrowLeft, Download, ExternalLink, Layers } from "lucide-react";
 
 const FIELD_LABELS: Record<string, string> = {
@@ -20,11 +20,18 @@ function humanize(key: string) {
   return FIELD_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function formatValue(value: unknown) {
+  if (value == null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+}
+
 export const Route = createFileRoute("/_authenticated/asset/$id")({ component: AssetDetail });
 
 function AssetDetail() {
   const { id } = Route.useParams();
   const asset = useAsset(id);
+  const metadata = useAssetMetadata(id);
   const sources = useAssetSources(id);
 
   const d = asset.data?.descriptor as
@@ -38,6 +45,24 @@ function AssetDetail() {
     label: string | null; provider_url: string | null; is_primary: boolean;
   }>;
   const primarySource = srcs.find((s) => s.is_primary && s.provider_url) ?? srcs.find((s) => s.provider_url);
+  const metadataSections: Array<[string, Record<string, unknown>]> = metadata.data ? [
+    ["Core", metadata.data.asset],
+    ["File system", metadata.data.fileSystem],
+    ["Media", metadata.data.media],
+    ["EXIF", metadata.data.exif],
+    ["GPS", metadata.data.gps],
+    ["XMP / IPTC", metadata.data.xmpIptc],
+    ["Video", metadata.data.video],
+    ["Document", metadata.data.document],
+    ["Audio", metadata.data.audio],
+    ["Hashes", metadata.data.hashes],
+    ["Preview", metadata.data.preview],
+    ["AI readiness", metadata.data.aiReady],
+    ["Organization", metadata.data.organization],
+  ].filter((entry): entry is [string, Record<string, unknown>] => {
+    const value = entry[1];
+    return !!value && Object.values(value).some((item) => item !== null && item !== "" && !(Array.isArray(item) && item.length === 0));
+  }) : [];
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -79,17 +104,49 @@ function AssetDetail() {
             </section>
             <section>
               <div className="text-archive-label mb-3">Metadata</div>
-              <dl className="hairline divide-y divide-[color:var(--border)] rounded-md border bg-[color:var(--paper)] text-sm">
-                {a && Object.entries(a)
-                  .filter(([k]) => !k.startsWith("_") && typeof a[k] !== "object")
-                  .slice(0, 14)
-                  .map(([k, v]) => (
-                    <div key={k} className="flex justify-between gap-3 px-4 py-2">
-                      <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
-                      <dd className="truncate text-right text-[color:var(--ink)]">{String(v ?? "—")}</dd>
+              {metadata.isLoading ? (
+                <p className="text-sm text-[color:var(--umber)]">Loading full metadata…</p>
+              ) : metadataSections.length ? (
+                <div className="space-y-4">
+                  {metadataSections.map(([title, section]) => (
+                    <div key={title} className="hairline rounded-md border bg-[color:var(--paper)]">
+                      <div className="border-b border-[color:var(--border)] px-4 py-2 text-xs uppercase tracking-[0.18em] text-[color:var(--umber)]">
+                        {title}
+                      </div>
+                      <dl className="divide-y divide-[color:var(--border)] text-sm">
+                        {Object.entries(section as Record<string, unknown>)
+                          .filter(([k, v]) => !k.startsWith("_") && v !== null && v !== "" && !(Array.isArray(v) && v.length === 0) && typeof v !== "object")
+                          .map(([k, v]) => (
+                            <div key={`${title}-${k}`} className="flex justify-between gap-3 px-4 py-2">
+                              <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
+                              <dd className="truncate text-right text-[color:var(--ink)]">{formatValue(v)}</dd>
+                            </div>
+                          ))}
+                        {Object.entries(section as Record<string, unknown>)
+                          .filter(([k, v]) => !k.startsWith("_") && Array.isArray(v) && v.length > 0)
+                          .map(([k, v]) => (
+                            <div key={`${title}-${k}-array`} className="flex justify-between gap-3 px-4 py-2">
+                              <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
+                              <dd className="text-right text-[color:var(--ink)]">{(v as unknown[]).join(", ")}</dd>
+                            </div>
+                          ))}
+                      </dl>
                     </div>
                   ))}
-              </dl>
+                </div>
+              ) : (
+                <dl className="hairline divide-y divide-[color:var(--border)] rounded-md border bg-[color:var(--paper)] text-sm">
+                  {a && Object.entries(a)
+                    .filter(([k]) => !k.startsWith("_") && typeof a[k] !== "object")
+                    .slice(0, 14)
+                    .map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-3 px-4 py-2">
+                        <dt className="text-[color:var(--umber)]">{humanize(k)}</dt>
+                        <dd className="truncate text-right text-[color:var(--ink)]">{formatValue(v)}</dd>
+                      </div>
+                    ))}
+                </dl>
+              )}
             </section>
             <section>
               <div className="text-archive-label mb-3 flex items-center gap-1"><Layers className="h-3 w-3" /> Sources</div>

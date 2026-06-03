@@ -6,40 +6,85 @@ describe("shouldResyncAsset", () => {
   it("re-syncs new assets", () => {
     expect(shouldResyncAsset({
       isNew: true,
+      mediaType: "photo",
       existingSourceModifiedAt: null,
       providerModifiedAt: null,
       hasFileMetadata: false,
       hasMediaMetadata: false,
+      hasPreviewMetadata: false,
+      hasAiReadyMetadata: false,
+      hasOrganizationSignals: false,
     })).toBe(true);
   });
 
   it("re-syncs when metadata rows are missing", () => {
     expect(shouldResyncAsset({
       isNew: false,
+      mediaType: "photo",
       existingSourceModifiedAt: "2026-06-01T00:00:00Z",
       providerModifiedAt: "2026-06-01T00:00:00Z",
       hasFileMetadata: true,
       hasMediaMetadata: false,
+      hasPreviewMetadata: false,
+      hasAiReadyMetadata: false,
+      hasOrganizationSignals: false,
+    })).toBe(true);
+  });
+
+  it("re-syncs unchanged photos when preview or AI rows are missing", () => {
+    expect(shouldResyncAsset({
+      isNew: false,
+      mediaType: "photo",
+      existingSourceModifiedAt: "2026-06-01T00:00:00Z",
+      providerModifiedAt: "2026-06-01T00:00:00Z",
+      hasFileMetadata: true,
+      hasMediaMetadata: true,
+      hasPreviewMetadata: false,
+      hasAiReadyMetadata: true,
+      hasOrganizationSignals: true,
+    })).toBe(true);
+  });
+
+  it("re-syncs unchanged audio when the audio metadata row is missing", () => {
+    expect(shouldResyncAsset({
+      isNew: false,
+      mediaType: "audio",
+      existingSourceModifiedAt: "2026-06-01T00:00:00Z",
+      providerModifiedAt: "2026-06-01T00:00:00Z",
+      hasFileMetadata: true,
+      hasMediaMetadata: true,
+      hasPreviewMetadata: false,
+      hasAiReadyMetadata: true,
+      hasOrganizationSignals: true,
+      hasAudioMetadata: false,
     })).toBe(true);
   });
 
   it("re-syncs when timestamp changed", () => {
     expect(shouldResyncAsset({
       isNew: false,
+      mediaType: "photo",
       existingSourceModifiedAt: "2026-06-01T00:00:00Z",
       providerModifiedAt: "2026-06-02T00:00:00Z",
       hasFileMetadata: true,
       hasMediaMetadata: true,
+      hasPreviewMetadata: true,
+      hasAiReadyMetadata: true,
+      hasOrganizationSignals: true,
     })).toBe(true);
   });
 
   it("skips unchanged assets with complete metadata", () => {
     expect(shouldResyncAsset({
       isNew: false,
+      mediaType: "photo",
       existingSourceModifiedAt: "2026-06-01T00:00:00Z",
       providerModifiedAt: "2026-06-01T00:00:00Z",
       hasFileMetadata: true,
       hasMediaMetadata: true,
+      hasPreviewMetadata: true,
+      hasAiReadyMetadata: true,
+      hasOrganizationSignals: true,
     })).toBe(false);
   });
 });

@@ -467,7 +467,9 @@ app.get("/v1/:id/status", async (c) => {
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
   const syncing = !unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
-  const accountStatus = unauthorized ? "revoked" : (syncing ? "syncing" : acc.status);
+  const accountStatus = unauthorized
+    ? "revoked"
+    : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
   return c.json({
     account_id: id,
     status: accountStatus,

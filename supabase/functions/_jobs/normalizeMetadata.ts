@@ -35,6 +35,56 @@ function geohashEncode(lat: number, lng: number, precision = 9): string {
   return out;
 }
 
+function inferMediaFlags(mime: string, mediaType: string | null) {
+  const normalizedType = mediaType ?? "other";
+  return {
+    isImage: mime.startsWith("image/") || normalizedType === "photo",
+    isVideo: mime.startsWith("video/") || normalizedType === "video",
+    isAudio: mime.startsWith("audio/") || normalizedType === "audio",
+    isDocument: normalizedType === "document" || [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "text/plain",
+      "text/csv",
+      "application/json",
+    ].includes(mime),
+  };
+}
+
+function inferOrganizationSignals(relativePath: string | null, filename: string | null) {
+  const folderParts = (relativePath ?? "")
+    .split("/")
+    .filter(Boolean)
+    .slice(0, -1);
+  const filenameTokens = (filename ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
+  const joined = `${folderParts.join(" ")} ${filenameTokens.join(" ")}`;
+  const dateMatch = joined.match(/(20\d{2})[-_/. ]?(0[1-9]|1[0-2])[-_/. ]?(0[1-9]|[12]\d|3[01])?/);
+  const yearHint = dateMatch ? Number(dateMatch[1]) : null;
+  const monthHint = dateMatch && dateMatch[2] ? Number(dateMatch[2]) : null;
+  const dateHint = dateMatch && dateMatch[3]
+    ? `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`
+    : null;
+
+  return {
+    folder_tokens: folderParts,
+    filename_tokens: filenameTokens,
+    year_hint: yearHint,
+    month_hint: monthHint,
+    date_hint: dateHint,
+    album_hint: folderParts.at(-1) ?? null,
+    trip_hint: folderParts.find((segment) => /trip|travel|vacation|holiday/i.test(segment)) ?? null,
+    event_hint: folderParts.find((segment) => /wedding|birthday|party|graduation|anniversary|event/i.test(segment)) ?? null,
+  };
+}
+
 export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { asset_id, source_account_id } = ctx.payload as { asset_id: string; source_account_id?: string };
@@ -66,13 +116,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           source_account_id: ref.source_account_id, user_id: asset.user_id, provider_kind: providerKind,
         }, sb);
         const mime = asset.mime_type ?? "";
-        const isImage = mime.startsWith("image/") || asset.media_type === "photo";
-        const isVideo = mime.startsWith("video/") || asset.media_type === "video";
-        const isAudio = mime.startsWith("audio/") || asset.media_type === "audio";
-        const isDocument = asset.media_type === "document" ||
-          ["application/pdf", "application/msword",
-           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-           "application/vnd.ms-excel", "application/vnd.odf+xml"].includes(mime);
+        const { isImage, isVideo, isAudio, isDocument } = inferMediaFlags(mime, asset.media_type);
 
         if (isImage) {
           const head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
@@ -202,6 +246,19 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             container_format: mime.split("/")[1] ?? null,
             raw: {},
           }, { onConflict: "asset_id" });
+          await sb.from("asset_ai_ready_metadata").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            ai_processing_possible: true,
+            ai_processing_consent: false,
+            ocr_possible: false,
+            ocr_status: "skipped",
+            caption_status: "pending",
+            labels_status: "pending",
+            embedding_status: "pending",
+            face_processing_possible: true,
+            face_processing_consent: false,
+          }, { onConflict: "asset_id" });
           // Lift duration onto asset row if already stored (e.g. from cloud provider metadata).
           await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
           extractedAny = true;
@@ -214,6 +271,25 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             has_video: false, has_audio: true, has_alpha: false,
             thumbnail_possible: false, preview_possible: false,
             ai_processing_possible: false, ocr_possible: false,
+          }, { onConflict: "asset_id" });
+          await sb.from("asset_audio_metadata").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            duration_ms: asset.duration_ms ?? null,
+            raw: {},
+          }, { onConflict: "asset_id" });
+          await sb.from("asset_ai_ready_metadata").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            ai_processing_possible: false,
+            ai_processing_consent: false,
+            ocr_possible: false,
+            ocr_status: "skipped",
+            caption_status: "skipped",
+            labels_status: "skipped",
+            embedding_status: "pending",
+            face_processing_possible: false,
+            face_processing_consent: false,
           }, { onConflict: "asset_id" });
           await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
           extractedAny = true;
@@ -231,7 +307,21 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           }, { onConflict: "asset_id" });
           await sb.from("asset_document_metadata").upsert({
             asset_id, user_id: asset.user_id,
+            doc_title: ref.source_relative_path?.split("/").filter(Boolean).pop() ?? null,
             raw: {},
+          }, { onConflict: "asset_id" });
+          await sb.from("asset_ai_ready_metadata").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            ai_processing_possible: true,
+            ai_processing_consent: false,
+            ocr_possible: true,
+            ocr_status: "pending",
+            caption_status: "pending",
+            labels_status: "pending",
+            embedding_status: "pending",
+            face_processing_possible: false,
+            face_processing_consent: false,
           }, { onConflict: "asset_id" });
           await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id);
           extractedAny = true;
@@ -273,6 +363,27 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             modified_at_filesystem: ref.source_modified_at ?? null,
             scan_discovered_at: new Date().toISOString(),
           }, { onConflict: "asset_id" });
+
+          const orgSignals = inferOrganizationSignals(rel, filename);
+          await sb.from("asset_organization_signals").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            ...orgSignals,
+          }, { onConflict: "asset_id" });
+
+          await sb.from("asset_ai_ready_metadata").upsert({
+            asset_id,
+            user_id: asset.user_id,
+            ai_processing_possible: isImage || isVideo || isDocument,
+            ai_processing_consent: false,
+            ocr_possible: isImage || isDocument,
+            ocr_status: isImage || isDocument ? "pending" : "skipped",
+            caption_status: isImage || isVideo || isDocument ? "pending" : "skipped",
+            labels_status: isImage || isVideo || isDocument ? "pending" : "skipped",
+            embedding_status: "pending",
+            face_processing_possible: isImage || isVideo,
+            face_processing_consent: false,
+          }, { onConflict: "asset_id" });
           extractedAny = true;
         }
       } catch (e) {
@@ -287,6 +398,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
   await enqueueJob("hashAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `hash:${asset_id}` });
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}` });
+  await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}` });
+  await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}` });
   await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}` });
   await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}` });
 

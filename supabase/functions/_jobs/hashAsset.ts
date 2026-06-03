@@ -16,7 +16,11 @@ const SIZE_CAP = 256 * 1024 * 1024; // 256 MB hard cap on full hashing
 
 async function quickHashFromHead(bytes: Uint8Array, size: number | null): Promise<string> {
   const head = bytes.subarray(0, Math.min(bytes.byteLength, 64 * 1024));
-  const digest = await crypto.subtle.digest("SHA-256", head);
+  const tail = bytes.byteLength > 64 * 1024 ? bytes.subarray(Math.max(0, bytes.byteLength - 64 * 1024)) : new Uint8Array();
+  const payload = new Uint8Array(head.byteLength + tail.byteLength);
+  payload.set(head, 0);
+  payload.set(tail, head.byteLength);
+  const digest = await crypto.subtle.digest("SHA-256", payload);
   const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
   return `qh1:${size ?? bytes.byteLength}:${hex}`;
 }

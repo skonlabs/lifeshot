@@ -24,6 +24,7 @@ import type {
 } from "@core/api";
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
+import { isStaleSyncQueueState } from "./sync-status.logic";
 
 
 type SourceAccountsResponse = {
@@ -128,6 +129,29 @@ export function useAsset(id: string | undefined) {
     queryKey: ["asset", id],
     enabled: !!id,
     queryFn: () => api.catalog<{ asset: Record<string, unknown>; descriptor: Record<string, unknown> }>(`/assets/${id}`),
+  });
+}
+
+export function useAssetMetadata(id: string | undefined) {
+  return useQuery({
+    queryKey: ["asset-metadata", id],
+    enabled: !!id,
+    queryFn: () => api.scans<{
+      asset: Record<string, unknown>;
+      fileSystem: Record<string, unknown> | null;
+      media: Record<string, unknown> | null;
+      exif: Record<string, unknown> | null;
+      gps: Record<string, unknown> | null;
+      xmpIptc: Record<string, unknown> | null;
+      video: Record<string, unknown> | null;
+      document: Record<string, unknown> | null;
+      audio: Record<string, unknown> | null;
+      hashes: Record<string, unknown> | null;
+      preview: Record<string, unknown> | null;
+      aiReady: Record<string, unknown> | null;
+      organization: Record<string, unknown> | null;
+      sources: Array<Record<string, unknown>>;
+    }>(`/assets/${id}/metadata`),
   });
 }
 
@@ -439,7 +463,15 @@ export function useSourceStatus(accountId: string | undefined) {
       const s = (q.state.data as TSourceStatus | null | undefined);
       const status = s?.last_job?.status;
       const accStatus = s?.status;
-      const running = status === "running" || status === "pending" || accStatus === "syncing";
+      const stats = (s?.last_job?.stats && typeof s.last_job.stats === "object") ? s.last_job.stats as Record<string, unknown> : {};
+      const stale = isStaleSyncQueueState({
+        queueStatus: typeof status === "string" ? status : null,
+        persistedStage: typeof stats.stage === "string" ? stats.stage : null,
+        indexed: Number(s?.progress.indexed ?? 0),
+        discovered: Number(s?.progress.discovered ?? 0),
+        hasQueueJob: !!s?.last_job?.id,
+      });
+      const running = !stale && (status === "running" || status === "pending" || accStatus === "syncing");
       return running ? 2_000 : false;
     },
     refetchIntervalInBackground: true,
