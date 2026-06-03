@@ -24,6 +24,7 @@ import type {
 } from "@core/api";
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
+import { isStaleSyncQueueState } from "./sync-status.logic";
 
 
 type SourceAccountsResponse = {
@@ -462,7 +463,15 @@ export function useSourceStatus(accountId: string | undefined) {
       const s = (q.state.data as TSourceStatus | null | undefined);
       const status = s?.last_job?.status;
       const accStatus = s?.status;
-      const running = status === "running" || status === "pending" || accStatus === "syncing";
+      const stats = (s?.last_job?.stats && typeof s.last_job.stats === "object") ? s.last_job.stats as Record<string, unknown> : {};
+      const stale = isStaleSyncQueueState({
+        queueStatus: typeof status === "string" ? status : null,
+        persistedStage: typeof stats.stage === "string" ? stats.stage : null,
+        indexed: Number(s?.progress.indexed ?? 0),
+        discovered: Number(s?.progress.discovered ?? 0),
+        hasQueueJob: !!s?.last_job?.id,
+      });
+      const running = !stale && (status === "running" || status === "pending" || accStatus === "syncing");
       return running ? 2_000 : false;
     },
     refetchIntervalInBackground: true,
