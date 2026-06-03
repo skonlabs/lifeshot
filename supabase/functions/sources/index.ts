@@ -10,6 +10,7 @@ import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
+import { isStaleSyncQueueState } from "../../../src/lib/api/sync-status.logic.ts";
 
 // Wake the worker so the job claims within a couple of seconds instead of
 // waiting for the next pg_cron tick (~15s). The request must go to the
@@ -438,11 +439,19 @@ app.get("/v1/:id/status", async (c) => {
     lastJob?.status === "cancelled" ||
     persistedJobStats.cancelled === true ||
     /cancelled by user/i.test(queueJobError ?? "");
+  const selectionDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
+  const queueLooksStale = isStaleSyncQueueState({
+    queueStatus: queueJob?.status ?? null,
+    persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
+    indexed,
+    discovered: selectionDiscovered,
+    hasQueueJob: !!queueJob,
+  });
   const effectiveJobStatus = cancelled
     ? "cancelled"
-    : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null);
+    : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
-  const queueJobStats = queueJob ? {
+  const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
     discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
     indexed,
@@ -452,12 +461,12 @@ app.get("/v1/:id/status", async (c) => {
   const jobStats = { ...persistedJobStats, ...queueJobStats };
   const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
   const progressIndexed = indexed;
-  const lastErrorMessage = cancelled ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
+  const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = !unauthorized && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
+  const syncing = !unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
   const accountStatus = unauthorized ? "revoked" : (syncing ? "syncing" : acc.status);
   return c.json({
     account_id: id,
