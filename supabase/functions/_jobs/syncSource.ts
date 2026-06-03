@@ -470,23 +470,20 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const newCursor = page.nextCursor ?? null;
   const pageCount = prevPageCount + 1;
 
-  // Safety net: terminate if the connector returns the SAME continuation
-  // cursor we just processed (infinite loop) or if we've chained more than
-  // 10,000 pages without finishing. Either case indicates a connector bug
-  // and should not keep the sync "running" forever.
+  // Safety net: terminate ONLY if the connector returns the SAME continuation
+  // cursor we just processed (true infinite loop — connector bug). There is
+  // NO page cap: every file in the selected folders must be processed,
+  // however many pages that takes.
   const loopDetected =
     !!newCursor && !!prevCursor && newCursor === prevCursor;
-  const exceededCap = pageCount > 10_000;
-  const forceTerminate = loopDetected || exceededCap;
+  const forceTerminate = loopDetected;
   const effectiveNextCursor = forceTerminate ? null : newCursor;
   if (forceTerminate) {
     await recordSyncError(
       sb,
       source_account_id,
-      loopDetected ? "sync_cursor_loop_detected" : "sync_page_cap_exceeded",
-      loopDetected
-        ? `Connector returned the same continuation cursor twice; terminating sync to avoid infinite loop.`
-        : `Sync exceeded ${10_000} pages without completing; terminating.`,
+      "sync_cursor_loop_detected",
+      `Connector returned the same continuation cursor twice; terminating sync to avoid infinite loop.`,
       { provider_kind: providerKind, page_count: pageCount },
     );
   }
@@ -575,6 +572,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     deleted: deleted.length,
     more: !!effectiveNextCursor,
     page_count: pageCount,
-    ...(forceTerminate ? { terminated: loopDetected ? "loop_detected" : "page_cap" } : {}),
+    ...(forceTerminate ? { terminated: "loop_detected" } : {}),
   };
 }
