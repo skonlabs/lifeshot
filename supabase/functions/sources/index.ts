@@ -556,17 +556,15 @@ app.patch("/v1/:id/containers", async (c) => {
 
   const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
   if (assetIds.length) {
-    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs")
-      .select("asset_id")
-      .in("asset_id", assetIds);
-    if (remainingError) throw new ApiError("internal", remainingError.message);
-    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const remainingIds = await collectRemainingAssetIds(svc, assetIds);
     const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
     if (orphanedIds.length) {
-      const { error: orphanedError } = await svc.from("assets")
-        .update({ deleted_state: "soft_deleted" })
-        .in("id", orphanedIds);
-      if (orphanedError) throw new ApiError("internal", orphanedError.message);
+      for (const batch of chunk(orphanedIds, 100)) {
+        const { error: orphanedError } = await svc.from("assets")
+          .update({ deleted_state: "soft_deleted" })
+          .in("id", batch);
+        if (orphanedError) throw new ApiError("internal", orphanedError.message);
+      }
     }
   }
 
@@ -990,13 +988,13 @@ app.delete("/v1/:id", async (c) => {
   if (refDeleteError) throw new ApiError("internal", refDeleteError.message);
   const assetIds = Array.from(new Set((refs ?? []).map((row: { asset_id: string | null }) => row.asset_id).filter(Boolean)));
   if (assetIds.length) {
-    const { data: remaining, error: remainingError } = await svc.from("asset_source_refs").select("asset_id").in("asset_id", assetIds);
-    if (remainingError) throw new ApiError("internal", remainingError.message);
-    const remainingIds = new Set((remaining ?? []).map((row: { asset_id: string }) => row.asset_id));
+    const remainingIds = await collectRemainingAssetIds(svc, assetIds);
     const orphanedIds = assetIds.filter((assetId) => !remainingIds.has(assetId));
     if (orphanedIds.length) {
-      const { error: assetError } = await svc.from("assets").update({ deleted_state: "soft_deleted" }).in("id", orphanedIds);
-      if (assetError) throw new ApiError("internal", assetError.message);
+      for (const batch of chunk(orphanedIds, 100)) {
+        const { error: assetError } = await svc.from("assets").update({ deleted_state: "soft_deleted" }).in("id", batch);
+        if (assetError) throw new ApiError("internal", assetError.message);
+      }
     }
   }
   await cache.invalidateUser(uid);
