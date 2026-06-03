@@ -122,10 +122,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }
 
     // Re-detect events for this user so new assets fold into moments/stories.
+    // Use a daily bucket so events are re-computed once per day, not once ever.
+    const today = new Date().toISOString().slice(0, 10);
     await enqueueJob("detectEvents", {
       userId: ctx.userId,
       payload: { user_id: asset.user_id },
-      idempotencyKey: `events-post-ai:${asset.user_id}`,
+      idempotencyKey: `events:${asset.user_id}:${today}`,
     });
   }
 
