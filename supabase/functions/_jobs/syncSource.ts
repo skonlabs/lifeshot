@@ -5,6 +5,7 @@ import { takeSourceToken } from "../_pipeline/ratelimit.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
+import { shouldResyncAsset } from "../../../src/lib/api/sync-status.logic.ts";
 
 // Worker continuation enqueues the next page and nudges /worker/drain so the
 // queue keeps moving immediately instead of waiting for the next cron tick.
@@ -433,13 +434,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     if (!assetId) continue;
     const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
     const isNew = !existing;
-    const currentMetadata = metadataCompleteness.get(assetId);
-    const missingMetadata = isNew || !currentMetadata?.hasFileMetadata || !currentMetadata?.hasMediaMetadata;
-    const timestampChanged = !isNew && (
-      !existing.source_modified_at ||
-      (providerModifiedAt !== null && providerModifiedAt !== existing.source_modified_at)
-    );
-    if (missingMetadata || timestampChanged) {
+    const currentMetadata = metadataCompleteness.get(assetId) ?? { hasFileMetadata: false, hasMediaMetadata: false };
+    if (shouldResyncAsset({
+      isNew,
+      existingSourceModifiedAt: existing?.source_modified_at ?? null,
+      providerModifiedAt,
+      hasFileMetadata: currentMetadata.hasFileMetadata,
+      hasMediaMetadata: currentMetadata.hasMediaMetadata,
+    })) {
       needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
     }
   }
