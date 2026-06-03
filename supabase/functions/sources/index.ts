@@ -300,11 +300,12 @@ app.get("/v1/accounts", async (c) => {
   const { data, error } = await supa.from("source_accounts").select(`
     id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
-  `).neq("status", "disconnected").order("connected_at", { ascending: false });
+  `).in("status", ["active", "pending"]).order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
+  const visibleAccounts = (data ?? []).filter((row: any) => row?.status === "active" || row?.status === "pending");
   // Per-account counts, broken out by media_type so the UI can show
   // photos / videos / documents / other in addition to the total indexed.
-  const ids = (data ?? []).map((r: any) => r.id);
+  const ids = visibleAccounts.map((r: any) => r.id);
   const counts: Record<string, number> = {};
   const breakdown: Record<string, { photo: number; video: number; document: number; audio: number; other: number }> = {};
   if (ids.length) {
@@ -328,7 +329,7 @@ app.get("/v1/accounts", async (c) => {
     }
   }
   const accountMeta = new Map<string, { providerKind: string; userId: string }>();
-  for (const row of (data ?? []) as Array<{ id: string; user_id?: string; provider?: { kind?: string } | null }>) {
+  for (const row of visibleAccounts as Array<{ id: string; user_id?: string; provider?: { kind?: string } | null }>) {
     accountMeta.set(row.id, {
       providerKind: row.provider?.kind ?? "",
       userId: row.user_id ?? uid,
@@ -353,7 +354,7 @@ app.get("/v1/accounts", async (c) => {
   // Cache the provider count briefly so the Sources page can refresh often
   // without repeatedly crawling Dropbox/OneDrive on every poll tick.
   const liveStatsByAccount = new Map<string, SourceSelectionStats>(await Promise.all(
-    (data ?? []).map(async (row: any) => {
+    visibleAccounts.map(async (row: any) => {
       const b = breakdown[row.id] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
       const fallback: SourceSelectionStats = {
         folder_count: (scopesByAccount.get(row.id) ?? []).length,
@@ -381,7 +382,7 @@ app.get("/v1/accounts", async (c) => {
     }),
   ));
   return c.json({
-    accounts: (data ?? []).map((r: any) => {
+    accounts: visibleAccounts.map((r: any) => {
       const selectionStats = liveStatsByAccount.get(r.id) ?? ZERO_SELECTION_STATS;
       return {
         id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
