@@ -11,6 +11,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { isStaleSyncQueueState } from "@/lib/api/sync-status.logic";
 
 const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
 const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
@@ -824,9 +825,21 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const status = useSourceStatus(a.id);
   const s = status.data;
   const running =
-    s?.status === "syncing" ||
-    s?.last_job?.status === "running" ||
-    s?.last_job?.status === "pending";
+    (() => {
+      const stats = (s?.last_job?.stats && typeof s.last_job.stats === "object") ? s.last_job.stats as Record<string, unknown> : {};
+      const stale = isStaleSyncQueueState({
+        queueStatus: typeof s?.last_job?.status === "string" ? s.last_job.status : null,
+        persistedStage: typeof stats.stage === "string" ? stats.stage : null,
+        indexed: Number(s?.progress.indexed ?? 0),
+        discovered: Number(s?.progress.discovered ?? 0),
+        hasQueueJob: !!s?.last_job?.id,
+      });
+      return !stale && (
+        s?.status === "syncing" ||
+        s?.last_job?.status === "running" ||
+        s?.last_job?.status === "pending"
+      );
+    })();
   // While running, refresh the parent accounts list so indexed/folder counts
   // climb in near-real-time as the worker upserts assets.
   const wasRunningRef = useRef(running);
@@ -860,14 +873,14 @@ function SourceRow({ a, onSync, onStop, onSelectFolders, onDisconnect, provider 
   const stage = typeof stats.stage === "string" ? stats.stage : null;
   const showProgressNumbers = stage === "listing" || stage === "indexing" || stage === "completed";
   const stageLabel =
-    stage === "queued"     ? "Queued — worker will pick this up within ~15s…" :
+    stage === "queued"     ? "Queued…" :
     stage === "connecting" ? "Connecting to source…" :
     stage === "listing"    ? `Listing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "indexing"   ? `Indexing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "completed"  ? "Sync complete" :
     stage === "failed"     ? "Sync failed — see error below" :
     stage === "cancelled"  ? "Sync cancelled" :
-                              "Queued — waiting for worker…";
+                              "Waiting for worker…";
   const queueError = stats.queue_error;
   const queueErrorText = typeof queueError === "string" ? queueError : null;
   return (
