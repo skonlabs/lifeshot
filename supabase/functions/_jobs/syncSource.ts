@@ -202,7 +202,7 @@ async function saveCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
  */
 export async function syncSource(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { source_account_id, mode = "incremental" } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental" };
+  const { source_account_id, mode = "incremental", force = false } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean };
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
 
@@ -486,7 +486,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasDocumentMetadata: false,
       hasAudioMetadata: false,
     };
-    if (shouldResyncAsset({
+    if (force || shouldResyncAsset({
       isNew,
       mediaType: a.media_type ?? null,
       existingSourceModifiedAt: existing?.source_modified_at ?? null,
