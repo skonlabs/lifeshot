@@ -25,6 +25,7 @@ import type {
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
 import { isStaleSyncQueueState } from "./sync-status.logic";
+import { forceSyncSource } from "./sourceSync.functions";
 
 
 type SourceAccountsResponse = {
@@ -286,8 +287,7 @@ export function useSyncSource() {
 export function useForceSyncSource() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (accountId: string) =>
-      api.sources(`/${accountId}/sync/force`, { method: "POST", body: {} }),
+    mutationFn: (accountId: string) => forceSyncSource({ data: { accountId } }),
     onSuccess: (_d, accountId) => {
       qc.invalidateQueries({ queryKey: ["source-accounts"] });
       qc.invalidateQueries({ queryKey: ["source-status", accountId] });

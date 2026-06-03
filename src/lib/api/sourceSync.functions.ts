@@ -47,7 +47,8 @@ export const forceSyncSource = createServerFn({ method: "POST" })
 
     const supabaseUrl = process.env.SUPABASE_URL ?? FALLBACK_SUPABASE_URL;
     const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? FALLBACK_SUPABASE_PUBLISHABLE_KEY;
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const serviceRoleKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SERVICE_ROLE_KEY;
     if (!serviceRoleKey) {
       throw new Error("Supabase service role key is not configured.");
     }
