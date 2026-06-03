@@ -286,7 +286,7 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
     await svc.from("asset_search_documents").upsert({
       asset_id: assetId,
       user_id: userId,
-      document_text: doc,
+      content: doc,
       updated_at: new Date().toISOString(),
     }, { onConflict: "asset_id" });
   } catch (_e) { /* table may not exist in some envs */ }
