@@ -53,33 +53,6 @@ app.post("/drain/sync", async (c) => {
 /** Manual single-round drain. */
 app.post("/drain/once", async (c) => c.json(await drainOnce()));
 
-app.get("/debug/account/:id", async (c) => {
-  const id = c.req.param("id");
-  const sb = serviceClient();
-  const { data: jobs, error } = await sb.from("job_queue")
-    .select("id, status, attempts, lane, priority, next_attempt_at, locked_at, locked_by, last_error, dead_letter, created_at, started_at, finished_at, user_id")
-    .eq("job_name", "syncSource")
-    .contains("payload", { source_account_id: id })
-    .order("created_at", { ascending: false })
-    .limit(5);
-  const { data: pendingByPriority } = await sb.from("job_queue")
-    .select("job_name, lane, priority, count:id.count()")
-    .eq("status", "pending");
-  return c.json({ error: error?.message ?? null, jobs, pendingByPriority });
-});
-
-app.post("/debug/bump-priority", async (c) => {
-  const sb = serviceClient();
-  const { data, error } = await sb.from("job_queue")
-    .update({ priority: 100 })
-    .eq("status", "pending")
-    .eq("lane", "user")
-    .eq("job_name", "syncSource")
-    .lt("priority", 100)
-    .select("id");
-  return c.json({ error: error?.message ?? null, updated: data?.length ?? 0, ids: data });
-});
-
 /** Cron: enqueue incremental sync for every connected source. */
 app.post("/cron/incremental-sync", async (c) => {
   const sb = serviceClient();
