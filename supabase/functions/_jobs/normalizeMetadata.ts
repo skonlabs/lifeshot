@@ -45,6 +45,32 @@ async function nudgeWorkerDrain() {
   await request;
 }
 
+async function nudgeNormalizeDrain() {
+  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
+  if (!base) return;
+
+  let workerUrl = "";
+  try {
+    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=12&budget_ms=50000&lanes=ingest`;
+  } catch {
+    return;
+  }
+
+  const request = fetch(workerUrl, {
+    method: "POST",
+    headers: getWorkerWakeHeaders(),
+    body: JSON.stringify({}),
+  }).catch(() => undefined);
+
+  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) {
+    edgeRuntime.waitUntil(request);
+    return;
+  }
+
+  await request;
+}
+
 function geohashEncode(lat: number, lng: number, precision = 9): string {
   const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
   let minLat = -90, maxLat = 90, minLng = -180, maxLng = 180;
@@ -496,10 +522,10 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             status: "active",
           }).eq("id", source_account_id);
         } else if (pendingNormalize > 0) {
-          await nudgeWorkerDrain();
+          await nudgeNormalizeDrain();
         }
       } else if (pendingNormalize > 0) {
-        await nudgeWorkerDrain();
+        await nudgeNormalizeDrain();
       }
     } catch (error) {
       console.error("normalizeMetadata sync progress update failed", {
@@ -510,6 +536,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
       });
     }
   }
+
+  await nudgeWorkerDrain();
 
   return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess };
 }

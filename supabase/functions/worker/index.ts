@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 import { Hono } from "../_shared/deps.ts";
-import { drainOnce, drainUntilEmpty } from "../_pipeline/runner.ts";
+import { drainOnce, drainUntilEmpty, drainUntilEmptyForLanes } from "../_pipeline/runner.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { logger } from "../_pipeline/logger.ts";
@@ -40,7 +40,10 @@ app.post("/drain", async (c) => {
   const url = new URL(c.req.url);
   const batch = Number(url.searchParams.get("batch") ?? "4");
   const budgetMs = Number(url.searchParams.get("budget_ms") ?? "50000");
-  const r = await drainUntilEmpty(budgetMs, batch);
+  const lanes = url.searchParams.getAll("lanes").flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+  const r = lanes.length
+    ? await drainUntilEmptyForLanes(budgetMs, batch, lanes)
+    : await drainUntilEmpty(budgetMs, batch);
   return c.json(r);
 });
 

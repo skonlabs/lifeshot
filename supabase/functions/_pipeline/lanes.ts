@@ -6,6 +6,7 @@ export const LANES = {
   user_triggered:       { name: "user",       priority: 100, concurrency: 16 },
   visible_assets:       { name: "visible",    priority:  90, concurrency: 16 },
   recent_assets:        { name: "recent",     priority:  80, concurrency: 12 },
+  sync_ingest:          { name: "ingest",     priority:  75, concurrency: 24 },
   metadata:             { name: "metadata",   priority:  70, concurrency: 24 },
   derived:              { name: "derived",    priority:  60, concurrency: 12 },
   search_index:         { name: "search",     priority:  50, concurrency:  8 },
@@ -21,7 +22,7 @@ export type LaneName = typeof LANES[LaneKey]["name"];
 export function laneFor(jobName: string): LaneKey {
   switch (jobName) {
     case "syncSource":                  return "user_triggered";
-    case "normalizeMetadata":           return "metadata";
+    case "normalizeMetadata":           return "sync_ingest";
     case "hashAsset":                   return "metadata";
     case "generateDerived":             return "derived";
     case "indexSearchDocument":         return "search_index";

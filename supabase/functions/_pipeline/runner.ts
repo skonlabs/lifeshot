@@ -95,3 +95,18 @@ export async function drainUntilEmpty(maxMs = 8000, batch = DEFAULT_BATCH): Prom
   }
   return { rounds, ok, failed };
 }
+
+export async function drainUntilEmptyForLanes(
+  maxMs = 8000,
+  batch = DEFAULT_BATCH,
+  lanes?: string[],
+): Promise<{ rounds: number; ok: number; failed: number }> {
+  const t0 = Date.now();
+  let rounds = 0, ok = 0, failed = 0;
+  while (Date.now() - t0 < maxMs) {
+    const r = await drainOnce({ batch, lanes });
+    rounds += 1; ok += r.ok; failed += r.failed;
+    if (r.claimed === 0) break;
+  }
+  return { rounds, ok, failed };
+}
