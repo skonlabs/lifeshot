@@ -28,6 +28,19 @@ async function writeProgress(
   }
 }
 
+function getProgressFileLabel(item: {
+  provider_asset_id?: string;
+  provider_url?: string;
+  raw?: Record<string, unknown>;
+}): string | null {
+  const raw = item.raw && typeof item.raw === "object" ? item.raw : {};
+  const pathCandidate = [raw.path_display, raw.path, raw.name, item.provider_url, item.provider_asset_id]
+    .find((value) => typeof value === "string" && value.trim().length > 0);
+  if (typeof pathCandidate !== "string") return null;
+  const leaf = pathCandidate.split(/[\\/]/).filter(Boolean).pop();
+  return leaf ?? pathCandidate;
+}
+
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
@@ -321,6 +334,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     stage: "indexing",
     page_items: page.items.length,
     discovered: Math.max(baseIndexed + page.items.length, baseIndexed, 1),
+    current_file: page.items.map(getProgressFileLabel).find(Boolean) ?? null,
   });
 
   // ── Bulk DB work: 4 queries total regardless of page size ───────────────────
@@ -554,6 +568,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
   const prevIndexed = Number(prevStats.indexed ?? 0);
+  const currentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
+    ? prevStats.current_file
+    : page.items.map(getProgressFileLabel).find(Boolean) ?? null;
   const newCursor = page.nextCursor ?? null;
   const pageCount = prevPageCount + 1;
 
@@ -604,6 +621,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       discovered,
       indexed: indexedCount,
       normalized: prevNormalized + needsNormalize.length,
+      ...(currentFile ? { current_file: currentFile } : {}),
       has_more: !!effectiveNextCursor && !noForwardProgress,
       page_count: pageCount,
       last_cursor: newCursor,
@@ -649,6 +667,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           discovered,
           indexed: indexedCount,
           normalized: prevNormalized + needsNormalize.length,
+          ...(currentFile ? { current_file: currentFile } : {}),
           has_more: true,
           page_count: pageCount,
           last_cursor: newCursor,
