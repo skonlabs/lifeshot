@@ -466,8 +466,13 @@ app.get("/v1/:id/status", async (c) => {
   const queueLooksStale = isStaleSyncQueueState({
     queueStatus: queueJob?.status ?? null,
     persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
-    indexed,
-    discovered: selectionDiscovered,
+    // Use the persisted job's own indexed count, not the total asset count.
+    // A freshly-enqueued force-sync re-uses the existing asset rows, so the
+    // asset count is high while the job has done zero work — using it here
+    // mis-labels brand-new pending jobs as "stale" and the UI never flips to
+    // syncing.
+    indexed: Number(persistedJobStats.indexed ?? 0),
+    discovered: Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0),
     hasQueueJob: !!queueJob,
   });
   const effectiveJobStatus = cancelled

@@ -11,7 +11,6 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { isStaleSyncQueueState } from "@/lib/api/sync-status.logic";
 
 const ON_DEVICE_PROVIDER_KINDS = new Set(["local_ios", "local_android", "desktop_folder", "external_drive", "nas"]);
 const UNSUPPORTED_PROVIDER_KINDS = new Set(["icloud", "amazon_photos"]);
@@ -829,22 +828,14 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   const qc = useQueryClient();
   const status = useSourceStatus(a.id);
   const s = status.data;
+  // Trust the server's accountStatus — it already runs the stale-queue check
+  // server-side with full context (queue + persisted job stats). Re-running
+  // that check here with only the public progress numbers mis-classifies
+  // freshly-enqueued force-sync jobs as "stale" and hides the progress bar.
   const running =
-    (() => {
-      const stats = (s?.last_job?.stats && typeof s.last_job.stats === "object") ? s.last_job.stats as Record<string, unknown> : {};
-      const stale = isStaleSyncQueueState({
-        queueStatus: typeof s?.last_job?.status === "string" ? s.last_job.status : null,
-        persistedStage: typeof stats.stage === "string" ? stats.stage : null,
-        indexed: Number(s?.progress.indexed ?? 0),
-        discovered: Number(s?.progress.discovered ?? 0),
-        hasQueueJob: !!s?.last_job?.id,
-      });
-      return !stale && (
-        s?.status === "syncing" ||
-        s?.last_job?.status === "running" ||
-        s?.last_job?.status === "pending"
-      );
-    })();
+    s?.status === "syncing" ||
+    s?.last_job?.status === "running" ||
+    s?.last_job?.status === "pending";
   // While running, refresh the parent accounts list so indexed/folder counts
   // climb in near-real-time as the worker upserts assets.
   const wasRunningRef = useRef(running);
