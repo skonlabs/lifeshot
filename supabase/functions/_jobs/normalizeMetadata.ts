@@ -11,6 +11,7 @@
  */
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
+import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
@@ -20,8 +21,6 @@ const HEAD_BYTES = 384 * 1024;
 
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
   if (!base) return;
 
   let workerUrl = "";
@@ -33,11 +32,7 @@ async function nudgeWorkerDrain() {
 
   const request = fetch(workerUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
-      ...(secret ? { "x-worker-secret": secret } : {}),
-    },
+    headers: getWorkerWakeHeaders(),
     body: JSON.stringify({}),
   }).catch(() => undefined);
 
@@ -467,14 +462,13 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
       const syncJobQuery = sb.from("source_sync_jobs")
         .select("id, stats, status")
         .eq("source_account_id", source_account_id)
-        .in("status", ["pending", "running"])
         .order("created_at", { ascending: false })
         .limit(1);
       const syncJobRes = sync_run_id
         ? await syncJobQuery.contains("stats", { sync_run_id }).maybeSingle()
         : await syncJobQuery.maybeSingle();
       const runningJob = syncJobRes.data;
-      if (runningJob) {
+      if (runningJob && runningJob.status !== "cancelled" && runningJob.status !== "failed") {
         const stats = (typeof runningJob.stats === "object" && runningJob.stats !== null)
           ? runningJob.stats as Record<string, unknown>
           : {};
@@ -490,8 +484,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           ...(currentFolder ? { current_folder: currentFolder } : {}),
           current_file: filename ?? rel ?? asset_id,
         };
+        const nextStatus = complete ? "completed" : "running";
         await sb.from("source_sync_jobs").update({
-          status: complete ? "completed" : "running",
+          status: nextStatus,
           finished_at: complete ? new Date().toISOString() : null,
           stats: merged,
         }).eq("id", runningJob.id);

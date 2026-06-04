@@ -6,6 +6,7 @@ import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { LANES, laneFor } from "../_pipeline/lanes.ts";
+import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
@@ -53,17 +54,9 @@ async function kickWorker(authHeader?: string | null, requestUrl?: string | null
     .find((origin) => origin.includes(".supabase.co"));
   if (!base) return;
   const workerUrl = `${base}/functions/v1/worker/drain`;
-  const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const authorization = authHeader && authHeader.startsWith("Bearer ")
-    ? authHeader
-    : `Bearer ${ENV.SUPABASE_ANON_KEY}`;
   const nudge = fetch(workerUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(authorization ? { "authorization": authorization } : {}),
-      ...(secret ? { "x-worker-secret": secret } : {}),
-    },
+    headers: getWorkerWakeHeaders(authHeader),
     body: JSON.stringify({}),
   }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
   if (globalAny.EdgeRuntime?.waitUntil) {
@@ -84,11 +77,7 @@ async function drainWorkerOnce(authHeader?: string | null) {
   if (!workerBase) return;
   await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(authHeader ? { "authorization": authHeader } : {}),
-      ...(Deno.env.get("WORKER_SECRET") ? { "x-worker-secret": Deno.env.get("WORKER_SECRET")! } : {}),
-    },
+    headers: getWorkerWakeHeaders(authHeader),
     body: JSON.stringify({}),
   }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
 }
@@ -547,9 +536,10 @@ app.get("/v1/:id/status", async (c) => {
     hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
+  const processingOnly = !queueLooksStale && !activeJob && lastJob?.status === "running" && (persistedJobStats.stage === "processing");
   const effectiveJobStatus = cancelled
     ? "cancelled"
-    : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null));
+    : (processingOnly ? "running" : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null)));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
@@ -569,11 +559,11 @@ app.get("/v1/:id/status", async (c) => {
     : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
-  const processingOnly = !unauthorized && !queueLooksStale && !activeJob && lastJob?.status === "running" && persistedStage === "processing";
+  const processingOnlyActive = !unauthorized && processingOnly;
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = processingOnly || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
+  const syncing = processingOnlyActive || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
   const accountStatus = unauthorized
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));

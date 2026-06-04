@@ -2,6 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
+import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -77,8 +78,6 @@ function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null
 
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
   if (!base) return;
 
   let workerUrl = "";
@@ -90,11 +89,7 @@ async function nudgeWorkerDrain() {
 
   const request = fetch(workerUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
-      ...(secret ? { "x-worker-secret": secret } : {}),
-    },
+    headers: getWorkerWakeHeaders(),
     body: JSON.stringify({}),
   }).catch((error) => {
     console.warn("syncSource continuation nudge failed:", String(error));
@@ -640,6 +635,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       },
     })))
     : [];
+  const normalizeQueueCount = Math.max(enqueuedNormalizeIds.length, needsNormalize.length);
 
   // Chain next page
   const { count: indexedTotal } = await sb.from("asset_source_refs")
@@ -695,7 +691,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const processingTotal = prevProcessingTotal + enqueuedNormalizeIds.length;
+  const processingTotal = prevProcessingTotal + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
 
   const finishJob = await sb.from("source_sync_jobs").update({
@@ -710,7 +706,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
+      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? (force ? seenTotal : prevNormalized) : progressIndexedCount),
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
