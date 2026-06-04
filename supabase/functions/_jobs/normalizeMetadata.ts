@@ -11,6 +11,7 @@
  */
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
+import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
@@ -20,8 +21,6 @@ const HEAD_BYTES = 384 * 1024;
 
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
   if (!base) return;
 
   let workerUrl = "";
@@ -33,11 +32,7 @@ async function nudgeWorkerDrain() {
 
   const request = fetch(workerUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
-      ...(secret ? { "x-worker-secret": secret } : {}),
-    },
+    headers: getWorkerWakeHeaders(),
     body: JSON.stringify({}),
   }).catch(() => undefined);
 
