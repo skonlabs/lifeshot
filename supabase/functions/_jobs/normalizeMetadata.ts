@@ -134,6 +134,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const rel = ref ? ((ref.source_relative_path || ref.provider_url || "") as string) : "";
   const filename = rel ? (rel.split("/").filter(Boolean).pop() ?? null) : null;
   const dot = filename ? filename.lastIndexOf(".") : -1;
+  const currentFolder = rel
+    ? (rel.split("/").filter(Boolean).slice(0, -1).join("/") || "Root")
+    : null;
 
   // Show current filename in the sync-job progress UI.
   if (rel && source_account_id) {
@@ -147,6 +150,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
       if (runningJob) {
         const merged = {
           ...(typeof runningJob.stats === "object" && runningJob.stats !== null ? runningJob.stats as Record<string, unknown> : {}),
+          ...(currentFolder ? { current_folder: currentFolder } : {}),
           current_file: currentFile,
         };
         await sb.from("source_sync_jobs").update({ stats: merged }).eq("id", runningJob.id);

@@ -40,12 +40,34 @@ function getProgressFileLabel(item: {
   provider_url?: string;
   raw?: Record<string, unknown>;
 }): string | null {
+  const pathCandidate = getProgressPath(item);
+  if (!pathCandidate) return null;
+  const leaf = pathCandidate.split(/[\\/]/).filter(Boolean).pop();
+  return leaf ?? pathCandidate;
+}
+
+function getProgressFolderLabel(item: {
+  provider_asset_id?: string;
+  provider_url?: string;
+  raw?: Record<string, unknown>;
+}): string | null {
+  const pathCandidate = getProgressPath(item);
+  if (!pathCandidate) return null;
+  const parts = pathCandidate.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return "Root";
+  return parts.slice(0, -1).join("/");
+}
+
+function getProgressPath(item: {
+  provider_asset_id?: string;
+  provider_url?: string;
+  raw?: Record<string, unknown>;
+}): string | null {
   const raw = item.raw && typeof item.raw === "object" ? item.raw : {};
   const pathCandidate = [raw.path_display, raw.path, raw.name, item.provider_url, item.provider_asset_id]
     .find((value) => typeof value === "string" && value.trim().length > 0);
   if (typeof pathCandidate !== "string") return null;
-  const leaf = pathCandidate.split(/[\\/]/).filter(Boolean).pop();
-  return leaf ?? pathCandidate;
+  return pathCandidate;
 }
 
 function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null, forceRunId?: string | null) {
@@ -245,9 +267,10 @@ async function getLatestActiveSyncJobId(
  */
 export async function syncSource(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { source_account_id, mode = "incremental", force = false } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean };
+  const { source_account_id, mode = "incremental", force = false, sync_run_id } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean; sync_run_id?: string };
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
+  const syncRunId = sync_run_id ?? ctx.jobId;
 
   let latestActiveJobId: string | null = null;
   try {
@@ -387,6 +410,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     stage: "indexing",
     page_items: page.items.length,
     discovered: Math.max(progressBaseIndexed + page.items.length, progressBaseIndexed, 1),
+    current_folder: page.items.map(getProgressFolderLabel).find(Boolean) ?? null,
     current_file: page.items.map(getProgressFileLabel).find(Boolean) ?? null,
   });
 
@@ -609,9 +633,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         payload: {
           asset_id: assetId,
           source_account_id,
-          ...(force ? { force_sync_run_id: ctx.jobId } : {}),
+          sync_run_id: syncRunId,
+          ...(force ? { force_sync_run_id: syncRunId } : {}),
         },
-        idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? ctx.jobId : null),
+        idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? syncRunId : null),
       },
     })));
   }
@@ -636,11 +661,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevNormalized = Number(prevStats.normalized ?? 0);
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
-  const prevIndexed = Number(prevStats.indexed ?? 0);
-  const prevConsecutiveEmpty = Number(prevStats.consecutive_empty_pages ?? 0);
-  const currentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
+  const prevCurrentFolder = typeof prevStats.current_folder === "string" && prevStats.current_folder.length > 0
+    ? prevStats.current_folder
+    : null;
+  const prevCurrentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
     ? prevStats.current_file
-    : page.items.map(getProgressFileLabel).find(Boolean) ?? null;
+    : null;
+  const currentFolder = page.items.map(getProgressFolderLabel).find(Boolean) ?? prevCurrentFolder;
+  const currentFile = page.items.map(getProgressFileLabel).find(Boolean) ?? prevCurrentFile;
   const newCursor = page.nextCursor ?? null;
   const pageCount = prevPageCount + 1;
 
@@ -666,30 +694,13 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const indexedAdvanced = progressIndexedCount > prevIndexed;
-  const isCurrentlyEmpty = page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
-  const consecutiveEmptyPages = isCurrentlyEmpty ? prevConsecutiveEmpty + 1 : 0;
-  // Some providers legitimately emit empty continuation pages while traversing
-  // deep trees or filtering unsupported entries. Treat isolated empty pages as
-  // normal and only terminate after a long consecutive run with a live cursor.
-  const noForwardProgress = !!newCursor && consecutiveEmptyPages > 100;
-
-  if (noForwardProgress) {
-    await recordSyncError(
-      sb,
-      source_account_id,
-      "sync_no_progress_terminated",
-      `Connector reported more pages but we received ${consecutiveEmptyPages} consecutive empty pages (no new files, deletions, or metadata work); terminating sync to avoid a stale loop.`,
-      { provider_kind: providerKind, page_count: pageCount, cursor: newCursor },
-    );
-  }
 
   const finishJob = await sb.from("source_sync_jobs").update({
-    status: effectiveNextCursor && !noForwardProgress ? "running" : "completed",
-    finished_at: effectiveNextCursor && !noForwardProgress ? null : new Date().toISOString(),
+    status: effectiveNextCursor ? "running" : "completed",
+    finished_at: effectiveNextCursor ? null : new Date().toISOString(),
     stats: {
       ...prevStats,
-      stage: effectiveNextCursor && !noForwardProgress ? "indexing" : "completed",
+      stage: effectiveNextCursor ? "indexing" : "completed",
       provider_kind: providerKind,
       page_items: page.items.length,
       seen_total: seenTotal,
@@ -697,11 +708,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       discovered,
       indexed: progressIndexedCount,
       normalized: prevNormalized + needsNormalize.length,
+      ...(currentFolder ? { current_folder: currentFolder } : {}),
       ...(currentFile ? { current_file: currentFile } : {}),
-      has_more: !!effectiveNextCursor && !noForwardProgress,
+      has_more: !!effectiveNextCursor,
       page_count: pageCount,
       last_cursor: newCursor,
-      consecutive_empty_pages: consecutiveEmptyPages,
     },
   }).eq("id", ctx.jobId);
   if (finishJob.error) {
@@ -738,8 +749,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   const superseded = !!freshestActiveJobId && freshestActiveJobId !== ctx.jobId;
 
-  if (effectiveNextCursor && !noForwardProgress && !stopRequested && !superseded) {
-    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
+  if (effectiveNextCursor && !stopRequested && !superseded) {
+    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: { ...ctx.payload, sync_run_id: syncRunId } });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
         id: nextJob.id,
@@ -756,11 +767,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           discovered,
           indexed: progressIndexedCount,
           normalized: prevNormalized + needsNormalize.length,
+          ...(currentFolder ? { current_folder: currentFolder } : {}),
           ...(currentFile ? { current_file: currentFile } : {}),
           has_more: true,
           page_count: pageCount,
           last_cursor: newCursor,
-          consecutive_empty_pages: consecutiveEmptyPages,
         },
       }, { onConflict: "id" });
     }

@@ -471,14 +471,22 @@ app.get("/v1/:id/status", async (c) => {
   const { data: acc } = await supa.from("source_accounts").select("*").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
-  const [lastJobRes, cursorRes, lastErrRes, activeJobRes, latestQueueJobRes, indexedRes] = await Promise.all([
+  const [lastJobRes, cursorRes, lastErrRes, activeRunningJobRes, activePendingJobRes, latestQueueJobRes, indexedRes] = await Promise.all([
     svc.from("source_sync_jobs").select("*").eq("source_account_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("source_sync_cursors").select("*").eq("source_account_id", id).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("source_errors").select("message, occurred_at").eq("source_account_id", id).eq("resolved", false).order("occurred_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("job_queue")
       .select("id, status, job_name, payload, created_at, started_at, finished_at, last_error, attempts")
       .eq("job_name", "syncSource")
-      .in("status", ["pending", "running"])
+      .eq("status", "running")
+      .contains("payload", { source_account_id: id })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    svc.from("job_queue")
+      .select("id, status, job_name, payload, created_at, started_at, finished_at, last_error, attempts")
+      .eq("job_name", "syncSource")
+      .eq("status", "pending")
       .contains("payload", { source_account_id: id })
       .order("created_at", { ascending: false })
       .limit(1)
@@ -495,13 +503,14 @@ app.get("/v1/:id/status", async (c) => {
   if (lastJobRes.error) throw new ApiError("internal", lastJobRes.error.message);
   if (cursorRes.error) throw new ApiError("internal", cursorRes.error.message);
   if (lastErrRes.error) throw new ApiError("internal", lastErrRes.error.message);
-  if (activeJobRes.error) throw new ApiError("internal", activeJobRes.error.message);
+  if (activeRunningJobRes.error) throw new ApiError("internal", activeRunningJobRes.error.message);
+  if (activePendingJobRes.error) throw new ApiError("internal", activePendingJobRes.error.message);
   if (latestQueueJobRes.error) throw new ApiError("internal", latestQueueJobRes.error.message);
   if (indexedRes.error) throw new ApiError("internal", indexedRes.error.message);
   const lastJob = lastJobRes.data;
   const cursor = cursorRes.data;
   const lastErr = lastErrRes.data;
-  const activeJob = activeJobRes.data;
+  const activeJob = activeRunningJobRes.data ?? activePendingJobRes.data ?? null;
   const latestQueueJob = latestQueueJobRes.data;
   const queueJob = activeJob ?? latestQueueJob ?? null;
   const indexed = indexedRes.count ?? 0;
@@ -535,6 +544,7 @@ app.get("/v1/:id/status", async (c) => {
     // syncing.
     indexed: persistedIndexed,
     discovered: persistedDiscovered,
+    hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
   const effectiveJobStatus = cancelled

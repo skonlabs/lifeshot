@@ -864,6 +864,8 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   const folders = a.selected_container_count ?? a.selected_containers?.length ?? 0;
   const docsCombined = k.document + k.audio + k.other;
   const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
+  const currentFolderRaw = stats.current_folder;
+  const currentFolder = typeof currentFolderRaw === "string" && currentFolderRaw.length > 0 ? currentFolderRaw : null;
   const currentFileRaw = stats.current_file;
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   const stage = typeof stats.stage === "string" ? stats.stage : null;
@@ -871,8 +873,8 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   const stageLabel =
     stage === "queued"     ? "Queued…" :
     stage === "connecting" ? "Connecting to source…" :
-    stage === "listing"    ? `Listing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
-    stage === "indexing"   ? `Indexing files… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
+    stage === "listing"    ? `Listing every file… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
+    stage === "indexing"   ? `Processing every file… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "completed"  ? "Sync complete" :
     stage === "failed"     ? "Sync failed — see error below" :
     stage === "cancelled"  ? "Sync cancelled" :
@@ -941,6 +943,11 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
           <div className="mt-1 flex justify-between text-[11px] text-[color:var(--umber)]">
             <span className="flex min-w-0 items-center gap-1">
               <span>{stageLabel}</span>
+              {currentFolder && (
+                <span className="truncate max-w-[220px] opacity-70">
+                  {currentFolder}
+                </span>
+              )}
               {currentFile && (
                 <span className="truncate max-w-[200px] opacity-70">
                   {currentFile}

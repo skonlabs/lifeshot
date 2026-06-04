@@ -40,6 +40,7 @@ export function isStaleSyncQueueState(input: {
   persistedStage: string | null;
   indexed: number;
   discovered: number;
+  hasMore?: boolean;
   hasQueueJob: boolean;
 }): boolean {
   if (!input.hasQueueJob || !input.queueStatus) return false;
@@ -48,5 +49,5 @@ export function isStaleSyncQueueState(input: {
     return true;
   }
 
-  return input.queueStatus === "pending" && input.indexed > 0 && input.indexed >= input.discovered;
+  return input.queueStatus === "pending" && input.hasMore !== true && input.indexed > 0 && input.indexed >= input.discovered;
 }
