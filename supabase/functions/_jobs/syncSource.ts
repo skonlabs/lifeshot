@@ -252,7 +252,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     latestActiveJobId = await getLatestActiveSyncJobId(sb, source_account_id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_active_lookup_failed", message, { stage: "active_lookup" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_sync_active_lookup_failed", message, { stage: "active_lookup" });
     throw error;
   }
   if (latestActiveJobId && latestActiveJobId !== ctx.jobId) {
@@ -276,13 +276,13 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     finished_at: null,
   }, { onConflict: "id" });
   if (startJob.error) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_job_start_failed", startJob.error.message, { stage: "start" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_sync_job_start_failed", startJob.error.message, { stage: "start" });
     throw new Error(`source_sync_jobs start failed: ${startJob.error.message}`);
   }
 
   const accountRunning = await sb.from("source_accounts").update({ status: "pending" }).eq("id", source_account_id);
   if (accountRunning.error) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_status_failed", accountRunning.error.message, { stage: "account_running" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_account_status_failed", accountRunning.error.message, { stage: "account_running" });
     throw new Error(`source_accounts pending failed: ${accountRunning.error.message}`);
   }
 
@@ -317,7 +317,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     ? accountSelectFallback.error
     : accountSelect.error;
   if (error || !acct) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_account_lookup_failed", error?.message ?? "source account not found", { stage: "lookup" });
     throw new Error("not found: source_account");
   }
   // Honor user-requested stop. If a cancel was requested, mark this job
