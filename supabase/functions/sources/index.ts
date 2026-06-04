@@ -536,9 +536,10 @@ app.get("/v1/:id/status", async (c) => {
     hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
+  const processingOnly = !queueLooksStale && !activeJob && lastJob?.status === "running" && (persistedJobStats.stage === "processing");
   const effectiveJobStatus = cancelled
     ? "cancelled"
-    : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null));
+    : (processingOnly ? "running" : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null)));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
@@ -558,11 +559,11 @@ app.get("/v1/:id/status", async (c) => {
     : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
-  const processingOnly = !unauthorized && !queueLooksStale && !activeJob && lastJob?.status === "running" && persistedStage === "processing";
+  const processingOnlyActive = !unauthorized && processingOnly;
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = processingOnly || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
+  const syncing = processingOnlyActive || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
   const accountStatus = unauthorized
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
