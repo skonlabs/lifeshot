@@ -25,7 +25,6 @@ import type {
 import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
 import { isStaleSyncQueueState } from "./sync-status.logic";
-import { forceSyncSource } from "./sourceSync.functions";
 
 
 type SourceAccountsResponse = {
