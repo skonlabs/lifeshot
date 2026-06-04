@@ -244,10 +244,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     .select("id", { count: "exact", head: true })
     .eq("source_account_id", source_account_id);
   const baseIndexed = currentIndexedCount.count ?? 0;
+  const progressBaseIndexed = force ? 0 : baseIndexed;
   await writeProgress(sb, ctx.jobId, {
     stage: "connecting",
-    discovered: Math.max(1, baseIndexed),
-    indexed: baseIndexed,
+    discovered: Math.max(1, progressBaseIndexed),
+    indexed: progressBaseIndexed,
   });
 
   const accountSelect = await sb.from("source_accounts")
@@ -333,7 +334,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   await writeProgress(sb, ctx.jobId, {
     stage: "indexing",
     page_items: page.items.length,
-    discovered: Math.max(baseIndexed + page.items.length, baseIndexed, 1),
+    discovered: Math.max(progressBaseIndexed + page.items.length, progressBaseIndexed, 1),
     current_file: page.items.map(getProgressFileLabel).find(Boolean) ?? null,
   });
 
@@ -594,8 +595,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
-  const discovered = Math.max(seenTotal, indexedCount, 1);
-  const indexedAdvanced = indexedCount > prevIndexed;
+  const progressIndexedCount = force ? seenTotal : indexedCount;
+  const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
+  const indexedAdvanced = progressIndexedCount > prevIndexed;
   const noForwardProgress = !!newCursor && page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
 
   if (noForwardProgress) {
@@ -619,7 +621,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: indexedCount,
+      indexed: progressIndexedCount,
       normalized: prevNormalized + needsNormalize.length,
       ...(currentFile ? { current_file: currentFile } : {}),
       has_more: !!effectiveNextCursor && !noForwardProgress,
@@ -665,7 +667,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           seen_total: seenTotal,
           deleted: prevDeleted + deleted.length,
           discovered,
-          indexed: indexedCount,
+          indexed: progressIndexedCount,
           normalized: prevNormalized + needsNormalize.length,
           ...(currentFile ? { current_file: currentFile } : {}),
           has_more: true,
