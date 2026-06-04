@@ -115,13 +115,17 @@ async function failSyncJob(
   payload: Record<string, unknown> = {},
 ) {
   await recordSyncError(sb, sourceAccountId, code, message, payload);
+  const existing = await sb.from("source_sync_jobs").select("stats").eq("id", jobId).maybeSingle();
+  const prevStats = (existing.data?.stats && typeof existing.data.stats === "object")
+    ? existing.data.stats as Record<string, unknown>
+    : {};
   await sb.from("source_sync_jobs").upsert({
     id: jobId,
     source_account_id: sourceAccountId,
     kind: "incremental",
     status: "failed",
     finished_at: new Date().toISOString(),
-    stats: { ...payload, error: message },
+    stats: { ...prevStats, ...payload, error: message },
   }, { onConflict: "id" });
   await sb.from("source_accounts").update({ status: "error" }).eq("id", sourceAccountId);
 }
@@ -241,6 +245,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
   const syncRunId = sync_run_id ?? ctx.jobId;
+  const progressJobId = syncRunId;
 
   let latestActiveJobId: string | null = null;
   try {
@@ -252,7 +257,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   if (latestActiveJobId && latestActiveJobId !== ctx.jobId) {
     await sb.from("source_sync_jobs").upsert({
-      id: ctx.jobId,
+      id: progressJobId,
       source_account_id,
       kind: syncKind,
       status: "cancelled",
@@ -263,11 +268,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   const startJob = await sb.from("source_sync_jobs").upsert({
-    id: ctx.jobId,
+    id: progressJobId,
     source_account_id,
     kind: syncKind,
     status: "running",
-    started_at: new Date().toISOString(),
+    ...(progressJobId === ctx.jobId ? { started_at: new Date().toISOString() } : {}),
     finished_at: null,
   }, { onConflict: "id" });
   if (startJob.error) {
@@ -288,11 +293,18 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     .eq("source_account_id", source_account_id);
   const baseIndexed = currentIndexedCount.count ?? 0;
   const progressBaseIndexed = force ? 0 : baseIndexed;
-  await writeProgress(sb, ctx.jobId, {
+  const existingProgressJob = await sb.from("source_sync_jobs").select("stats").eq("id", progressJobId).maybeSingle();
+  const existingProgressStats = (existingProgressJob.data?.stats && typeof existingProgressJob.data.stats === "object")
+    ? existingProgressJob.data.stats as Record<string, unknown>
+    : {};
+  const priorPageCount = Number(existingProgressStats.page_count ?? 0);
+  if (priorPageCount === 0) {
+    await writeProgress(sb, progressJobId, {
     stage: "connecting",
     discovered: Math.max(1, progressBaseIndexed),
     indexed: progressBaseIndexed,
-  });
+    });
+  }
 
   const accountSelect = await sb.from("source_accounts")
     .select("id, user_id, provider_id, provider_kind, status, sync_cancel_requested_at").eq("id", source_account_id).single();
@@ -310,7 +322,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   // Honor user-requested stop. If a cancel was requested, mark this job
   // cancelled, set account back to active, and do NOT chain another page.
-  const currentJob = await sb.from("source_sync_jobs").select("status, stats").eq("id", ctx.jobId).maybeSingle();
+  const currentJob = await sb.from("source_sync_jobs").select("status, stats").eq("id", progressJobId).maybeSingle();
   const jobStats = currentJob.data?.stats && typeof currentJob.data.stats === "object"
     ? currentJob.data.stats as Record<string, unknown>
     : {};
@@ -322,7 +334,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     await sb.from("source_sync_jobs").update({
       status: "cancelled",
       finished_at: new Date().toISOString(),
-    }).eq("id", ctx.jobId);
+    }).eq("id", progressJobId);
     await sb.from("source_accounts").update({ status: "active" }).eq("id", source_account_id);
     return { cancelled: true };
   }
