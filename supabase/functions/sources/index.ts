@@ -93,6 +93,46 @@ async function drainWorkerOnce(authHeader?: string | null) {
   }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
 }
 
+async function cancelExistingSyncRuns(
+  svc: ReturnType<typeof getServiceClient>,
+  sourceAccountId: string,
+  reason: string,
+) {
+  const now = new Date().toISOString();
+
+  await svc.from("job_queue").delete()
+    .eq("status", "pending")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: sourceAccountId });
+
+  await svc.from("job_queue")
+    .update({
+      status: "failed",
+      dead_letter: true,
+      finished_at: now,
+      last_error: reason,
+      locked_at: null,
+      locked_by: null,
+    })
+    .eq("status", "running")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: sourceAccountId });
+
+  await svc.from("source_sync_jobs")
+    .update({
+      status: "cancelled",
+      finished_at: now,
+      stats: {
+        cancelled: true,
+        cancelled_at: now,
+        cancel_reason: reason,
+        stage: "cancelled",
+      },
+    })
+    .eq("source_account_id", sourceAccountId)
+    .in("status", ["pending", "running"]);
+}
+
 function isMissingColumnError(message?: string | null, column?: string) {
   if (!message || !column) return false;
   const normalized = message.toLowerCase();
@@ -875,6 +915,8 @@ app.post("/v1/:id/sync/force", async (c) => {
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
 
+  await cancelExistingSyncRuns(svc, id, "superseded by newer force sync");
+
   // Wipe cursors so the worker re-discovers everything from scratch.
   await svc.from("source_sync_cursors").delete().eq("source_account_id", id);
 
@@ -931,6 +973,7 @@ app.post("/v1/:id/sync", async (c) => {
   const { data: acc } = await supa.from("source_accounts").select("id").eq("id", id).maybeSingle();
   if (!acc) throw new ApiError("not_found", "Source account not found");
   const svc = getServiceClient();
+  await cancelExistingSyncRuns(svc, id, "superseded by newer sync");
   const lane = LANES[laneFor("syncSource")];
   const jobId = crypto.randomUUID();
   const { error: queueInsertError } = await svc.from("job_queue").insert({
