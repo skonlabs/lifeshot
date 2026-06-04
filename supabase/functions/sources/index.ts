@@ -535,6 +535,7 @@ app.get("/v1/:id/status", async (c) => {
     // syncing.
     indexed: persistedIndexed,
     discovered: persistedDiscovered,
+    hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
   const effectiveJobStatus = cancelled
