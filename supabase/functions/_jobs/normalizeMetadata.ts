@@ -107,9 +107,10 @@ async function upsertLog<T extends Record<string, unknown>>(
 
 export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { asset_id, source_account_id, force_sync_run_id } = ctx.payload as {
+  const { asset_id, source_account_id, sync_run_id, force_sync_run_id } = ctx.payload as {
     asset_id: string;
     source_account_id?: string;
+    sync_run_id?: string;
     force_sync_run_id?: string;
   };
   if (!asset_id) throw new Error("invalid: asset_id");
@@ -418,6 +419,60 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // Daily bucket prevents duplicate runs while still re-clustering once per day.
   const today = new Date().toISOString().slice(0, 10);
   await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${today}` });
+
+  if (source_account_id) {
+    try {
+      const syncJobQuery = sb.from("source_sync_jobs")
+        .select("id, stats, status")
+        .eq("source_account_id", source_account_id)
+        .in("status", ["pending", "running"])
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const syncJobRes = sync_run_id
+        ? await syncJobQuery.contains("stats", { sync_run_id }).maybeSingle()
+        : await syncJobQuery.maybeSingle();
+      const runningJob = syncJobRes.data;
+      if (runningJob) {
+        const stats = (typeof runningJob.stats === "object" && runningJob.stats !== null)
+          ? runningJob.stats as Record<string, unknown>
+          : {};
+        const processingTotal = Number(stats.processing_total ?? stats.discovered ?? 0);
+        const pendingNormalizeRes = await sb.from("job_queue")
+          .select("id", { count: "exact", head: true })
+          .eq("job_name", "normalizeMetadata")
+          .in("status", ["pending", "running"])
+          .contains("payload", {
+            source_account_id,
+            ...(sync_run_id ? { sync_run_id } : {}),
+          });
+        const pendingNormalize = Math.max((pendingNormalizeRes.count ?? 1) - 1, 0);
+        const normalizedCount = Math.max(processingTotal - pendingNormalize, Number(stats.normalized ?? 0) + 1);
+        const complete = processingTotal > 0 && normalizedCount >= processingTotal && stats.has_more !== true;
+        const merged = {
+          ...stats,
+          sync_run_id: sync_run_id ?? stats.sync_run_id,
+          normalized: normalizedCount,
+          indexed: normalizedCount,
+          stage: complete ? "completed" : "processing",
+          ...(currentFolder ? { current_folder: currentFolder } : {}),
+          current_file: filename ?? rel ?? asset_id,
+        };
+        await sb.from("source_sync_jobs").update({
+          status: complete ? "completed" : "running",
+          finished_at: complete ? new Date().toISOString() : null,
+          stats: merged,
+        }).eq("id", runningJob.id);
+        if (complete) {
+          await sb.from("source_accounts").update({
+            last_synced_at: new Date().toISOString(),
+            status: "active",
+          }).eq("id", source_account_id);
+        }
+      }
+    } catch {
+      // best-effort progress update
+    }
+  }
 
   return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess };
 }

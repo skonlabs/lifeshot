@@ -869,12 +869,13 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   const currentFileRaw = stats.current_file;
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
   const stage = typeof stats.stage === "string" ? stats.stage : null;
-  const showProgressNumbers = stage === "listing" || stage === "indexing" || stage === "completed";
+  const showProgressNumbers = stage === "listing" || stage === "indexing" || stage === "processing" || stage === "completed";
   const stageLabel =
     stage === "queued"     ? "Queued…" :
     stage === "connecting" ? "Connecting to source…" :
     stage === "listing"    ? `Listing every file… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "indexing"   ? `Processing every file… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
+    stage === "processing" ? `Processing every file… (${indexed.toLocaleString()} of ${total.toLocaleString()})` :
     stage === "completed"  ? "Sync complete" :
     stage === "failed"     ? "Sync failed — see error below" :
     stage === "cancelled"  ? "Sync cancelled" :

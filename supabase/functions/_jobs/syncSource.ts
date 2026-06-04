@@ -659,6 +659,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevSeen = Number(prevStats.seen_total ?? 0);
   const prevDeleted = Number(prevStats.deleted ?? 0);
   const prevNormalized = Number(prevStats.normalized ?? 0);
+  const prevProcessingTotal = Number(prevStats.processing_total ?? 0);
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
   const prevCurrentFolder = typeof prevStats.current_folder === "string" && prevStats.current_folder.length > 0
@@ -694,20 +695,24 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
+  const processingTotal = prevProcessingTotal + needsNormalize.length;
+  const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
 
   const finishJob = await sb.from("source_sync_jobs").update({
-    status: effectiveNextCursor ? "running" : "completed",
-    finished_at: effectiveNextCursor ? null : new Date().toISOString(),
+    status: effectiveNextCursor || awaitingProcessing ? "running" : "completed",
+    finished_at: effectiveNextCursor || awaitingProcessing ? null : new Date().toISOString(),
     stats: {
       ...prevStats,
-      stage: effectiveNextCursor ? "indexing" : "completed",
+      stage: effectiveNextCursor ? "indexing" : (awaitingProcessing ? "processing" : "completed"),
+      sync_run_id: syncRunId,
       provider_kind: providerKind,
       page_items: page.items.length,
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: progressIndexedCount,
-      normalized: prevNormalized + needsNormalize.length,
+      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
+      normalized: prevNormalized,
+      processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
       ...(currentFile ? { current_file: currentFile } : {}),
       has_more: !!effectiveNextCursor,
@@ -760,13 +765,15 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         stats: {
           ...prevStats,
           stage: "queued",
+          sync_run_id: syncRunId,
           provider_kind: providerKind,
           page_items: page.items.length,
           seen_total: seenTotal,
           deleted: prevDeleted + deleted.length,
           discovered,
           indexed: progressIndexedCount,
-          normalized: prevNormalized + needsNormalize.length,
+          normalized: prevNormalized,
+          processing_total: processingTotal,
           ...(currentFolder ? { current_folder: currentFolder } : {}),
           ...(currentFile ? { current_file: currentFile } : {}),
           has_more: true,
@@ -799,11 +806,13 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         superseded_by: freshestActiveJobId ?? null,
       };
     }
-    const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
-      .eq("id", source_account_id);
-    if (completeAccount.error) {
-      await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_complete_failed", completeAccount.error.message, { stage: "complete" });
-      throw new Error(`source_accounts complete failed: ${completeAccount.error.message}`);
+    if (!awaitingProcessing) {
+      const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
+        .eq("id", source_account_id);
+      if (completeAccount.error) {
+        await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_complete_failed", completeAccount.error.message, { stage: "complete" });
+        throw new Error(`source_accounts complete failed: ${completeAccount.error.message}`);
+      }
     }
   }
 
@@ -813,6 +822,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     deleted: deleted.length,
     more: !!effectiveNextCursor,
     page_count: pageCount,
+    awaiting_processing: awaitingProcessing,
     ...(forceTerminate ? { terminated: "loop_detected" } : {}),
   };
 }
