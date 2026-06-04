@@ -680,7 +680,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           has_more: true,
           page_count: pageCount,
           last_cursor: newCursor,
-                consecutive_empty_pages: consecutiveEmptyPages,
+          consecutive_empty_pages: consecutiveEmptyPages,
         },
       }, { onConflict: "id" });
     }
