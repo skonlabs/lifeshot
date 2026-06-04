@@ -25,6 +25,8 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const { asset_id } = ctx.payload as { asset_id: string };
   if (!asset_id) throw new Error("invalid: asset_id");
 
+  const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
+
   // Consent gate — respect user's AI processing preference.
   const { data: prof } = await sb
     .from("user_profiles")
@@ -78,7 +80,14 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     url = signed?.signedUrl ?? null;
   }
 
-  if (!url) return { skipped: "no_url" };
+  if (!url) {
+    await enqueueJob("generateDerived", {
+      userId: ctx.userId,
+      payload: { asset_id },
+      idempotencyKey: `derived-retry:${asset_id}`,
+    });
+    throw new Error("retryable: no preview url available for AI enrichment");
+  }
 
   let caption = "";
   let tags: string[] = [];
@@ -110,45 +119,45 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     })
     .map((o) => ({ bbox: (o as any).bbox ?? null, score: o.score ?? null }));
 
-  if (!error) {
-    await sb.from("asset_ai_enrichment").upsert({
-      asset_id,
-      user_id: asset.user_id,
-      caption,
-      tags,
-      objects,
-      faces,
-      enriched_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" });
+  await sb.from("asset_ai_enrichment").upsert({
+    asset_id,
+    user_id: asset.user_id,
+    caption,
+    tags,
+    objects,
+    faces,
+    enriched_at: !error ? new Date().toISOString() : null,
+  }, { onConflict: "asset_id" });
 
-    const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
+  if (error) {
+    throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${error}`);
+  }
 
-    // Re-index search document now that caption/tags are available.
-    await enqueueJob("indexSearchDocument", {
+  // Re-index search document now that caption/tags are available.
+  await enqueueJob("indexSearchDocument", {
+    userId: ctx.userId,
+    payload: { asset_id },
+    idempotencyKey: `index-post-ai:${asset_id}`,
+  });
+
+  // Cluster faces into people when this asset has face signals (consent-gated
+  // inside the job). Scoped to this asset so it runs incrementally.
+  if (faces.length) {
+    await enqueueJob("clusterPeople", {
       userId: ctx.userId,
-      payload: { asset_id },
-      idempotencyKey: `index-post-ai:${asset_id}`,
-    });
-
-    // Cluster faces into people when this asset has face signals (consent-gated
-    // inside the job). Scoped to this asset so it runs incrementally.
-    if (faces.length) {
-      await enqueueJob("clusterPeople", {
-        userId: ctx.userId,
-        payload: { user_id: asset.user_id, asset_id },
-        idempotencyKey: `people-post-ai:${asset_id}`,
-      });
-    }
-
-    // Re-detect events for this user so new assets fold into moments/stories.
-    // Use a daily bucket so events are re-computed once per day, not once ever.
-    const today = new Date().toISOString().slice(0, 10);
-    await enqueueJob("detectEvents", {
-      userId: ctx.userId,
-      payload: { user_id: asset.user_id },
-      idempotencyKey: `events:${asset.user_id}:${today}`,
+      payload: { user_id: asset.user_id, asset_id },
+      idempotencyKey: `people-post-ai:${asset_id}`,
     });
   }
+
+  // Re-detect events for this user so new assets fold into moments/stories.
+  // Use a daily bucket so events are re-computed once per day, not once ever.
+  const today = new Date().toISOString().slice(0, 10);
+  await enqueueJob("detectEvents", {
+    userId: ctx.userId,
+    payload: { user_id: asset.user_id },
+    idempotencyKey: `events:${asset.user_id}:${today}`,
+  });
 
   return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };
 }

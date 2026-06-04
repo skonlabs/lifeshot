@@ -25,11 +25,20 @@ function geoKey(lat: number, lng: number): string {
   return `${lat.toFixed(2)}:${lng.toFixed(2)}`;
 }
 
+function isMissingColumnError(message?: string | null, column?: string) {
+  if (!message || !column) return false;
+  const normalized = message.toLowerCase();
+  const target = column.toLowerCase();
+  return normalized.includes(target) && (normalized.includes("schema cache") || normalized.includes("does not exist") || normalized.includes("could not find"));
+}
+
 export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { user_id, asset_id } = ctx.payload as { user_id?: string; asset_id?: string };
   const uid = user_id ?? ctx.userId;
   if (!uid) throw new Error("invalid: user_id");
+
+  const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
 
   // Fetch GPS rows that still need a place name resolved.
   // Skip rows that are already geocoded unless a specific asset is requested
@@ -48,7 +57,40 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
 
   const { data: gpsRows, error } = await q;
   if (error) throw new Error(`clusterPlaces fetch: ${error.message}`);
-  if (!gpsRows || gpsRows.length === 0) return { user_id: uid, places: 0, located: 0 };
+  if (!gpsRows || gpsRows.length === 0) {
+    if (asset_id) {
+      const { data: assetGps } = await sb
+        .from("assets")
+        .select("location_lat, location_lng")
+        .eq("id", asset_id)
+        .maybeSingle();
+      if (assetGps?.location_lat != null && assetGps?.location_lng != null) {
+        await sb.from("asset_gps").upsert({
+          asset_id,
+          user_id: uid,
+          gps_latitude: assetGps.location_lat,
+          gps_longitude: assetGps.location_lng,
+          location_source: "asset_row",
+          location_confidence: 0.85,
+        }, { onConflict: "asset_id" });
+      } else {
+        return { user_id: uid, places: 0, located: 0, skipped: "no_gps" };
+      }
+
+      const retry = await sb
+        .from("asset_gps")
+        .select("asset_id, gps_latitude, gps_longitude, place_name, reverse_geocoded_city, reverse_geocoded_country")
+        .eq("user_id", uid)
+        .eq("asset_id", asset_id)
+        .not("gps_latitude", "is", null)
+        .not("gps_longitude", "is", null);
+      if (retry.error) throw new Error(`clusterPlaces retry fetch: ${retry.error.message}`);
+      if (!retry.data || retry.data.length === 0) return { user_id: uid, places: 0, located: 0, skipped: "no_gps" };
+      gpsRows.splice(0, gpsRows.length, ...retry.data);
+    } else {
+      return { user_id: uid, places: 0, located: 0 };
+    }
+  }
 
   // Cache geocode results per coarse cell to limit provider calls.
   const geocodeCache = new Map<string, { name: string; country?: string; admin?: string }>();
@@ -96,15 +138,28 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
     }).eq("asset_id", row.asset_id);
 
     // Write the per-asset location row.
-    const { error: lErr } = await sb.from("asset_locations").upsert({
+    const locationRow = {
       asset_id: row.asset_id,
+      user_id: uid,
       lat,
       lng,
       city: geo.admin ?? null,
       country: geo.country ?? null,
       place_id: placeId,
       geocoded_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" });
+    };
+    let { error: lErr } = await sb.from("asset_locations").upsert(locationRow, { onConflict: "asset_id" });
+    if (lErr && isMissingColumnError(lErr.message, "user_id")) {
+      lErr = (await sb.from("asset_locations").upsert({
+        asset_id: row.asset_id,
+        lat,
+        lng,
+        city: geo.admin ?? null,
+        country: geo.country ?? null,
+        place_id: placeId,
+        geocoded_at: new Date().toISOString(),
+      }, { onConflict: "asset_id" })).error;
+    }
     if (lErr) throw new Error(`clusterPlaces asset_locations upsert: ${lErr.message}`);
 
     affectedAssets.push(row.asset_id);
@@ -113,7 +168,6 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
 
   // Re-index affected assets so location names become searchable.
   if (affectedAssets.length) {
-    const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
     for (const aid of affectedAssets) {
       await enqueueJob("indexSearchDocument", {
         userId: uid,

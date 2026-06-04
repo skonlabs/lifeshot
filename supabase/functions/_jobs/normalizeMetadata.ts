@@ -125,7 +125,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
-    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, status")
+    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
     .eq("id", asset_id).single();
   if (error || !asset) throw new Error("not found: asset");
 
@@ -209,6 +209,15 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     ai_processing_possible: isImage || isVideo || isDocument,
     ocr_possible: isImage || isDocument,
   }, { onConflict: "asset_id" }, "phase1");
+
+  await upsertLog(sb, "asset_preview_metadata", {
+    asset_id,
+    user_id: asset.user_id,
+    thumbnail_generated: Boolean(asset.thumbnail_cache_key),
+    preview_generated: Boolean(asset.proxy_cache_key),
+    thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
+    preview_cache_key: asset.proxy_cache_key ?? null,
+  }, { onConflict: "asset_id" }, "phase1-preview");
 
   // For images: always write an asset_exif stub so phase 2 can upsert richer
   // data on top. Without this, assets lacking device_make/model still get a row.
