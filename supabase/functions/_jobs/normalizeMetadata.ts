@@ -11,7 +11,7 @@
  */
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
-import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
+import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
@@ -20,55 +20,11 @@ import { extractExifFromBytes } from "../_extractors/exif.ts";
 const HEAD_BYTES = 384 * 1024;
 
 async function nudgeWorkerDrain() {
-  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  if (!base) return;
-
-  let workerUrl = "";
-  try {
-    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=4&budget_ms=50000`;
-  } catch {
-    return;
-  }
-
-  const request = fetch(workerUrl, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(),
-    body: JSON.stringify({}),
-  }).catch(() => undefined);
-
-  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
-  if (edgeRuntime?.waitUntil) {
-    edgeRuntime.waitUntil(request);
-    return;
-  }
-
-  await request;
+  await wakeWorkerDrain({ batch: 4, budgetMs: 50_000 });
 }
 
 async function nudgeNormalizeDrain() {
-  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  if (!base) return;
-
-  let workerUrl = "";
-  try {
-    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=12&budget_ms=50000&lanes=ingest`;
-  } catch {
-    return;
-  }
-
-  const request = fetch(workerUrl, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(),
-    body: JSON.stringify({}),
-  }).catch(() => undefined);
-
-  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
-  if (edgeRuntime?.waitUntil) {
-    edgeRuntime.waitUntil(request);
-    return;
-  }
-
-  await request;
+  await wakeWorkerDrain({ batch: 12, budgetMs: 50_000, lanes: ["ingest"] });
 }
 
 function geohashEncode(lat: number, lng: number, precision = 9): string {
