@@ -625,8 +625,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
 
   // 4) Bulk-enqueue normalizeMetadata — one INSERT for all changed assets.
-  if (needsNormalize.length > 0) {
-    await enqueueMany(needsNormalize.map(({ assetId, modifiedTime }) => ({
+  const enqueuedNormalizeIds = needsNormalize.length > 0
+    ? await enqueueMany(needsNormalize.map(({ assetId, modifiedTime }) => ({
       name: "normalizeMetadata",
       opts: {
         userId: acct.user_id,
@@ -638,8 +638,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         },
         idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? syncRunId : null),
       },
-    })));
-  }
+    })))
+    : [];
 
   // Chain next page
   const { count: indexedTotal } = await sb.from("asset_source_refs")
@@ -695,7 +695,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const processingTotal = prevProcessingTotal + needsNormalize.length;
+  const processingTotal = prevProcessingTotal + enqueuedNormalizeIds.length;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
 
   const finishJob = await sb.from("source_sync_jobs").update({
@@ -733,6 +733,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     if (resolveErrorsError) {
       await failSyncJob(sb, source_account_id, ctx.jobId, "source_error_resolve_failed", resolveErrorsError.message, { stage: "resolve_errors" });
       throw new Error(`source_errors resolve failed: ${resolveErrorsError.message}`);
+    }
+    if (awaitingProcessing) {
+      await nudgeWorkerDrain();
     }
   }
 
