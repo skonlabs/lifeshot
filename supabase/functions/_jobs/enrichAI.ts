@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { serviceClient } from "../_pipeline/clients.ts";
+import { serviceClient, STORAGE_BUCKETS } from "../_pipeline/clients.ts";
 import { providers } from "./mocks.ts";
 import { installOpenAIProviders } from "../_ai/factory.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -40,23 +40,42 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     .single();
   if (!asset) throw new Error("not found: asset");
 
-  // Prefer the higher-resolution preview derivative over thumbnail.
-  let url = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
+  // Resolve a publicly-accessible URL for the asset image.
+  // proxy_cache_key / thumbnail_cache_key may be either an https:// URL (from
+  // the source provider, before generateDerived uploads to storage) or a
+  // storage path (after generateDerived runs). We must create a signed URL for
+  // the latter — passing a bare storage path to the AI provider will fail.
+  let url: string | null = null;
 
-  // Look up stored derivatives for a better URL.
+  const rawKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
+  if (rawKey && /^https?:\/\//.test(rawKey)) {
+    url = rawKey;
+  }
+
   if (!url) {
-    const { data: deriv } = await sb
-      .from("asset_derivatives")
-      .select("storage_path, storage_bucket")
-      .eq("asset_id", asset_id)
-      .eq("kind", "preview")
-      .maybeSingle();
-    if (deriv?.storage_path) {
-      const { data: signed } = await sb.storage
-        .from(deriv.storage_bucket)
-        .createSignedUrl(deriv.storage_path, 600);
-      url = signed?.signedUrl ?? null;
+    // Try stored derivatives (preview first, then thumb).
+    for (const kind of ["preview", "thumb"]) {
+      const { data: deriv } = await sb
+        .from("asset_derivatives")
+        .select("storage_path, storage_bucket")
+        .eq("asset_id", asset_id)
+        .eq("kind", kind)
+        .maybeSingle();
+      if (deriv?.storage_path) {
+        const { data: signed } = await sb.storage
+          .from(deriv.storage_bucket)
+          .createSignedUrl(deriv.storage_path, 600);
+        if (signed?.signedUrl) { url = signed.signedUrl; break; }
+      }
     }
+  }
+
+  // If keys exist but aren't http URLs, try signing the storage path directly.
+  if (!url && rawKey && !/^https?:\/\//.test(rawKey)) {
+    const { data: signed } = await sb.storage
+      .from(STORAGE_BUCKETS.derived)
+      .createSignedUrl(rawKey, 600);
+    url = signed?.signedUrl ?? null;
   }
 
   if (!url) return { skipped: "no_url" };

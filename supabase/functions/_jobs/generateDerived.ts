@@ -144,8 +144,17 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   }
 
   if (written.length === 0) {
-    // No derivatives could be generated. Preserve existing thumbnail_cache_key
-    // so the UI keeps showing the provider-served URL (which may still be valid).
+    // No storage derivatives generated. Still write asset_preview_metadata so
+    // enrichAI / ocrAsset can find the provider-served URL via this table.
+    // Preserve existing thumbnail_cache_key on the asset row unchanged.
+    await sb.from("asset_preview_metadata").upsert({
+      asset_id,
+      user_id: asset.user_id,
+      thumbnail_generated: false,
+      preview_generated: false,
+      thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
+      preview_cache_key: asset.proxy_cache_key ?? null,
+    }, { onConflict: "asset_id" });
     return { asset_id, derivatives: 0, skipped: "no_bytes" };
   }
 

@@ -32,13 +32,19 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   if (!uid) throw new Error("invalid: user_id");
 
   // Fetch GPS rows that still need a place name resolved.
+  // Skip rows that are already geocoded unless a specific asset is requested
+  // (e.g. force re-geocode on explicit per-asset call).
   let q = sb
     .from("asset_gps")
     .select("asset_id, gps_latitude, gps_longitude, place_name, reverse_geocoded_city, reverse_geocoded_country")
     .eq("user_id", uid)
     .not("gps_latitude", "is", null)
     .not("gps_longitude", "is", null);
-  if (asset_id) q = q.eq("asset_id", asset_id);
+  if (asset_id) {
+    q = q.eq("asset_id", asset_id); // per-asset: always re-geocode
+  } else {
+    q = q.is("place_name", null); // bulk run: only process not-yet-geocoded rows
+  }
 
   const { data: gpsRows, error } = await q;
   if (error) throw new Error(`clusterPlaces fetch: ${error.message}`);

@@ -233,9 +233,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     ocr_possible: isImage || isDocument,
   }, { onConflict: "asset_id" }, "phase1");
 
-  // For images: write a stub asset_exif row from whatever API metadata exists.
-  // Byte-level extraction (phase 2) will upsert richer data on top of this.
-  if (isImage && (asset.device_make || asset.device_model || asset.capture_time)) {
+  // For images: always write an asset_exif stub so phase 2 can upsert richer
+  // data on top. Without this, assets lacking device_make/model still get a row.
+  if (isImage) {
     await upsertLog(sb, "asset_exif", {
       asset_id, user_id: asset.user_id,
       camera_make: asset.device_make ?? null,

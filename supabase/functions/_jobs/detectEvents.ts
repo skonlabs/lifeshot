@@ -16,10 +16,13 @@ const PAGE_SIZE = 5000;
  */
 export async function detectEvents(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { user_id, window_days = 30 } = ctx.payload as { user_id: string; window_days?: number };
+  // window_days=0 means no date filter (process entire library).
+  const { user_id, window_days = 0 } = ctx.payload as { user_id: string; window_days?: number };
   if (!user_id) throw new Error("invalid: user_id");
 
-  const since = new Date(Date.now() - window_days * 86400_000).toISOString();
+  const since = window_days > 0
+    ? new Date(Date.now() - window_days * 86400_000).toISOString()
+    : null;
   const GAP_MS = 4 * 3600 * 1000; // 4-hour gap → new event
 
   // Paginate through all assets in the window, ordered by capture_time.
@@ -33,11 +36,12 @@ export async function detectEvents(ctx: JobContext): Promise<unknown> {
       .select("id, capture_time")
       .eq("user_id", user_id)
       .eq("deleted_state", "active")
-      .gte("capture_time", since)
       .not("capture_time", "is", null)
       .order("capture_time", { ascending: true })
       .order("id", { ascending: true }) // secondary sort for stable pagination
       .limit(PAGE_SIZE);
+
+    if (since) q = q.gte("capture_time", since);
 
     // Cursor: skip everything up to and including the last seen (capture_time, id).
     if (lastCaptureTime && lastId) {
