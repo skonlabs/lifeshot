@@ -347,7 +347,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .eq("id", acct.provider_id)
       .single();
     if (providerErr || !provider?.kind) {
-      await failSyncJob(sb, source_account_id, ctx.jobId, "provider_kind_missing", providerErr?.message ?? "provider_kind missing", { stage: "provider_lookup" });
+      await failSyncJob(sb, source_account_id, progressJobId, "provider_kind_missing", providerErr?.message ?? "provider_kind missing", { stage: "provider_lookup" });
       throw new Error("invalid: provider_kind missing");
     }
     providerKind = provider.kind;
@@ -364,18 +364,18 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   // Load cursor
   const cursorKind = mode === "initial" ? "list" : (caps.supportsDelta ? "delta" : "list");
-  const priorPageCount = Number(jobStats.page_count ?? 0);
-  const shouldIgnoreSavedCursor = force && mode === "initial" && priorPageCount === 0;
+  const cursorPageCount = Number(jobStats.page_count ?? 0);
+  const shouldIgnoreSavedCursor = force && mode === "initial" && cursorPageCount === 0;
   const cursor = shouldIgnoreSavedCursor ? null : await loadCursor(sb, source_account_id, cursorKind);
 
-  await writeProgress(sb, ctx.jobId, { stage: "listing", provider_kind: providerKind });
+  await writeProgress(sb, progressJobId, { stage: "listing", provider_kind: providerKind });
 
   let page;
   try {
     page = cursorKind === "delta" ? await conn.getDeltaChanges(cursor) : await conn.listAssets(cursor);
   } catch (e) {
     if (e instanceof ConnectorAuthError) {
-      await failSyncJob(sb, source_account_id, ctx.jobId, "source_connector_auth_failed", e.message, { stage: "list", provider_kind: providerKind, mode });
+      await failSyncJob(sb, source_account_id, progressJobId, "source_connector_auth_failed", e.message, { stage: "list", provider_kind: providerKind, mode });
       await sb.from("source_accounts").update({ status: "revoked" }).eq("id", source_account_id);
       throw new Error(e.message);
     }
@@ -384,11 +384,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       return { rateLimited: true };
     }
     const msg = e instanceof Error ? e.message : String(e);
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_connector_failed", msg, { stage: "list", provider_kind: providerKind, mode });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_connector_failed", msg, { stage: "list", provider_kind: providerKind, mode });
     throw e;
   }
 
-  await writeProgress(sb, ctx.jobId, {
+  await writeProgress(sb, progressJobId, {
     stage: "indexing",
     page_items: page.items.length,
     discovered: Math.max(progressBaseIndexed + page.items.length, progressBaseIndexed, 1),
@@ -635,7 +635,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   // `discovered` to 0 whenever a page returned 0 file entries (common with
   // Dropbox recursive listings that interleave folders + files), which left the
   // UI stuck on "Discovering files…" forever.
-  const prevStatsRes = await sb.from("source_sync_jobs").select("stats").eq("id", ctx.jobId).maybeSingle();
+  const prevStatsRes = await sb.from("source_sync_jobs").select("stats").eq("id", progressJobId).maybeSingle();
   const prevStats = (prevStatsRes.data?.stats && typeof prevStatsRes.data.stats === "object")
     ? prevStatsRes.data.stats as Record<string, unknown>
     : {};
@@ -702,9 +702,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       page_count: pageCount,
       last_cursor: newCursor,
     },
-  }).eq("id", ctx.jobId);
+  }).eq("id", progressJobId);
   if (finishJob.error) {
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_job_finish_failed", finishJob.error.message, { stage: "finish" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_sync_job_finish_failed", finishJob.error.message, { stage: "finish" });
     throw new Error(`source_sync_jobs finish failed: ${finishJob.error.message}`);
   }
 
@@ -714,7 +714,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .eq("source_account_id", source_account_id)
       .eq("resolved", false);
     if (resolveErrorsError) {
-      await failSyncJob(sb, source_account_id, ctx.jobId, "source_error_resolve_failed", resolveErrorsError.message, { stage: "resolve_errors" });
+      await failSyncJob(sb, source_account_id, progressJobId, "source_error_resolve_failed", resolveErrorsError.message, { stage: "resolve_errors" });
       throw new Error(`source_errors resolve failed: ${resolveErrorsError.message}`);
     }
     if (awaitingProcessing) {
@@ -722,7 +722,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  const latestJobState = await sb.from("source_sync_jobs").select("status, stats").eq("id", ctx.jobId).maybeSingle();
+  const latestJobState = await sb.from("source_sync_jobs").select("status, stats").eq("id", progressJobId).maybeSingle();
   const latestStats = latestJobState.data?.stats && typeof latestJobState.data.stats === "object"
     ? latestJobState.data.stats as Record<string, unknown>
     : {};
@@ -734,40 +734,14 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       freshestActiveJobId = await getLatestActiveSyncJobId(sb, source_account_id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_chain_lookup_failed", message, { stage: "chain_lookup" });
+      await failSyncJob(sb, source_account_id, progressJobId, "source_sync_chain_lookup_failed", message, { stage: "chain_lookup" });
       throw error;
     }
   }
   const superseded = !!freshestActiveJobId && freshestActiveJobId !== ctx.jobId;
 
   if (effectiveNextCursor && !stopRequested && !superseded) {
-    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: { ...ctx.payload, sync_run_id: syncRunId } });
-    if (nextJob.id) {
-      await sb.from("source_sync_jobs").upsert({
-        id: nextJob.id,
-        source_account_id,
-        kind: syncKind,
-        status: "pending",
-        stats: {
-          ...prevStats,
-          stage: "queued",
-          sync_run_id: syncRunId,
-          provider_kind: providerKind,
-          page_items: page.items.length,
-          seen_total: seenTotal,
-          deleted: prevDeleted + deleted.length,
-          discovered,
-          indexed: progressIndexedCount,
-          normalized: prevNormalized,
-          processing_total: processingTotal,
-          ...(currentFolder ? { current_folder: currentFolder } : {}),
-          ...(currentFile ? { current_file: currentFile } : {}),
-          has_more: true,
-          page_count: pageCount,
-          last_cursor: newCursor,
-        },
-      }, { onConflict: "id" });
-    }
+    await enqueueJob("syncSource", { userId: acct.user_id, payload: { ...ctx.payload, sync_run_id: syncRunId } });
     await nudgeWorkerDrain();
   } else {
     if (superseded) {
@@ -781,7 +755,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           cancel_reason: "superseded by newer sync",
           stage: "cancelled",
         },
-      }).eq("id", ctx.jobId);
+      }).eq("id", progressJobId);
       return {
         items: page.items.length,
         normalized: needsNormalize.length,
@@ -796,7 +770,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
         .eq("id", source_account_id);
       if (completeAccount.error) {
-        await failSyncJob(sb, source_account_id, ctx.jobId, "source_account_complete_failed", completeAccount.error.message, { stage: "complete" });
+        await failSyncJob(sb, source_account_id, progressJobId, "source_account_complete_failed", completeAccount.error.message, { stage: "complete" });
         throw new Error(`source_accounts complete failed: ${completeAccount.error.message}`);
       }
     }
