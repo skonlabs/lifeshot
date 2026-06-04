@@ -68,6 +68,18 @@ app.get("/debug/account/:id", async (c) => {
   return c.json({ error: error?.message ?? null, jobs, pendingByPriority });
 });
 
+app.post("/debug/bump-priority", async (c) => {
+  const sb = serviceClient();
+  const { data, error } = await sb.from("job_queue")
+    .update({ priority: 100 })
+    .eq("status", "pending")
+    .eq("lane", "user")
+    .eq("job_name", "syncSource")
+    .lt("priority", 100)
+    .select("id");
+  return c.json({ error: error?.message ?? null, updated: data?.length ?? 0, ids: data });
+});
+
 /** Cron: enqueue incremental sync for every connected source. */
 app.post("/cron/incremental-sync", async (c) => {
   const sb = serviceClient();
