@@ -96,6 +96,7 @@ describe("isStaleSyncQueueState", () => {
       persistedStage: "queued",
       indexed: 427,
       discovered: 427,
+      hasMore: false,
       hasQueueJob: true,
     })).toBe(true);
   });
@@ -106,6 +107,7 @@ describe("isStaleSyncQueueState", () => {
       persistedStage: "completed",
       indexed: 427,
       discovered: 427,
+      hasMore: false,
       hasQueueJob: true,
     })).toBe(true);
   });
@@ -116,6 +118,7 @@ describe("isStaleSyncQueueState", () => {
       persistedStage: "indexing",
       indexed: 120,
       discovered: 427,
+      hasMore: true,
       hasQueueJob: true,
     })).toBe(false);
   });
@@ -126,6 +129,18 @@ describe("isStaleSyncQueueState", () => {
       persistedStage: "queued",
       indexed: 0,
       discovered: 1,
+      hasMore: true,
+      hasQueueJob: true,
+    })).toBe(false);
+  });
+
+  it("keeps chained pending jobs active while more pages remain", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "pending",
+      persistedStage: "queued",
+      indexed: 427,
+      discovered: 427,
+      hasMore: true,
       hasQueueJob: true,
     })).toBe(false);
   });
