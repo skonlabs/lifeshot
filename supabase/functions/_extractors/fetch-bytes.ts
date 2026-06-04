@@ -16,6 +16,18 @@ export interface FetchedBytes {
 }
 
 const DEFAULT_HEAD = 384 * 1024;
+const RANGE_FETCH_TIMEOUT_MS = 20_000;
+const STREAM_FETCH_TIMEOUT_MS = 45_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export async function fetchHeadBytes(
   conn: SourceConnector,
@@ -29,7 +41,7 @@ export async function fetchHeadBytes(
 
 export async function fetchRange(url: string, byteLength: number): Promise<FetchedBytes | null> {
   try {
-    const res = await fetch(url, { headers: { range: `bytes=0-${byteLength - 1}` } });
+    const res = await fetchWithTimeout(url, { headers: { range: `bytes=0-${byteLength - 1}` } }, RANGE_FETCH_TIMEOUT_MS);
     if (!res.ok && res.status !== 206 && res.status !== 200) return null;
     const buf = new Uint8Array(await res.arrayBuffer());
     const cr = res.headers.get("content-range");
@@ -53,7 +65,7 @@ export async function streamSha256(
   sizeCapBytes: number = 256 * 1024 * 1024,
 ): Promise<{ sha256: string | null; bytesRead: number; capped: boolean }> {
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, STREAM_FETCH_TIMEOUT_MS);
     if (!res.ok || !res.body) return { sha256: null, bytesRead: 0, capped: false };
     const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
