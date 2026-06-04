@@ -2,7 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
-import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
+import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -77,32 +77,7 @@ function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null
 }
 
 async function nudgeWorkerDrain() {
-  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
-  if (!base) return;
-
-  let workerUrl = "";
-  try {
-    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=1&budget_ms=50000`;
-  } catch {
-    return;
-  }
-
-  const request = fetch(workerUrl, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(),
-    body: JSON.stringify({}),
-  }).catch((error) => {
-    console.warn("syncSource continuation nudge failed:", String(error));
-    return undefined;
-  });
-
-  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
-  if (edgeRuntime?.waitUntil) {
-    edgeRuntime.waitUntil(request);
-    return;
-  }
-
-  await request;
+  await wakeWorkerDrain({ batch: 1, budgetMs: 50_000 });
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
