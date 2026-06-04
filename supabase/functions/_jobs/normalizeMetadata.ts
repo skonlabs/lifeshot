@@ -462,14 +462,13 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
       const syncJobQuery = sb.from("source_sync_jobs")
         .select("id, stats, status")
         .eq("source_account_id", source_account_id)
-        .in("status", ["pending", "running"])
         .order("created_at", { ascending: false })
         .limit(1);
       const syncJobRes = sync_run_id
         ? await syncJobQuery.contains("stats", { sync_run_id }).maybeSingle()
         : await syncJobQuery.maybeSingle();
       const runningJob = syncJobRes.data;
-      if (runningJob) {
+      if (runningJob && runningJob.status !== "cancelled" && runningJob.status !== "failed") {
         const stats = (typeof runningJob.stats === "object" && runningJob.stats !== null)
           ? runningJob.stats as Record<string, unknown>
           : {};
@@ -485,8 +484,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           ...(currentFolder ? { current_folder: currentFolder } : {}),
           current_file: filename ?? rel ?? asset_id,
         };
+        const nextStatus = complete ? "completed" : "running";
         await sb.from("source_sync_jobs").update({
-          status: complete ? "completed" : "running",
+          status: nextStatus,
           finished_at: complete ? new Date().toISOString() : null,
           stats: merged,
         }).eq("id", runningJob.id);
