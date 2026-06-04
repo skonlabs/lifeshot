@@ -231,6 +231,30 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
 
+   const activeQueueJob = await sb.from("job_queue")
+    .select("id, created_at")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id })
+    .in("status", ["pending", "running"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (activeQueueJob.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_active_lookup_failed", activeQueueJob.error.message, { stage: "active_lookup" });
+    throw new Error(`active sync lookup failed: ${activeQueueJob.error.message}`);
+  }
+  if (activeQueueJob.data?.id && activeQueueJob.data.id !== ctx.jobId) {
+    await sb.from("source_sync_jobs").upsert({
+      id: ctx.jobId,
+      source_account_id,
+      kind: syncKind,
+      status: "cancelled",
+      finished_at: new Date().toISOString(),
+      stats: { cancelled: true, cancel_reason: "superseded by newer sync", stage: "cancelled" },
+    }, { onConflict: "id" });
+    return { cancelled: true, superseded_by: activeQueueJob.data.id };
+  }
+
   const startJob = await sb.from("source_sync_jobs").upsert({
     id: ctx.jobId,
     source_account_id,
@@ -674,7 +698,21 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     : {};
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
-  if (effectiveNextCursor && !noForwardProgress && !stopRequested) {
+  const freshestQueueJob = await sb.from("job_queue")
+    .select("id")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id })
+    .in("status", ["pending", "running"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (freshestQueueJob.error) {
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_chain_lookup_failed", freshestQueueJob.error.message, { stage: "chain_lookup" });
+    throw new Error(`active sync chain lookup failed: ${freshestQueueJob.error.message}`);
+  }
+  const superseded = !!freshestQueueJob.data?.id && freshestQueueJob.data.id !== ctx.jobId;
+
+  if (effectiveNextCursor && !noForwardProgress && !stopRequested && !superseded) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
@@ -702,6 +740,28 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     }
     await nudgeWorkerDrain();
   } else {
+    if (superseded) {
+      await sb.from("source_sync_jobs").update({
+        status: "cancelled",
+        finished_at: new Date().toISOString(),
+        stats: {
+          ...prevStats,
+          ...latestStats,
+          cancelled: true,
+          cancel_reason: "superseded by newer sync",
+          stage: "cancelled",
+        },
+      }).eq("id", ctx.jobId);
+      return {
+        items: page.items.length,
+        normalized: needsNormalize.length,
+        deleted: deleted.length,
+        more: false,
+        page_count: pageCount,
+        cancelled: true,
+        superseded_by: freshestQueueJob.data?.id ?? null,
+      };
+    }
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
     if (completeAccount.error) {
