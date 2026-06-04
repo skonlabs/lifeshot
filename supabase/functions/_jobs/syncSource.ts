@@ -635,6 +635,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       },
     })))
     : [];
+  const normalizeQueueCount = Math.max(enqueuedNormalizeIds.length, needsNormalize.length);
 
   // Chain next page
   const { count: indexedTotal } = await sb.from("asset_source_refs")
@@ -690,7 +691,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const processingTotal = prevProcessingTotal + enqueuedNormalizeIds.length;
+  const processingTotal = prevProcessingTotal + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
 
   const finishJob = await sb.from("source_sync_jobs").update({
@@ -705,7 +706,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
+      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? (force ? seenTotal : prevNormalized) : progressIndexedCount),
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
