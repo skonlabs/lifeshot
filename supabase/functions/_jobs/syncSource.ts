@@ -710,7 +710,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : prevNormalized,
+      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
