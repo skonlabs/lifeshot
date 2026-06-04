@@ -635,7 +635,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       },
     })))
     : [];
-  const normalizeQueueCount = Math.max(enqueuedNormalizeIds.length, needsNormalize.length);
+  const normalizeQueueCount = enqueuedNormalizeIds.length;
 
   // Chain next page
   const { count: indexedTotal } = await sb.from("asset_source_refs")
@@ -691,7 +691,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const processingTotal = prevProcessingTotal + normalizeQueueCount;
+  const processingTotal = Math.max(prevProcessingTotal, prevNormalized) + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
 
   const finishJob = await sb.from("source_sync_jobs").update({
