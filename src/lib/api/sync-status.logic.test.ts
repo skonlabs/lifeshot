@@ -144,4 +144,15 @@ describe("isStaleSyncQueueState", () => {
       hasQueueJob: true,
     })).toBe(false);
   });
+
+  it("keeps processing-only runs active after listing finishes", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "running",
+      persistedStage: "processing",
+      indexed: 136,
+      discovered: 427,
+      hasMore: false,
+      hasQueueJob: true,
+    })).toBe(false);
+  });
 });
