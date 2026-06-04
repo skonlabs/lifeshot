@@ -210,6 +210,15 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     ocr_possible: isImage || isDocument,
   }, { onConflict: "asset_id" }, "phase1");
 
+  await upsertLog(sb, "asset_preview_metadata", {
+    asset_id,
+    user_id: asset.user_id,
+    thumbnail_generated: Boolean(asset.thumbnail_cache_key),
+    preview_generated: Boolean(asset.proxy_cache_key),
+    thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
+    preview_cache_key: asset.proxy_cache_key ?? null,
+  }, { onConflict: "asset_id" }, "phase1-preview");
+
   // For images: always write an asset_exif stub so phase 2 can upsert richer
   // data on top. Without this, assets lacking device_make/model still get a row.
   if (isImage) {
@@ -264,14 +273,14 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await upsertLog(sb, "asset_ai_ready_metadata", {
     asset_id, user_id: asset.user_id,
     ai_processing_possible: isImage || isVideo || isDocument,
-    ai_processing_consent: false,
+    ai_processing_consent: true,
     ocr_possible: isImage || isDocument,
     ocr_status: isImage || isDocument ? "pending" : "skipped",
     caption_status: isImage || isVideo || isDocument ? "pending" : "skipped",
     labels_status: isImage || isVideo || isDocument ? "pending" : "skipped",
     embedding_status: "pending",
     face_processing_possible: isImage || isVideo,
-    face_processing_consent: false,
+    face_processing_consent: true,
   }, { onConflict: "asset_id" }, "phase1");
 
   // Ensure assets.status reflects at least "normalized".
