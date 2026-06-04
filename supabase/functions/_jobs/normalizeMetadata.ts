@@ -107,7 +107,11 @@ async function upsertLog<T extends Record<string, unknown>>(
 
 export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { asset_id, source_account_id } = ctx.payload as { asset_id: string; source_account_id?: string };
+  const { asset_id, source_account_id, force_sync_run_id } = ctx.payload as {
+    asset_id: string;
+    source_account_id?: string;
+    force_sync_run_id?: string;
+  };
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
@@ -398,13 +402,14 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   }
 
   // ── Downstream pipeline ────────────────────────────────────────────────────
-  await enqueueJob("hashAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `hash:${asset_id}` });
-  await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}` });
-  await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}` });
-  await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}` });
-  await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}` });
-  await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}` });
-  await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}` });
+  const forceSuffix = force_sync_run_id ? `:force:${force_sync_run_id}` : "";
+  await enqueueJob("hashAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `hash:${asset_id}${forceSuffix}` });
+  await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
+  await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
+  await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
+  await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
+  await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}${forceSuffix}` });
+  await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
   // Trigger event detection so moments/stories update as assets are normalized.
   // Daily bucket prevents duplicate runs while still re-clustering once per day.
   const today = new Date().toISOString().slice(0, 10);
