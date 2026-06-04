@@ -596,7 +596,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     newestActiveJobIdBeforeCursorSave = await getLatestActiveSyncJobId(sb, source_account_id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_cursor_guard_failed", message, { stage: "cursor_guard" });
+    await failSyncJob(sb, source_account_id, progressJobId, "source_sync_cursor_guard_failed", message, { stage: "cursor_guard" });
     throw error;
   }
   const supersededBeforeCursorSave = !!newestActiveJobIdBeforeCursorSave && newestActiveJobIdBeforeCursorSave !== ctx.jobId;
