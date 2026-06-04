@@ -661,7 +661,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevNormalized = Number(prevStats.normalized ?? 0);
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
-  const prevIndexed = Number(prevStats.indexed ?? 0);
   const prevCurrentFolder = typeof prevStats.current_folder === "string" && prevStats.current_folder.length > 0
     ? prevStats.current_folder
     : null;
