@@ -221,6 +221,24 @@ async function saveCursor(sb: ReturnType<typeof serviceClient>, sourceAccountId:
   if (legacyInsert.error) throw new Error(`save cursor legacy insert: ${legacyInsert.error.message}`);
 }
 
+async function getLatestActiveSyncJobId(
+  sb: ReturnType<typeof serviceClient>,
+  sourceAccountId: string,
+): Promise<string | null> {
+  const activeQueueJob = await sb.from("job_queue")
+    .select("id")
+    .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: sourceAccountId })
+    .in("status", ["pending", "running"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (activeQueueJob.error) {
+    throw new Error(`active sync lookup failed: ${activeQueueJob.error.message}`);
+  }
+  return activeQueueJob.data?.id ?? null;
+}
+
 /**
  * syncSource — pull a page of assets from a source_account, upsert assets,
  * enqueue normalizeMetadata for each new/updated, and chain itself if more pages.
@@ -230,6 +248,26 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const { source_account_id, mode = "incremental", force = false } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean };
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
+
+  let latestActiveJobId: string | null = null;
+  try {
+    latestActiveJobId = await getLatestActiveSyncJobId(sb, source_account_id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_active_lookup_failed", message, { stage: "active_lookup" });
+    throw error;
+  }
+  if (latestActiveJobId && latestActiveJobId !== ctx.jobId) {
+    await sb.from("source_sync_jobs").upsert({
+      id: ctx.jobId,
+      source_account_id,
+      kind: syncKind,
+      status: "cancelled",
+      finished_at: new Date().toISOString(),
+      stats: { cancelled: true, cancel_reason: "superseded by newer sync", stage: "cancelled" },
+    }, { onConflict: "id" });
+    return { cancelled: true, superseded_by: latestActiveJobId };
+  }
 
   const startJob = await sb.from("source_sync_jobs").upsert({
     id: ctx.jobId,
@@ -321,7 +359,9 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   // Load cursor
   const cursorKind = mode === "initial" ? "list" : (caps.supportsDelta ? "delta" : "list");
-  const cursor = await loadCursor(sb, source_account_id, cursorKind);
+  const priorPageCount = Number(jobStats.page_count ?? 0);
+  const shouldIgnoreSavedCursor = force && mode === "initial" && priorPageCount === 0;
+  const cursor = shouldIgnoreSavedCursor ? null : await loadCursor(sb, source_account_id, cursorKind);
 
   await writeProgress(sb, ctx.jobId, { stage: "listing", provider_kind: providerKind });
 
@@ -545,8 +585,20 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .eq("source_account_id", source_account_id).in("source_asset_id", deleted);
   }
 
-  // Save cursor
-  await saveCursor(sb, source_account_id, cursorKind, page.nextCursor);
+  let newestActiveJobIdBeforeCursorSave: string | null = null;
+  try {
+    newestActiveJobIdBeforeCursorSave = await getLatestActiveSyncJobId(sb, source_account_id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_cursor_guard_failed", message, { stage: "cursor_guard" });
+    throw error;
+  }
+  const supersededBeforeCursorSave = !!newestActiveJobIdBeforeCursorSave && newestActiveJobIdBeforeCursorSave !== ctx.jobId;
+
+  // Save cursor only if this run is still the newest active sync for the account.
+  if (!supersededBeforeCursorSave) {
+    await saveCursor(sb, source_account_id, cursorKind, page.nextCursor);
+  }
 
   // 4) Bulk-enqueue normalizeMetadata — one INSERT for all changed assets.
   if (needsNormalize.length > 0) {
@@ -674,7 +726,19 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     : {};
   const stopRequested = latestJobState.data?.status === "cancelled" || latestStats.cancelled === true;
 
-  if (effectiveNextCursor && !noForwardProgress && !stopRequested) {
+  let freshestActiveJobId: string | null = newestActiveJobIdBeforeCursorSave;
+  if (!freshestActiveJobId) {
+    try {
+      freshestActiveJobId = await getLatestActiveSyncJobId(sb, source_account_id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await failSyncJob(sb, source_account_id, ctx.jobId, "source_sync_chain_lookup_failed", message, { stage: "chain_lookup" });
+      throw error;
+    }
+  }
+  const superseded = !!freshestActiveJobId && freshestActiveJobId !== ctx.jobId;
+
+  if (effectiveNextCursor && !noForwardProgress && !stopRequested && !superseded) {
     const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
@@ -702,6 +766,28 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     }
     await nudgeWorkerDrain();
   } else {
+    if (superseded) {
+      await sb.from("source_sync_jobs").update({
+        status: "cancelled",
+        finished_at: new Date().toISOString(),
+        stats: {
+          ...prevStats,
+          ...latestStats,
+          cancelled: true,
+          cancel_reason: "superseded by newer sync",
+          stage: "cancelled",
+        },
+      }).eq("id", ctx.jobId);
+      return {
+        items: page.items.length,
+        normalized: needsNormalize.length,
+        deleted: deleted.length,
+        more: false,
+        page_count: pageCount,
+        cancelled: true,
+        superseded_by: freshestActiveJobId ?? null,
+      };
+    }
     const completeAccount = await sb.from("source_accounts").update({ last_synced_at: new Date().toISOString(), status: "active" })
       .eq("id", source_account_id);
     if (completeAccount.error) {
