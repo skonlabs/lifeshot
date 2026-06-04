@@ -437,7 +437,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           ? runningJob.stats as Record<string, unknown>
           : {};
         const processingTotal = Number(stats.processing_total ?? stats.discovered ?? 0);
-        const normalizedCount = Number(stats.normalized ?? 0) + 1;
+        const pendingNormalizeRes = await sb.from("job_queue")
+          .select("id", { count: "exact", head: true })
+          .eq("job_name", "normalizeMetadata")
+          .in("status", ["pending", "running"])
+          .contains("payload", {
+            source_account_id,
+            ...(sync_run_id ? { sync_run_id } : {}),
+          });
+        const pendingNormalize = Math.max((pendingNormalizeRes.count ?? 1) - 1, 0);
+        const normalizedCount = Math.max(processingTotal - pendingNormalize, Number(stats.normalized ?? 0) + 1);
         const complete = processingTotal > 0 && normalizedCount >= processingTotal && stats.has_more !== true;
         const merged = {
           ...stats,
