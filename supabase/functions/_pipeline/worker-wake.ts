@@ -64,18 +64,28 @@ async function fallbackHttpDrain(opts: WorkerDrainOptions): Promise<void> {
   }).catch(() => undefined);
 }
 
+async function fallbackInProcessDrain(opts: WorkerDrainOptions): Promise<void> {
+  try {
+    const { drainUntilEmpty, drainUntilEmptyForLanes } = await import("./runner.ts");
+    if ((opts.lanes?.length ?? 0) > 0) {
+      await drainUntilEmptyForLanes(opts.budgetMs ?? 50_000, opts.batch ?? 4, opts.lanes);
+      return;
+    }
+    await drainUntilEmpty(opts.budgetMs ?? 50_000, opts.batch ?? 4);
+  } catch {
+    // best effort
+  }
+}
+
 export async function nudgeWorkerDrain(opts: WorkerDrainOptions = {}): Promise<void> {
   const task = (async () => {
-    try {
-      const { drainUntilEmpty, drainUntilEmptyForLanes } = await import("./runner.ts");
-      if ((opts.lanes?.length ?? 0) > 0) {
-        await drainUntilEmptyForLanes(opts.budgetMs ?? 50_000, opts.batch ?? 4, opts.lanes);
-        return;
-      }
-      await drainUntilEmpty(opts.budgetMs ?? 50_000, opts.batch ?? 4);
-    } catch {
+    const workerUrl = getWorkerDrainUrl(opts);
+    if (workerUrl) {
       await fallbackHttpDrain(opts);
+      return;
     }
+
+    await fallbackInProcessDrain(opts);
   })();
 
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
