@@ -662,7 +662,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
   const prevIndexed = Number(prevStats.indexed ?? 0);
-  const prevConsecutiveEmpty = Number(prevStats.consecutive_empty_pages ?? 0);
+  const prevCurrentFolder = typeof prevStats.current_folder === "string" && prevStats.current_folder.length > 0
+    ? prevStats.current_folder
+    : null;
+  const currentFolder = page.items.map(getProgressFolderLabel).find(Boolean) ?? prevCurrentFolder;
   const currentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
     ? prevStats.current_file
     : page.items.map(getProgressFileLabel).find(Boolean) ?? null;
@@ -691,30 +694,13 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedCount = indexedTotal ?? 0;
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
-  const indexedAdvanced = progressIndexedCount > prevIndexed;
-  const isCurrentlyEmpty = page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
-  const consecutiveEmptyPages = isCurrentlyEmpty ? prevConsecutiveEmpty + 1 : 0;
-  // Some providers legitimately emit empty continuation pages while traversing
-  // deep trees or filtering unsupported entries. Treat isolated empty pages as
-  // normal and only terminate after a long consecutive run with a live cursor.
-  const noForwardProgress = !!newCursor && consecutiveEmptyPages > 100;
-
-  if (noForwardProgress) {
-    await recordSyncError(
-      sb,
-      source_account_id,
-      "sync_no_progress_terminated",
-      `Connector reported more pages but we received ${consecutiveEmptyPages} consecutive empty pages (no new files, deletions, or metadata work); terminating sync to avoid a stale loop.`,
-      { provider_kind: providerKind, page_count: pageCount, cursor: newCursor },
-    );
-  }
 
   const finishJob = await sb.from("source_sync_jobs").update({
-    status: effectiveNextCursor && !noForwardProgress ? "running" : "completed",
-    finished_at: effectiveNextCursor && !noForwardProgress ? null : new Date().toISOString(),
+    status: effectiveNextCursor ? "running" : "completed",
+    finished_at: effectiveNextCursor ? null : new Date().toISOString(),
     stats: {
       ...prevStats,
-      stage: effectiveNextCursor && !noForwardProgress ? "indexing" : "completed",
+      stage: effectiveNextCursor ? "indexing" : "completed",
       provider_kind: providerKind,
       page_items: page.items.length,
       seen_total: seenTotal,
@@ -722,11 +708,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       discovered,
       indexed: progressIndexedCount,
       normalized: prevNormalized + needsNormalize.length,
+      ...(currentFolder ? { current_folder: currentFolder } : {}),
       ...(currentFile ? { current_file: currentFile } : {}),
-      has_more: !!effectiveNextCursor && !noForwardProgress,
+      has_more: !!effectiveNextCursor,
       page_count: pageCount,
       last_cursor: newCursor,
-      consecutive_empty_pages: consecutiveEmptyPages,
     },
   }).eq("id", ctx.jobId);
   if (finishJob.error) {
@@ -763,8 +749,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   }
   const superseded = !!freshestActiveJobId && freshestActiveJobId !== ctx.jobId;
 
-  if (effectiveNextCursor && !noForwardProgress && !stopRequested && !superseded) {
-    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: ctx.payload });
+  if (effectiveNextCursor && !stopRequested && !superseded) {
+    const nextJob = await enqueueJob("syncSource", { userId: acct.user_id, payload: { ...ctx.payload, sync_run_id: syncRunId } });
     if (nextJob.id) {
       await sb.from("source_sync_jobs").upsert({
         id: nextJob.id,
@@ -781,11 +767,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           discovered,
           indexed: progressIndexedCount,
           normalized: prevNormalized + needsNormalize.length,
+          ...(currentFolder ? { current_folder: currentFolder } : {}),
           ...(currentFile ? { current_file: currentFile } : {}),
           has_more: true,
           page_count: pageCount,
           last_cursor: newCursor,
-          consecutive_empty_pages: consecutiveEmptyPages,
         },
       }, { onConflict: "id" });
     }
