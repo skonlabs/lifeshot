@@ -119,4 +119,14 @@ describe("isStaleSyncQueueState", () => {
       hasQueueJob: true,
     })).toBe(false);
   });
+
+  it("keeps a freshly queued force sync active when current job progress is still zero", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "pending",
+      persistedStage: "queued",
+      indexed: 0,
+      discovered: 1,
+      hasQueueJob: true,
+    })).toBe(false);
+  });
 });
