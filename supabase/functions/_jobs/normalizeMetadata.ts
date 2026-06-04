@@ -18,6 +18,38 @@ import { extractExifFromBytes } from "../_extractors/exif.ts";
 
 const HEAD_BYTES = 384 * 1024;
 
+async function nudgeWorkerDrain() {
+  const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
+  const secret = Deno.env.get("WORKER_SECRET") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
+  if (!base) return;
+
+  let workerUrl = "";
+  try {
+    workerUrl = `${new URL(base).origin}/functions/v1/worker/drain?batch=4&budget_ms=50000`;
+  } catch {
+    return;
+  }
+
+  const request = fetch(workerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(anonKey ? { authorization: `Bearer ${anonKey}` } : {}),
+      ...(secret ? { "x-worker-secret": secret } : {}),
+    },
+    body: JSON.stringify({}),
+  }).catch(() => undefined);
+
+  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) {
+    edgeRuntime.waitUntil(request);
+    return;
+  }
+
+  await request;
+}
+
 function geohashEncode(lat: number, lng: number, precision = 9): string {
   const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
   let minLat = -90, maxLat = 90, minLng = -180, maxLng = 180;
@@ -422,6 +454,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
   if (source_account_id) {
     try {
+      const pendingNormalizeRes = await sb.from("job_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("job_name", "normalizeMetadata")
+        .in("status", ["pending", "running"])
+        .contains("payload", {
+          source_account_id,
+          ...(sync_run_id ? { sync_run_id } : {}),
+        });
+      const pendingNormalize = Math.max((pendingNormalizeRes.count ?? 1) - 1, 0);
+
       const syncJobQuery = sb.from("source_sync_jobs")
         .select("id, stats, status")
         .eq("source_account_id", source_account_id)
@@ -436,16 +478,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         const stats = (typeof runningJob.stats === "object" && runningJob.stats !== null)
           ? runningJob.stats as Record<string, unknown>
           : {};
-        const processingTotal = Number(stats.processing_total ?? stats.discovered ?? 0);
-        const pendingNormalizeRes = await sb.from("job_queue")
-          .select("id", { count: "exact", head: true })
-          .eq("job_name", "normalizeMetadata")
-          .in("status", ["pending", "running"])
-          .contains("payload", {
-            source_account_id,
-            ...(sync_run_id ? { sync_run_id } : {}),
-          });
-        const pendingNormalize = Math.max((pendingNormalizeRes.count ?? 1) - 1, 0);
+        const processingTotal = Math.max(Number(stats.processing_total ?? stats.discovered ?? 0), Number(stats.normalized ?? 0) + pendingNormalize + 1);
         const normalizedCount = Math.max(processingTotal - pendingNormalize, Number(stats.normalized ?? 0) + 1);
         const complete = processingTotal > 0 && normalizedCount >= processingTotal && stats.has_more !== true;
         const merged = {
@@ -467,10 +500,19 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             last_synced_at: new Date().toISOString(),
             status: "active",
           }).eq("id", source_account_id);
+        } else if (pendingNormalize > 0) {
+          await nudgeWorkerDrain();
         }
+      } else if (pendingNormalize > 0) {
+        await nudgeWorkerDrain();
       }
-    } catch {
-      // best-effort progress update
+    } catch (error) {
+      console.error("normalizeMetadata sync progress update failed", {
+        asset_id,
+        source_account_id,
+        sync_run_id,
+        error: String((error as Error)?.message ?? error),
+      });
     }
   }
 
