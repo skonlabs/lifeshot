@@ -6,6 +6,7 @@ import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { LANES, laneFor } from "../_pipeline/lanes.ts";
+import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
@@ -53,17 +54,9 @@ async function kickWorker(authHeader?: string | null, requestUrl?: string | null
     .find((origin) => origin.includes(".supabase.co"));
   if (!base) return;
   const workerUrl = `${base}/functions/v1/worker/drain`;
-  const secret = Deno.env.get("WORKER_SECRET") ?? "";
-  const authorization = authHeader && authHeader.startsWith("Bearer ")
-    ? authHeader
-    : `Bearer ${ENV.SUPABASE_ANON_KEY}`;
   const nudge = fetch(workerUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(authorization ? { "authorization": authorization } : {}),
-      ...(secret ? { "x-worker-secret": secret } : {}),
-    },
+    headers: getWorkerWakeHeaders(authHeader),
     body: JSON.stringify({}),
   }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
   if (globalAny.EdgeRuntime?.waitUntil) {
@@ -84,11 +77,7 @@ async function drainWorkerOnce(authHeader?: string | null) {
   if (!workerBase) return;
   await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(authHeader ? { "authorization": authHeader } : {}),
-      ...(Deno.env.get("WORKER_SECRET") ? { "x-worker-secret": Deno.env.get("WORKER_SECRET")! } : {}),
-    },
+    headers: getWorkerWakeHeaders(authHeader),
     body: JSON.stringify({}),
   }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
 }
