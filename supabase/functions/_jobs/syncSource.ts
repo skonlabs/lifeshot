@@ -598,7 +598,17 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const indexedAdvanced = progressIndexedCount > prevIndexed;
-  const noForwardProgress = !!newCursor && page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
+  // Only fire the "no progress" guard AFTER we've already processed at least
+  // one page. The first page of a Dropbox/Drive recursive listing frequently
+  // returns only folder entries (no file items) before reaching files, with
+  // a valid continuation cursor — that is normal enumeration, not a stale
+  // loop. Killing the sync there leaves users stuck at 0 indexed.
+  const noForwardProgress = prevPageCount > 0
+    && !!newCursor
+    && page.items.length === 0
+    && deleted.length === 0
+    && needsNormalize.length === 0
+    && !indexedAdvanced;
 
   if (noForwardProgress) {
     await recordSyncError(
