@@ -273,14 +273,14 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await upsertLog(sb, "asset_ai_ready_metadata", {
     asset_id, user_id: asset.user_id,
     ai_processing_possible: isImage || isVideo || isDocument,
-    ai_processing_consent: true,
+    ai_processing_consent: false,
     ocr_possible: isImage || isDocument,
     ocr_status: isImage || isDocument ? "pending" : "skipped",
     caption_status: isImage || isVideo || isDocument ? "pending" : "skipped",
     labels_status: isImage || isVideo || isDocument ? "pending" : "skipped",
     embedding_status: "pending",
     face_processing_possible: isImage || isVideo,
-    face_processing_consent: true,
+    face_processing_consent: false,
   }, { onConflict: "asset_id" }, "phase1");
 
   // Ensure assets.status reflects at least "normalized".
