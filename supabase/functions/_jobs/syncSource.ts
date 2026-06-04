@@ -41,6 +41,11 @@ function getProgressFileLabel(item: {
   return leaf ?? pathCandidate;
 }
 
+function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null, forceRunId?: string | null) {
+  const base = `normalize:${assetId}:${modifiedTime ?? "initial"}`;
+  return forceRunId ? `${base}:force:${forceRunId}` : base;
+}
+
 async function nudgeWorkerDrain() {
   const base = Deno.env.get("SUPABASE_URL") ?? Deno.env.get("PROJECT_URL") ?? "";
   const secret = Deno.env.get("WORKER_SECRET") ?? "";
@@ -542,8 +547,12 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       name: "normalizeMetadata",
       opts: {
         userId: acct.user_id,
-        payload: { asset_id: assetId, source_account_id },
-        idempotencyKey: `normalize:${assetId}:${modifiedTime ?? "initial"}`,
+        payload: {
+          asset_id: assetId,
+          source_account_id,
+          ...(force ? { force_sync_run_id: ctx.jobId } : {}),
+        },
+        idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? ctx.jobId : null),
       },
     })));
   }
