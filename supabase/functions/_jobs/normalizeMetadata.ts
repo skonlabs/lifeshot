@@ -125,7 +125,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
-    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, status")
+    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
     .eq("id", asset_id).single();
   if (error || !asset) throw new Error("not found: asset");
 
