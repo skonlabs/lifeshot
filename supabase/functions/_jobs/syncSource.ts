@@ -2,7 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
-import { nudgeWorkerDrain } from "../_pipeline/worker-wake.ts";
+import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -77,7 +77,7 @@ function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null
 }
 
 async function nudgeWorkerDrain() {
-  await nudgeWorkerDrain({ batch: 1, budgetMs: 50_000 });
+  await wakeWorkerDrain({ batch: 1, budgetMs: 50_000 });
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
