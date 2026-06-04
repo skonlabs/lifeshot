@@ -25,6 +25,13 @@ function geoKey(lat: number, lng: number): string {
   return `${lat.toFixed(2)}:${lng.toFixed(2)}`;
 }
 
+function isMissingColumnError(message?: string | null, column?: string) {
+  if (!message || !column) return false;
+  const normalized = message.toLowerCase();
+  const target = column.toLowerCase();
+  return normalized.includes(target) && (normalized.includes("schema cache") || normalized.includes("does not exist") || normalized.includes("could not find"));
+}
+
 export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { user_id, asset_id } = ctx.payload as { user_id?: string; asset_id?: string };
@@ -131,7 +138,7 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
     }).eq("asset_id", row.asset_id);
 
     // Write the per-asset location row.
-    const { error: lErr } = await sb.from("asset_locations").upsert({
+    const locationRow = {
       asset_id: row.asset_id,
       user_id: uid,
       lat,
@@ -140,7 +147,19 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       country: geo.country ?? null,
       place_id: placeId,
       geocoded_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" });
+    };
+    let { error: lErr } = await sb.from("asset_locations").upsert(locationRow, { onConflict: "asset_id" });
+    if (lErr && isMissingColumnError(lErr.message, "user_id")) {
+      lErr = (await sb.from("asset_locations").upsert({
+        asset_id: row.asset_id,
+        lat,
+        lng,
+        city: geo.admin ?? null,
+        country: geo.country ?? null,
+        place_id: placeId,
+        geocoded_at: new Date().toISOString(),
+      }, { onConflict: "asset_id" })).error;
+    }
     if (lErr) throw new Error(`clusterPlaces asset_locations upsert: ${lErr.message}`);
 
     affectedAssets.push(row.asset_id);
