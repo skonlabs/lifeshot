@@ -22,7 +22,14 @@ async function writeProgress(
     const prev = (cur.data?.stats && typeof cur.data.stats === "object")
       ? cur.data.stats as Record<string, unknown>
       : {};
-    await sb.from("source_sync_jobs").update({ stats: { ...prev, ...patch } }).eq("id", jobId);
+    const next = { ...prev, ...patch };
+    const prevDiscovered = Number(prev.discovered ?? 0);
+    const patchDiscovered = Number(patch.discovered ?? prevDiscovered);
+    const prevIndexed = Number(prev.indexed ?? 0);
+    const patchIndexed = Number(patch.indexed ?? prevIndexed);
+    next.discovered = Math.max(prevDiscovered, patchDiscovered);
+    next.indexed = Math.max(prevIndexed, patchIndexed);
+    await sb.from("source_sync_jobs").update({ stats: next }).eq("id", jobId);
   } catch {
     // best effort
   }
