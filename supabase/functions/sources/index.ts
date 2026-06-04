@@ -73,6 +73,26 @@ async function kickWorker(authHeader?: string | null, requestUrl?: string | null
   await nudge;
 }
 
+async function drainWorkerOnce(authHeader?: string | null) {
+  const workerBase = (() => {
+    try {
+      return new URL(ENV.SUPABASE_URL).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (!workerBase) return;
+  await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(authHeader ? { "authorization": authHeader } : {}),
+      ...(Deno.env.get("WORKER_SECRET") ? { "x-worker-secret": Deno.env.get("WORKER_SECRET")! } : {}),
+    },
+    body: JSON.stringify({}),
+  }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
+}
+
 function isMissingColumnError(message?: string | null, column?: string) {
   if (!message || !column) return false;
   const normalized = message.toLowerCase();
@@ -462,7 +482,9 @@ app.get("/v1/:id/status", async (c) => {
     lastJob?.status === "cancelled" ||
     persistedJobStats.cancelled === true ||
     /cancelled by user/i.test(queueJobError ?? "");
-  const selectionDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
+  const persistedIndexed = Number(persistedJobStats.indexed ?? 0);
+  const persistedDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0);
+  const selectionDiscovered = Math.max(persistedDiscovered, indexed);
   const queueLooksStale = isStaleSyncQueueState({
     queueStatus: queueJob?.status ?? null,
     persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
@@ -471,8 +493,8 @@ app.get("/v1/:id/status", async (c) => {
     // asset count is high while the job has done zero work — using it here
     // mis-labels brand-new pending jobs as "stale" and the UI never flips to
     // syncing.
-    indexed: Number(persistedJobStats.indexed ?? 0),
-    discovered: Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0),
+    indexed: persistedIndexed,
+    discovered: persistedDiscovered,
     hasQueueJob: !!queueJob,
   });
   const effectiveJobStatus = cancelled
@@ -481,14 +503,19 @@ app.get("/v1/:id/status", async (c) => {
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
-    discovered: Math.max(Number(persistedJobStats.discovered ?? 0), indexed, 1),
-    indexed,
+    discovered: Math.max(persistedDiscovered, 1),
+    indexed: persistedIndexed,
     queue_attempts: Number(queueJob.attempts ?? 0),
     queue_error: cancelled ? null : (queueJob.last_error ?? null),
   } : {};
   const jobStats = { ...persistedJobStats, ...queueJobStats };
-  const discovered = Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
-  const progressIndexed = indexed;
+  const hasLiveQueueProgress = !!queueJob && !queueLooksStale;
+  const discovered = hasLiveQueueProgress
+    ? Math.max(Number(jobStats.discovered ?? 0), 1)
+    : Math.max(Number(jobStats.discovered ?? 0), indexed, queueJob ? 1 : 0);
+  const progressIndexed = hasLiveQueueProgress
+    ? Number(jobStats.indexed ?? 0)
+    : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
   // Only show syncing if there is actually an active (pending/running) job in
