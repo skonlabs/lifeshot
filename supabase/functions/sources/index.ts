@@ -559,6 +559,7 @@ app.get("/v1/:id/status", async (c) => {
     queue_error: cancelled ? null : (queueJob.last_error ?? null),
   } : {};
   const jobStats = { ...persistedJobStats, ...queueJobStats };
+  const persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
   const hasLiveQueueProgress = !!queueJob && !queueLooksStale;
   const discovered = hasLiveQueueProgress
     ? Math.max(Number(jobStats.discovered ?? 0), 1)
@@ -568,10 +569,11 @@ app.get("/v1/:id/status", async (c) => {
     : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
+  const processingOnly = !unauthorized && !queueLooksStale && !activeJob && lastJob?.status === "running" && persistedStage === "processing";
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = !unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running");
+  const syncing = processingOnly || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
   const accountStatus = unauthorized
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
