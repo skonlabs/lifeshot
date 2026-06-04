@@ -569,6 +569,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevPageCount = Number(prevStats.page_count ?? 0);
   const prevCursor = typeof prevStats.last_cursor === "string" ? prevStats.last_cursor as string : null;
   const prevIndexed = Number(prevStats.indexed ?? 0);
+  const prevConsecutiveEmpty = Number(prevStats.consecutive_empty_pages ?? 0);
   const currentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
     ? prevStats.current_file
     : page.items.map(getProgressFileLabel).find(Boolean) ?? null;
@@ -598,24 +599,19 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const indexedAdvanced = progressIndexedCount > prevIndexed;
-  // Only fire the "no progress" guard AFTER we've already processed at least
-  // one page. The first page of a Dropbox/Drive recursive listing frequently
-  // returns only folder entries (no file items) before reaching files, with
-  // a valid continuation cursor — that is normal enumeration, not a stale
-  // loop. Killing the sync there leaves users stuck at 0 indexed.
-  const noForwardProgress = prevPageCount > 0
-    && !!newCursor
-    && page.items.length === 0
-    && deleted.length === 0
-    && needsNormalize.length === 0
-    && !indexedAdvanced;
+  const isCurrentlyEmpty = page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
+  const consecutiveEmptyPages = isCurrentlyEmpty ? prevConsecutiveEmpty + 1 : 0;
+  // Some providers legitimately emit empty continuation pages while traversing
+  // deep trees or filtering unsupported entries. Treat isolated empty pages as
+  // normal and only terminate after a long consecutive run with a live cursor.
+  const noForwardProgress = !!newCursor && consecutiveEmptyPages > 100;
 
   if (noForwardProgress) {
     await recordSyncError(
       sb,
       source_account_id,
       "sync_no_progress_terminated",
-      "Connector reported more pages but this page produced no new files, deletions, or metadata work; terminating sync to avoid a stale loop.",
+      `Connector reported more pages but we received ${consecutiveEmptyPages} consecutive empty pages (no new files, deletions, or metadata work); terminating sync to avoid a stale loop.`,
       { provider_kind: providerKind, page_count: pageCount, cursor: newCursor },
     );
   }
@@ -637,6 +633,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       has_more: !!effectiveNextCursor && !noForwardProgress,
       page_count: pageCount,
       last_cursor: newCursor,
+      consecutive_empty_pages: consecutiveEmptyPages,
     },
   }).eq("id", ctx.jobId);
   if (finishJob.error) {
@@ -683,6 +680,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
           has_more: true,
           page_count: pageCount,
           last_cursor: newCursor,
+          consecutive_empty_pages: consecutiveEmptyPages,
         },
       }, { onConflict: "id" });
     }
