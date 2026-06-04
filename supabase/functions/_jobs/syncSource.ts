@@ -40,12 +40,34 @@ function getProgressFileLabel(item: {
   provider_url?: string;
   raw?: Record<string, unknown>;
 }): string | null {
+  const pathCandidate = getProgressPath(item);
+  if (!pathCandidate) return null;
+  const leaf = pathCandidate.split(/[\\/]/).filter(Boolean).pop();
+  return leaf ?? pathCandidate;
+}
+
+function getProgressFolderLabel(item: {
+  provider_asset_id?: string;
+  provider_url?: string;
+  raw?: Record<string, unknown>;
+}): string | null {
+  const pathCandidate = getProgressPath(item);
+  if (!pathCandidate) return null;
+  const parts = pathCandidate.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return "Root";
+  return parts.slice(0, -1).join("/");
+}
+
+function getProgressPath(item: {
+  provider_asset_id?: string;
+  provider_url?: string;
+  raw?: Record<string, unknown>;
+}): string | null {
   const raw = item.raw && typeof item.raw === "object" ? item.raw : {};
   const pathCandidate = [raw.path_display, raw.path, raw.name, item.provider_url, item.provider_asset_id]
     .find((value) => typeof value === "string" && value.trim().length > 0);
   if (typeof pathCandidate !== "string") return null;
-  const leaf = pathCandidate.split(/[\\/]/).filter(Boolean).pop();
-  return leaf ?? pathCandidate;
+  return pathCandidate;
 }
 
 function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null, forceRunId?: string | null) {
@@ -245,9 +267,10 @@ async function getLatestActiveSyncJobId(
  */
 export async function syncSource(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { source_account_id, mode = "incremental", force = false } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean };
+  const { source_account_id, mode = "incremental", force = false, sync_run_id } = ctx.payload as { source_account_id: string; mode?: "initial" | "incremental"; force?: boolean; sync_run_id?: string };
   if (!source_account_id) throw new Error("invalid: source_account_id missing");
   const syncKind = mode === "initial" ? "initial" : "incremental";
+  const syncRunId = sync_run_id ?? ctx.jobId;
 
   let latestActiveJobId: string | null = null;
   try {
@@ -387,6 +410,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     stage: "indexing",
     page_items: page.items.length,
     discovered: Math.max(progressBaseIndexed + page.items.length, progressBaseIndexed, 1),
+    current_folder: page.items.map(getProgressFolderLabel).find(Boolean) ?? null,
     current_file: page.items.map(getProgressFileLabel).find(Boolean) ?? null,
   });
 
@@ -609,9 +633,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         payload: {
           asset_id: assetId,
           source_account_id,
-          ...(force ? { force_sync_run_id: ctx.jobId } : {}),
+          sync_run_id: syncRunId,
+          ...(force ? { force_sync_run_id: syncRunId } : {}),
         },
-        idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? ctx.jobId : null),
+        idempotencyKey: normalizeJobIdempotencyKey(assetId, modifiedTime, force ? syncRunId : null),
       },
     })));
   }
