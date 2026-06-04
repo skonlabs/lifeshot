@@ -601,17 +601,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const indexedAdvanced = progressIndexedCount > prevIndexed;
   const isCurrentlyEmpty = page.items.length === 0 && deleted.length === 0 && needsNormalize.length === 0 && !indexedAdvanced;
   const consecutiveEmptyPages = isCurrentlyEmpty ? prevConsecutiveEmpty + 1 : 0;
-  // Only fire the "no progress" guard AFTER we've already processed at least
-  // one page. The first page of a Dropbox/Drive recursive listing frequently
-  // returns only folder entries (no file items) before reaching files, with
-  // a valid continuation cursor — that is normal enumeration, not a stale
-  // loop. Killing the sync there leaves users stuck at 0 indexed.
-  const noForwardProgress = consecutiveEmptyPages > 100
-    && !!newCursor
-    && page.items.length === 0
-    && deleted.length === 0
-    && needsNormalize.length === 0
-    && !indexedAdvanced;
+  // Some providers legitimately emit empty continuation pages while traversing
+  // deep trees or filtering unsupported entries. Treat isolated empty pages as
+  // normal and only terminate after a long consecutive run with a live cursor.
+  const noForwardProgress = !!newCursor && consecutiveEmptyPages > 100;
 
   if (noForwardProgress) {
     await recordSyncError(
