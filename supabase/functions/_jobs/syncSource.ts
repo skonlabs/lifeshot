@@ -665,10 +665,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   const prevCurrentFolder = typeof prevStats.current_folder === "string" && prevStats.current_folder.length > 0
     ? prevStats.current_folder
     : null;
-  const currentFolder = page.items.map(getProgressFolderLabel).find(Boolean) ?? prevCurrentFolder;
-  const currentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
+  const prevCurrentFile = typeof prevStats.current_file === "string" && prevStats.current_file.length > 0
     ? prevStats.current_file
-    : page.items.map(getProgressFileLabel).find(Boolean) ?? null;
+    : null;
+  const currentFolder = page.items.map(getProgressFolderLabel).find(Boolean) ?? prevCurrentFolder;
+  const currentFile = page.items.map(getProgressFileLabel).find(Boolean) ?? prevCurrentFile;
   const newCursor = page.nextCursor ?? null;
   const pageCount = prevPageCount + 1;
 
