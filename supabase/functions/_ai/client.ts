@@ -16,6 +16,20 @@ export class AIError extends Error {
   }
 }
 
+/**
+ * Process-local flag tripped the first time OpenAI returns 401 invalid_api_key.
+ * Once set, every subsequent call short-circuits — there is no point in
+ * burning thousands of jobs and 24-hour back-offs against a key we KNOW is
+ * broken. Operators rotate the key, restart the worker (new isolate clears
+ * the flag), and processing resumes.
+ */
+let badApiKey = false;
+
+function isInvalidKeyError(status: number | undefined, body: string): boolean {
+  if (status !== 401) return false;
+  return /invalid_api_key|incorrect api key|invalid api key/i.test(body);
+}
+
 function apiKey(): string {
   const k = (typeof Deno !== "undefined" ? Deno.env.get("OPENAI_API_KEY") : process.env?.OPENAI_API_KEY) ?? "";
   if (!k) throw new AIError("missing_api_key", "OPENAI_API_KEY not configured");
@@ -50,6 +64,9 @@ function breakerOK(model: string) {
 }
 
 async function httpJson(path: string, body: any, model: string, timeoutMs = aiConfig.timeoutMs): Promise<any> {
+  if (badApiKey) {
+    throw new AIError("invalid_api_key", "permanent: OPENAI_API_KEY is invalid — rotate the secret to resume AI processing", 401);
+  }
   breakerCheck(model);
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -68,6 +85,14 @@ async function httpJson(path: string, body: any, model: string, timeoutMs = aiCo
     if (!res.ok) {
       const text = await res.text();
       const ra = res.headers.get("retry-after");
+      if (isInvalidKeyError(res.status, text)) {
+        badApiKey = true;
+        throw new AIError(
+          "invalid_api_key",
+          "permanent: OPENAI_API_KEY is invalid — rotate the secret to resume AI processing",
+          401,
+        );
+      }
       throw new AIError(
         res.status === 429 ? "rate_limited" : "openai_error",
         `OpenAI ${res.status}: ${text.slice(0, 500)}`,
@@ -90,7 +115,9 @@ async function withRetry<T>(fn: () => Promise<T>, model: string): Promise<T> {
       return await fn();
     } catch (e: any) {
       err = e;
-      const retriable = e?.status === 429 || (e?.status >= 500 && e?.status < 600) || e?.name === "AbortError";
+      // 401 invalid_api_key is permanent — never retry it.
+      const isAuthErr = e?.code === "invalid_api_key" || e?.status === 401;
+      const retriable = !isAuthErr && (e?.status === 429 || (e?.status >= 500 && e?.status < 600) || e?.name === "AbortError");
       if (!retriable || attempt === aiConfig.retries.max) {
         breakerTrip(model);
         throw e;
