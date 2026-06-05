@@ -1,6 +1,4 @@
 # Project Memory
 
 ## Core
-NEVER use or mention Lovable Cloud. User has explicitly rejected it multiple times. Use Supabase directly (already connected) for all backend needs.
-
-## Memories
+User has granted DB access via Lovable Cloud permissions. When PG* env vars are present, USE psql directly to verify DB state — never claim "no database access". If PGHOST is missing, the permission toggle ("Read database" / "Add data" → Always allow) needs flipping; state that specifically rather than saying credentials are missing.
