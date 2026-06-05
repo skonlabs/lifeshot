@@ -1,6 +1,4 @@
 # Project Memory
 
 ## Core
-NEVER use or mention Lovable Cloud. User has explicitly rejected it multiple times. Use Supabase directly (already connected) for all backend needs.
-
-## Memories
+DB access available via `psql` in sandbox — PG* env vars set. Never tell user "I don't have database access". Always query directly with psql to verify data/state.
