@@ -9,7 +9,7 @@ describe("metadata pipeline invariants", () => {
     const thumb = undefined;
     const preview = { path: "user/asset/preview.jpg" };
 
-    const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? null;
+    const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? preview?.path ?? asset.proxy_cache_key ?? null;
     const fallbackPreviewKey = preview?.path ?? asset.proxy_cache_key ?? null;
 
     expect({
