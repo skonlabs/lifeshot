@@ -11,7 +11,7 @@
  * a 1x1 PNG that overwrites the real thumbnail URL with a grey pixel.
  * If no bytes can be obtained, we preserve any existing thumbnail_cache_key.
  */
-import { serviceClient } from "../_pipeline/clients.ts";
+import { ensureBuckets, serviceClient } from "../_pipeline/clients.ts";
 import { STORAGE_BUCKETS } from "../_pipeline/clients.ts";
 import { getConnector } from "../_sources/registry.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -36,8 +36,14 @@ async function fetchBytes(url: string, maxBytes = 4 * 1024 * 1024): Promise<{ by
   }
 }
 
+function isBucketMissing(error?: { message?: string | null } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? "";
+  return message.includes("bucket not found") || message.includes("not found");
+}
+
 export async function generateDerived(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
+  await ensureBuckets();
   const { asset_id } = ctx.payload as { asset_id: string };
   const { data: asset } = await sb.from("assets")
     .select("id, user_id, media_type, mime_type, thumbnail_cache_key, proxy_cache_key")
@@ -97,9 +103,15 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   if (thumbBytes) {
     const ext = thumbBytes.mime.split("/")[1]?.split("+")[0] ?? "jpg";
     const path = `${asset.user_id}/${asset_id}/thumb.${ext}`;
-    const { error } = await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, thumbBytes.bytes, {
+    let { error } = await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, thumbBytes.bytes, {
       contentType: thumbBytes.mime, upsert: true,
     });
+    if (isBucketMissing(error)) {
+      await ensureBuckets();
+      error = (await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, thumbBytes.bytes, {
+        contentType: thumbBytes.mime, upsert: true,
+      })).error;
+    }
     if (!error || /exists/i.test(error.message ?? "")) {
       written.push({ kind: "thumb", path, mime: thumbBytes.mime, bytes_written: thumbBytes.bytes.byteLength, blurhash: thumbBlurhash });
     } else {
@@ -133,9 +145,15 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   if (previewBytes) {
     const ext = previewBytes.mime.split("/")[1]?.split("+")[0] ?? "jpg";
     const path = `${asset.user_id}/${asset_id}/preview.${ext}`;
-    const { error } = await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, previewBytes.bytes, {
+    let { error } = await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, previewBytes.bytes, {
       contentType: previewBytes.mime, upsert: true,
     });
+    if (isBucketMissing(error)) {
+      await ensureBuckets();
+      error = (await sb.storage.from(STORAGE_BUCKETS.derived).upload(path, previewBytes.bytes, {
+        contentType: previewBytes.mime, upsert: true,
+      })).error;
+    }
     if (!error || /exists/i.test(error.message ?? "")) {
       written.push({ kind: "preview", path, mime: previewBytes.mime, bytes_written: previewBytes.bytes.byteLength });
     } else {
@@ -184,14 +202,16 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   const thumb = written.find((w) => w.kind === "thumb");
   const preview = written.find((w) => w.kind === "preview");
 
+  const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? null;
+  const fallbackPreviewKey = preview?.path ?? asset.proxy_cache_key ?? null;
   const { error: prevErr } = await sb.from("asset_preview_metadata").upsert({
     asset_id,
     user_id: asset.user_id,
     blurhash: thumb?.blurhash ?? preview?.blurhash ?? null,
-    thumbnail_generated: !!thumb,
-    preview_generated: !!preview,
-    thumbnail_cache_key: thumb?.path ?? null,
-    preview_cache_key: preview?.path ?? null,
+    thumbnail_generated: Boolean(fallbackThumbKey),
+    preview_generated: Boolean(fallbackPreviewKey),
+    thumbnail_cache_key: fallbackThumbKey,
+    preview_cache_key: fallbackPreviewKey,
   }, { onConflict: "asset_id" });
   if (prevErr) console.error("generateDerived: asset_preview_metadata upsert failed", { asset_id, error: prevErr.message });
 
