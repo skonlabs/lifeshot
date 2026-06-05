@@ -562,10 +562,27 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   // Collect assets needing normalizeMetadata (new OR modified).
   const needsNormalize: Array<{ assetId: string; modifiedTime: string | null }> = [];
+  // Track existing assets that should have their canonical row backfilled
+  // with fields the connector now provides (e.g. GPS unlocked by enabling
+  // include_media_info on Dropbox).
+  const existingAssetUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   for (const a of page.items) {
     const existing = refMap.get(a.provider_asset_id);
     const assetId = existing?.asset_id ?? newAssetMap.get(a.provider_asset_id);
     if (!assetId) continue;
+    if (existing) {
+      const patch: Record<string, unknown> = {};
+      if (a.location?.lat != null && a.location?.lng != null) {
+        patch.location_lat = a.location.lat;
+        patch.location_lng = a.location.lng;
+      }
+      if (a.capture_time) patch.capture_time = a.capture_time;
+      if (a.width) patch.width = a.width;
+      if (a.height) patch.height = a.height;
+      if (a.device_make) patch.device_make = a.device_make;
+      if (a.device_model) patch.device_model = a.device_model;
+      if (Object.keys(patch).length > 0) existingAssetUpdates.push({ id: assetId, patch });
+    }
     const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
     const isNew = !existing;
     const currentMetadata = metadataCompleteness.get(assetId) ?? {
@@ -599,6 +616,22 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasAudioMetadata: currentMetadata.hasAudioMetadata,
     })) {
       needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
+    }
+  }
+
+  // Apply existing-asset backfill. Only writes columns the connector now
+  // supplies; never clobbers fields with nulls. Forces normalizeMetadata for
+  // any asset that gained GPS so asset_gps + clusterPlaces re-runs.
+  if (existingAssetUpdates.length > 0) {
+    for (const u of existingAssetUpdates) {
+      const { error: upErr } = await sb.from("assets").update(u.patch).eq("id", u.id);
+      if (upErr) {
+        console.warn("syncSource: existing-asset backfill failed", { id: u.id, error: upErr.message });
+        continue;
+      }
+      if (u.patch.location_lat != null && !needsNormalize.some((n) => n.assetId === u.id)) {
+        needsNormalize.push({ assetId: u.id, modifiedTime: null });
+      }
     }
   }
 
