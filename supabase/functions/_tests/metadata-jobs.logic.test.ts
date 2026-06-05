@@ -18,9 +18,9 @@ describe("metadata pipeline invariants", () => {
       thumbnail_cache_key: fallbackThumbKey,
       preview_cache_key: fallbackPreviewKey,
     }).toEqual({
-      thumbnail_generated: false,
+      thumbnail_generated: true,
       preview_generated: true,
-      thumbnail_cache_key: null,
+      thumbnail_cache_key: "user/asset/preview.jpg",
       preview_cache_key: "user/asset/preview.jpg",
     });
   });
@@ -42,9 +42,9 @@ describe("metadata pipeline invariants", () => {
     };
 
     const fallbackPreviewMetadata = {
-      thumbnail_generated: Boolean(asset.thumbnail_cache_key),
+      thumbnail_generated: Boolean(asset.thumbnail_cache_key ?? asset.proxy_cache_key),
       preview_generated: Boolean(asset.proxy_cache_key),
-      thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
+      thumbnail_cache_key: asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null,
       preview_cache_key: asset.proxy_cache_key ?? null,
     };
 
