@@ -432,6 +432,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
   await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
   await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}${forceSuffix}` });
+  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `people:${asset_id}${forceSuffix}` });
   await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
   // Trigger event detection so moments/stories update as assets are normalized.
   // Daily bucket prevents duplicate runs while still re-clustering once per day.
