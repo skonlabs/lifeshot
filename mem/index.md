@@ -1,4 +1,4 @@
 # Project Memory
 
 ## Core
-DB access available via `psql` in sandbox — PG* env vars set. Never tell user "I don't have database access". Always query directly with psql to verify data/state.
+User has granted DB access via Lovable Cloud permissions. When PG* env vars are present, USE psql directly to verify DB state — never claim "no database access". If PGHOST is missing, the permission toggle ("Read database" / "Add data" → Always allow) needs flipping; state that specifically rather than saying credentials are missing.
