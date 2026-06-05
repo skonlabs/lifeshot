@@ -291,6 +291,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // phase 1 data (above) from being used by downstream jobs.
 
   let byteExtractionSuccess = false;
+  let hasGpsData = asset.location_lat != null && asset.location_lng != null;
 
   if (ref?.source_account_id && ref?.source_asset_id && isImage) {
     try {
@@ -348,6 +349,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
           if (ex.gps?.latitude != null && ex.gps?.longitude != null) {
             const lat = ex.gps.latitude, lng = ex.gps.longitude;
+            hasGpsData = true;
             await upsertLog(sb, "asset_gps", {
               asset_id, user_id: asset.user_id,
               gps_latitude: lat, gps_longitude: lng,
@@ -433,7 +435,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
   await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}${forceSuffix}` });
   await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `people:${asset_id}${forceSuffix}` });
-  await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
+  if (hasGpsData) {
+    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
+  }
   // Trigger event detection so moments/stories update as assets are normalized.
   // Daily bucket prevents duplicate runs while still re-clustering once per day.
   const today = new Date().toISOString().slice(0, 10);

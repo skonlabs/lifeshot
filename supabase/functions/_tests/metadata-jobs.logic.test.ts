@@ -67,4 +67,13 @@ describe("metadata pipeline invariants", () => {
 
     expect(indexed).toBe(15);
   });
+
+  it("only enqueues place clustering when coordinates exist", () => {
+    const shouldEnqueuePlaces = (lat: number | null, lng: number | null, extractedGps: boolean) =>
+      (lat != null && lng != null) || extractedGps;
+
+    expect(shouldEnqueuePlaces(null, null, false)).toBe(false);
+    expect(shouldEnqueuePlaces(40.7, -74.0, false)).toBe(true);
+    expect(shouldEnqueuePlaces(null, null, true)).toBe(true);
+  });
 });
