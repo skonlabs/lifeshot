@@ -3,22 +3,33 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
 /**
- * clusterPeople — surfaces people from face/person signals captured during AI
- * enrichment and persists them into `people` + `person_faces`.
+ * clusterPeople — groups detected faces into people using cosine similarity
+ * on 512-dim face description embeddings stored in asset_ai_enrichment.faces.
  *
- * Biometric consent gate: only runs when the user has
- * privacy_settings.face_processing_enabled = true. Without a true face-vector
- * model we cannot do identity clustering, so we group all detected faces under
- * a single auto-created "People in your photos" person per user. This makes the
- * /people endpoint (and the dashboard "People" stat + people_filter in the
- * catalog viewport) return real, navigable data. When a real face-embedding
- * provider is wired in, person_faces.face_vector can be populated and proper
- * clustering layered on top — the schema already supports it.
+ * Biometric consent gate: only runs when privacy_settings.face_processing_enabled = true.
  *
- * Idempotent: re-runs upsert on (person_id, asset_id) and on the person's
- * stable auto_label, so repeated invocations never duplicate rows.
+ * Algorithm:
+ *  1. Collect all faces (with embeddings) for the user (or specific asset).
+ *  2. For each face, find the closest existing person by cosine similarity.
+ *  3. If similarity ≥ CLUSTER_THRESHOLD, assign to that person.
+ *     Otherwise create a new person with an auto-incrementing label.
+ *  4. Write person_faces rows with real bbox and face_vector.
+ *
+ * Idempotent: upserts on (person_id, asset_id).
  */
-const AUTO_LABEL = "auto:unclustered-faces";
+
+const CLUSTER_THRESHOLD = 0.82; // cosine similarity; tune based on real data
+
+function cosineSim(a: number[], b: number[]): number {
+  if (!a.length || !b.length || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+}
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -36,64 +47,159 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "consent", clustered: 0 };
   }
 
-  // Collect assets that have at least one detected face.
-  // Faces are stored on asset_ai_enrichment.faces; we also treat a "person"
-  // object label as a weak face signal for assets enriched before faces existed.
+  // Fetch enrichment rows with face detections.
   let enrichQuery = sb
     .from("asset_ai_enrichment")
-    .select("asset_id, faces, objects")
+    .select("asset_id, faces")
     .eq("user_id", uid);
   if (asset_id) enrichQuery = enrichQuery.eq("asset_id", asset_id);
 
   const { data: enrichRows, error } = await enrichQuery;
   if (error) throw new Error(`clusterPeople fetch: ${error.message}`);
 
-  const candidates: Array<{ asset_id: string; faces: any[] }> = [];
+  // Build flat list of faces that have real embeddings.
+  interface FaceEntry {
+    asset_id: string;
+    face_index: number;
+    bbox: any;
+    description: string;
+    confidence: number;
+    embedding: number[];
+  }
+
+  const faceEntries: FaceEntry[] = [];
+  const facesWithoutEmbedding: Array<{ asset_id: string; face: any }> = [];
+
   for (const row of enrichRows ?? []) {
     const faces = Array.isArray(row.faces) ? row.faces : [];
-    if (faces.length > 0) {
-      candidates.push({ asset_id: row.asset_id, faces });
-      continue;
+    for (let i = 0; i < faces.length; i++) {
+      const f = faces[i];
+      const emb = Array.isArray(f.embedding) && f.embedding.length > 0 ? f.embedding as number[] : null;
+      if (emb) {
+        faceEntries.push({
+          asset_id: row.asset_id,
+          face_index: i,
+          bbox: f.bbox ?? null,
+          description: f.description ?? "",
+          confidence: f.score ?? f.confidence ?? 0.5,
+          embedding: emb,
+        });
+      } else if (f.score != null || f.confidence != null) {
+        // Face detected but no embedding — link to generic group.
+        facesWithoutEmbedding.push({ asset_id: row.asset_id, face: f });
+      }
     }
-    const objs = Array.isArray(row.objects) ? row.objects : [];
-    const hasPerson = objs.some((o: any) => {
-      const label = (typeof o === "string" ? o : o?.label ?? "").toLowerCase();
-      return label === "person" || label === "face" || label === "people";
-    });
-    if (hasPerson) candidates.push({ asset_id: row.asset_id, faces: [] });
   }
 
-  if (candidates.length === 0) return { user_id: uid, clustered: 0 };
+  // For faces without embeddings, upsert into a generic "unclustered" person.
+  let unclusteredLinked = 0;
+  if (facesWithoutEmbedding.length > 0) {
+    const { data: genericPerson, error: gpErr } = await sb
+      .from("people")
+      .upsert(
+        { user_id: uid, auto_label: "auto:unclustered-faces", display_name: "People in your photos", consent_required: true },
+        { onConflict: "user_id,auto_label" },
+      )
+      .select("id").single();
+    if (!gpErr && genericPerson) {
+      const rows = facesWithoutEmbedding.map(({ asset_id: aid, face }) => ({
+        person_id: genericPerson.id,
+        asset_id: aid,
+        bbox: face.bbox ?? null,
+        confidence: face.score ?? face.confidence ?? null,
+      }));
+      for (let i = 0; i < rows.length; i += 500) {
+        await sb.from("person_faces").upsert(rows.slice(i, i + 500), { onConflict: "person_id,asset_id" });
+        unclusteredLinked += Math.min(500, rows.length - i);
+      }
+    }
+  }
 
-  // Ensure a stable auto-created person exists (deduped via people_user_auto_label_uniq).
-  const { data: person, error: pErr } = await sb
+  if (faceEntries.length === 0) {
+    return { user_id: uid, people: 0, clustered: unclusteredLinked, no_embeddings: facesWithoutEmbedding.length };
+  }
+
+  // Load existing people with representative face vectors to match against.
+  // We use the first face_vector stored per person as the representative centroid.
+  const { data: existingPeople } = await sb
     .from("people")
-    .upsert(
-      { user_id: uid, auto_label: AUTO_LABEL, display_name: "People in your photos", consent_required: true },
-      { onConflict: "user_id,auto_label" },
-    )
-    .select("id")
-    .single();
-  if (pErr || !person) throw new Error(`clusterPeople person upsert: ${pErr?.message ?? "no row"}`);
+    .select("id, auto_label, display_name")
+    .eq("user_id", uid)
+    .like("auto_label", "auto:person:%");
 
-  // Upsert person_faces in chunks (idempotent on person_id,asset_id).
-  let linked = 0;
-  for (let i = 0; i < candidates.length; i += 500) {
-    const chunk = candidates.slice(i, i + 500).map((c) => {
-      const top = c.faces[0] ?? {};
-      return {
-        person_id: person.id,
-        asset_id: c.asset_id,
-        bbox: top.bbox ?? null,
-        confidence: typeof top.score === "number" ? top.score : null,
-      };
-    });
-    const { error: fErr } = await sb
+  // Load representative vectors for existing auto people.
+  const personVectors = new Map<string, { personId: string; autoLabel: string; centroid: number[] }>();
+  if (existingPeople?.length) {
+    const ids = existingPeople.map((p) => p.id);
+    const { data: pf } = await sb
       .from("person_faces")
-      .upsert(chunk, { onConflict: "person_id,asset_id" });
-    if (fErr) throw new Error(`clusterPeople person_faces upsert: ${fErr.message}`);
-    linked += chunk.length;
+      .select("person_id, face_vector")
+      .in("person_id", ids)
+      .not("face_vector", "is", null)
+      .order("created_at", { ascending: true });
+
+    for (const row of pf ?? []) {
+      if (!personVectors.has(row.person_id) && Array.isArray(row.face_vector)) {
+        personVectors.set(row.person_id, {
+          personId: row.person_id,
+          autoLabel: existingPeople.find((p) => p.id === row.person_id)?.auto_label ?? "",
+          centroid: row.face_vector as number[],
+        });
+      }
+    }
   }
 
-  return { user_id: uid, person_id: person.id, clustered: linked };
+  let personCounter = existingPeople?.length ?? 0;
+  let clusteredFaces = 0;
+
+  for (const entry of faceEntries) {
+    let matchedPersonId: string | null = null;
+    let bestSim = -1;
+
+    for (const pv of personVectors.values()) {
+      const sim = cosineSim(entry.embedding, pv.centroid);
+      if (sim > bestSim) { bestSim = sim; matchedPersonId = pv.personId; }
+    }
+
+    let personId: string;
+    if (matchedPersonId && bestSim >= CLUSTER_THRESHOLD) {
+      personId = matchedPersonId;
+    } else {
+      // Create a new person cluster.
+      personCounter++;
+      const autoLabel = `auto:person:${personCounter}`;
+      const { data: newPerson, error: npErr } = await sb
+        .from("people")
+        .upsert(
+          { user_id: uid, auto_label: autoLabel, display_name: `Person ${personCounter}`, consent_required: true },
+          { onConflict: "user_id,auto_label" },
+        )
+        .select("id").single();
+      if (npErr || !newPerson) {
+        console.error("clusterPeople: person upsert failed", npErr?.message);
+        continue;
+      }
+      personId = newPerson.id;
+      // Register as representative for future faces in this run.
+      personVectors.set(personId, { personId, autoLabel, centroid: entry.embedding });
+    }
+
+    const { error: fErr } = await sb.from("person_faces").upsert({
+      person_id: personId,
+      asset_id: entry.asset_id,
+      bbox: entry.bbox,
+      confidence: entry.confidence,
+      face_vector: entry.embedding,
+    }, { onConflict: "person_id,asset_id" });
+    if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
+    else clusteredFaces++;
+  }
+
+  return {
+    user_id: uid,
+    people: personVectors.size,
+    clustered: clusteredFaces + unclusteredLinked,
+    faces_with_embedding: faceEntries.length,
+    faces_without_embedding: facesWithoutEmbedding.length,
+  };
 }

@@ -21,6 +21,15 @@ export interface Geocoder {
   reverse(lat: number, lng: number): Promise<{ place_id?: string; name?: string; country?: string; admin?: string }>;
 }
 
+export interface FaceDetector {
+  detectFaces(input: { url: string }): Promise<Array<{
+    bbox: { x: number; y: number; w: number; h: number } | null;
+    description: string;
+    confidence: number;
+    embedding: number[] | null;
+  }>>;
+}
+
 export interface DerivedRenderer {
   /** Returns a placeholder rendition (deterministic for tests). */
   render(input: { sourceUrl?: string; sourceBytes?: Uint8Array; width: number; height: number; kind: "thumb" | "preview" }):

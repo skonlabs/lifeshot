@@ -230,14 +230,14 @@ export async function visionStructured<T>(opts: {
 }
 
 /** Batched embeddings. Returns vectors in input order. */
-export async function embedBatch(texts: string[], opts: { model?: string; ctx?: CallContext } = {}): Promise<number[][]> {
+export async function embedBatch(texts: string[], opts: { model?: string; ctx?: CallContext; dimensions?: number } = {}): Promise<number[][]> {
   if (texts.length === 0) return [];
   const model = opts.model ?? aiConfig.embeddingModel;
   await costGuard({ ctx: opts.ctx, kind: "embed", model });
   const start = Date.now();
-  const res = await withRetry(() => httpJson("/embeddings", {
-    model, input: texts, encoding_format: "float",
-  }, model), model);
+  const body: any = { model, input: texts, encoding_format: "float" };
+  if (opts.dimensions) body.dimensions = opts.dimensions;
+  const res = await withRetry(() => httpJson("/embeddings", body, model), model);
   const vectors: number[][] = (res?.data ?? []).map((r: any) => r.embedding as number[]);
   const u = res?.usage ?? {};
   await logUsage({

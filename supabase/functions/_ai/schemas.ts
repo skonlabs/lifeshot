@@ -216,6 +216,49 @@ export const SUMMARY_JSON_SCHEMA = {
   },
 } as const;
 
+/* ---------------- Face detection ---------------- */
+
+export const FaceDetectResultZ = z.object({
+  faces: z.array(z.object({
+    bbox: z.object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0).max(1),
+      h: z.number().min(0).max(1),
+    }).nullable(),
+    description: z.string().max(200).default(""),
+    confidence: z.number().min(0).max(1).default(0.5),
+  })).max(20).default([]),
+});
+export type FaceDetectResult = z.infer<typeof FaceDetectResultZ>;
+
+export const FACE_DETECT_JSON_SCHEMA = {
+  name: "face_detection",
+  strict: true,
+  schema: {
+    type: "object", additionalProperties: false, required: ["faces"],
+    properties: {
+      faces: {
+        type: "array", maxItems: 20,
+        items: {
+          type: "object", additionalProperties: false, required: ["bbox", "description", "confidence"],
+          properties: {
+            bbox: {
+              oneOf: [
+                { type: "object", additionalProperties: false, required: ["x","y","w","h"],
+                  properties: { x:{type:"number",minimum:0,maximum:1}, y:{type:"number",minimum:0,maximum:1}, w:{type:"number",minimum:0,maximum:1}, h:{type:"number",minimum:0,maximum:1} } },
+                { type: "null" },
+              ],
+            },
+            description: { type: "string", maxLength: 200 },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 /* ---------------- Reranker ---------------- */
 
 export const RerankResultZ = z.object({

@@ -29,4 +29,11 @@ If no results: suggest 2-3 concrete reformulations grounded in the available sig
 
 export const SUMMARY_SYSTEM = `You write a short, neutral summary of a personal-memory event from member metadata and captions. No speculation about identity.`;
 
+export const FACE_DETECT_PROMPT = `Detect all human faces visible in this image.
+For each face return:
+- bbox: bounding box as fractions of image dimensions (x, y = top-left corner; w, h = width and height). All values in [0, 1].
+- description: a short, neutral physical description (hair color/style, approximate age range, distinguishing features). Max 200 chars. Do NOT name or identify the person.
+- confidence: how confident you are that this is a real face (0 = uncertain, 1 = certain).
+If there are no faces, return faces: [].`;
+
 export const RERANK_SYSTEM = `Given a user query and a small candidate set, rerank by semantic + factual relevance. Only return asset_ids from the candidates with scores in [0,1]; do NOT add or remove ids.`;

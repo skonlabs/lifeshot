@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import type { AIEnricher, DerivedRenderer, EmailSender, EmbedderProvider, Geocoder, OCRProvider } from "./interfaces.ts";
+import type { AIEnricher, DerivedRenderer, EmailSender, EmbedderProvider, FaceDetector, Geocoder, OCRProvider } from "./interfaces.ts";
 
 /** Deterministic 384-dim embedding seeded by a string. */
 function seededVector(seed: string, dim = 384): number[] {
@@ -26,7 +26,11 @@ export const mockEmbedder: EmbedderProvider = {
 
 export const mockAI: AIEnricher = {
   caption: async ({ url }) => ({ caption: `auto: ${(url ?? "asset").slice(0, 32)}`, tags: ["photo", "scene"] }),
-  detectObjects: async () => [{ label: "person", score: 0.9 }, { label: "outdoor", score: 0.7 }],
+  detectObjects: async () => [],
+};
+
+export const mockFaceDetector: FaceDetector = {
+  detectFaces: async () => [],
 };
 
 export const mockOCR: OCRProvider = {
@@ -64,6 +68,7 @@ export const providers = {
   ai: mockAI as AIEnricher,
   ocr: mockOCR as OCRProvider,
   geocoder: mockGeocoder as Geocoder,
+  faceDetector: mockFaceDetector as FaceDetector,
   renderer: mockRenderer as DerivedRenderer,
   email: mockEmail as EmailSender,
 };

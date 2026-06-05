@@ -1,13 +1,16 @@
 // deno-lint-ignore-file no-explicit-any
 /**
- * Provider factory. When LIFESHOT_AI_PROVIDER=openai AND OPENAI_API_KEY is
- * present, replaces the mock providers used by job handlers with real OpenAI
- * backed implementations. Safe no-op otherwise.
+ * Provider factory. Installs real providers:
+ *  - Geocoder (Nominatim/OSM): always installed — no API key required.
+ *  - AI / Embedder / OCR / FaceDetector: installed when LIFESHOT_AI_PROVIDER=openai
+ *    AND OPENAI_API_KEY is present.
  */
 import { providers, setProviders } from "../_jobs/mocks.ts";
 import { embedText } from "./embedder.ts";
 import { enrichVision } from "./vision.ts";
 import { ocrImage } from "./ocr.ts";
+import { detectFaces } from "./face-detector.ts";
+import { reverseGeocode } from "./geocoder.ts";
 import { aiConfig } from "./config.ts";
 import { logger } from "../_pipeline/logger.ts";
 
@@ -17,19 +20,31 @@ function envFlag(name: string): string | undefined {
   return (typeof Deno !== "undefined" ? Deno.env.get(name) : (globalThis as any).process?.env?.[name]) ?? undefined;
 }
 
-/** Idempotent. Returns true if OpenAI providers were installed. */
+/** Idempotent. Always installs geocoder; returns true if OpenAI providers were also installed. */
 export function installOpenAIProviders(): boolean {
   if (installed) return true;
+
+  // Always install real Nominatim geocoder — free, no key required.
+  setProviders({
+    geocoder: {
+      reverse: async (lat, lng) => {
+        const r = await reverseGeocode(lat, lng);
+        return { name: r.name, country: r.country ?? undefined, admin: r.admin ?? undefined };
+      },
+    },
+  });
+
   const provider = envFlag("LIFESHOT_AI_PROVIDER");
   const key = envFlag("OPENAI_API_KEY");
-  if (provider !== "openai" || !key) return false;
+  if (provider !== "openai" || !key) {
+    installed = true;
+    logger.info("ai_providers_installed", { provider: "nominatim_only" });
+    return false;
+  }
 
   setProviders({
     embedder: {
       embedImage: async ({ url }) => {
-        // Image embeddings: we describe URL as text proxy; vision enrichment
-        // produces caption/labels that feed a much higher-quality text embed
-        // upstream. For now use the URL as a low-information fallback.
         return await embedText(url ?? "image");
       },
       embedText: async (t) => await embedText(t),
@@ -53,7 +68,13 @@ export function installOpenAIProviders(): boolean {
         return { text: r.text, lang: r.lang ?? undefined };
       },
     },
+    faceDetector: {
+      detectFaces: async ({ url }) => {
+        return await detectFaces({ imageUrl: url });
+      },
+    },
   });
+
   installed = true;
   logger.info("ai_providers_installed", { provider: "openai", model: aiConfig.embeddingModel });
   return true;

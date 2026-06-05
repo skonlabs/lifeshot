@@ -93,31 +93,32 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let tags: string[] = [];
   let objects: Array<{ label: string; score: number }> = [];
   let error: string | null = null;
+  let detectedFaces: Array<{ bbox: { x: number; y: number; w: number; h: number } | null; description: string; confidence: number; embedding: number[] | null }> = [];
 
   try {
-    const [capResult, objResult] = await Promise.all([
+    const [capResult, objResult, faceResult] = await Promise.all([
       providers.ai.caption({ url }),
       providers.ai.detectObjects({ url }),
+      providers.faceDetector.detectFaces({ url }),
     ]);
     caption = capResult.caption;
     tags = capResult.tags ?? [];
     objects = objResult ?? [];
+    detectedFaces = faceResult ?? [];
   } catch (e: any) {
     error = String(e?.message ?? e);
     console.error("enrichAI vision failed", { asset_id, error });
     // Record the failure but do not throw — enrichment is best-effort.
   }
 
-  // Derive face detections from person/face object labels. We have no dedicated
-  // face-embedding provider yet, so each person-like detection becomes a face
-  // record (bbox/vector left null until a real model is wired in). clusterPeople
-  // consumes these to populate the People surface.
-  const faces = objects
-    .filter((o) => {
-      const label = (o?.label ?? "").toLowerCase();
-      return label === "person" || label === "face" || label === "people";
-    })
-    .map((o) => ({ bbox: (o as any).bbox ?? null, score: o.score ?? null }));
+  // Map detected faces to the storage format. Each face has a real bbox
+  // (from GPT-4o Vision) and a 512-dim embedding of its description text.
+  const faces = detectedFaces.map((f) => ({
+    bbox: f.bbox ?? null,
+    score: f.confidence ?? null,
+    description: f.description ?? null,
+    embedding: f.embedding ?? null,
+  }));
 
   await sb.from("asset_ai_enrichment").upsert({
     asset_id,
