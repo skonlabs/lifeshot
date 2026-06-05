@@ -6,8 +6,11 @@ export function shouldResyncAsset(input: {
   hasFileMetadata: boolean;
   hasMediaMetadata: boolean;
   hasPreviewMetadata?: boolean;
+  hasPreviewContent?: boolean;
   hasAiReadyMetadata?: boolean;
+  hasAiEnrichment?: boolean;
   hasOrganizationSignals?: boolean;
+  hasLocationMetadata?: boolean;
   hasVideoMetadata?: boolean;
   hasDocumentMetadata?: boolean;
   hasAudioMetadata?: boolean;
@@ -21,13 +24,15 @@ export function shouldResyncAsset(input: {
     !input.hasOrganizationSignals;
 
   const needsPreview = input.mediaType === "photo" || input.mediaType === "video" || input.mediaType === "document";
-  const previewMissing = needsPreview && !input.hasPreviewMetadata;
+  const previewMissing = needsPreview && (!input.hasPreviewMetadata || !input.hasPreviewContent);
+  const aiEnrichmentMissing = needsPreview && !input.hasAiEnrichment;
+  const locationMissing = !input.hasLocationMetadata;
   const typeSpecificMissing =
     (input.mediaType === "video" && !input.hasVideoMetadata) ||
     (input.mediaType === "document" && !input.hasDocumentMetadata) ||
     (input.mediaType === "audio" && !input.hasAudioMetadata);
 
-  const missingMetadata = baseMetadataMissing || previewMissing || typeSpecificMissing;
+  const missingMetadata = baseMetadataMissing || previewMissing || aiEnrichmentMissing || locationMissing || typeSpecificMissing;
   if (missingMetadata) return true;
 
   return !input.existingSourceModifiedAt || (
@@ -49,5 +54,7 @@ export function isStaleSyncQueueState(input: {
     return true;
   }
 
-  return input.queueStatus === "pending" && input.hasMore !== true && input.indexed > 0 && input.indexed >= input.discovered;
+  return input.queueStatus === "pending" && (
+    input.persistedStage === "completed" || input.persistedStage === "cancelled" || input.persistedStage === "failed"
+  );
 }
