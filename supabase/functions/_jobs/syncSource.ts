@@ -701,7 +701,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
-  const progressIndexedCount = force ? Math.max(indexedCount, seenTotal) : indexedCount;
+  const progressIndexedCount = force ? seenTotal : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const processingTotal = Math.max(prevProcessingTotal, prevNormalized) + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
@@ -718,7 +718,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? (force ? seenTotal : prevNormalized) : progressIndexedCount),
+      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
