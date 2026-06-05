@@ -1,6 +1,57 @@
 import { describe, expect, it } from "vitest";
 
 describe("metadata pipeline invariants", () => {
+  it("falls back to proxy_cache_key URL when no thumbnail_cache_key is set", async () => {
+    // Mirrors the generateDerived thumbnail-source resolution order:
+    // connector.getThumbnail() → asset.thumbnail_cache_key URL → asset.proxy_cache_key URL.
+    async function pickThumbBytes(opts: {
+      connectorThumbUrl?: string | null;
+      assetThumbKey?: string | null;
+      assetProxyKey?: string | null;
+      fetch: (url: string) => Promise<Uint8Array | null>;
+    }): Promise<Uint8Array | null> {
+      if (opts.connectorThumbUrl) {
+        const b = await opts.fetch(opts.connectorThumbUrl);
+        if (b) return b;
+      }
+      if (opts.assetThumbKey && /^https?:\/\//.test(opts.assetThumbKey)) {
+        const b = await opts.fetch(opts.assetThumbKey);
+        if (b) return b;
+      }
+      if (opts.assetProxyKey && /^https?:\/\//.test(opts.assetProxyKey)) {
+        const b = await opts.fetch(opts.assetProxyKey);
+        if (b) return b;
+      }
+      return null;
+    }
+
+    const fetched: string[] = [];
+    const fetch = async (url: string) => { fetched.push(url); return new Uint8Array([1, 2, 3]); };
+
+    // No connector + no thumb URL → falls through to proxy URL.
+    const bytes = await pickThumbBytes({
+      connectorThumbUrl: null,
+      assetThumbKey: null,
+      assetProxyKey: "https://provider.example/preview.jpg",
+      fetch,
+    });
+    expect(bytes).not.toBeNull();
+    expect(fetched).toEqual(["https://provider.example/preview.jpg"]);
+  });
+
+  it("treats OpenAI 401 invalid_api_key as a permanent (non-retryable) failure", () => {
+    function classifyAiError(status: number, body: string): "retry" | "permanent" {
+      const isAuth = status === 401 && /invalid_api_key|incorrect api key/i.test(body);
+      if (isAuth) return "permanent";
+      if (status === 429 || status >= 500) return "retry";
+      return "permanent";
+    }
+    expect(classifyAiError(401, '{"error":{"code":"invalid_api_key"}}')).toBe("permanent");
+    expect(classifyAiError(401, "Incorrect API key provided: sk-...")).toBe("permanent");
+    expect(classifyAiError(429, "rate limited")).toBe("retry");
+    expect(classifyAiError(503, "service unavailable")).toBe("retry");
+  });
+
   it("keeps provider preview keys when only one storage derivative is written", () => {
     const asset = {
       thumbnail_cache_key: null,
