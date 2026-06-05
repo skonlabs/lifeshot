@@ -423,8 +423,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     hasFileMetadata: boolean;
     hasMediaMetadata: boolean;
     hasPreviewMetadata: boolean;
+    hasPreviewContent: boolean;
     hasAiReadyMetadata: boolean;
+    hasAiEnrichment: boolean;
     hasOrganizationSignals: boolean;
+    hasLocationMetadata: boolean;
     hasVideoMetadata: boolean;
     hasDocumentMetadata: boolean;
     hasAudioMetadata: boolean;
@@ -435,16 +438,20 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       { data: mediaMetadataRows, error: mediaMetadataError },
       { data: previewMetadataRows, error: previewMetadataError },
       { data: aiReadyRows, error: aiReadyError },
+      { data: aiEnrichmentRows, error: aiEnrichmentError },
       { data: organizationRows, error: organizationError },
+      { data: locationRows, error: locationError },
       { data: videoRows, error: videoError },
       { data: documentRows, error: documentError },
       { data: audioRows, error: audioError },
     ] = await Promise.all([
       sb.from("asset_file_metadata").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_media_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_preview_metadata").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_preview_metadata").select("asset_id, thumbnail_generated, preview_generated, thumbnail_cache_key, preview_cache_key").in("asset_id", existingAssetIds),
       sb.from("asset_ai_ready_metadata").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_ai_enrichment").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_organization_signals").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_locations").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_video_metadata").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_document_metadata").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_audio_metadata").select("asset_id").in("asset_id", existingAssetIds),
@@ -453,16 +460,25 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     if (mediaMetadataError) throw new Error(`load media metadata completeness: ${mediaMetadataError.message}`);
     if (previewMetadataError) throw new Error(`load preview metadata completeness: ${previewMetadataError.message}`);
     if (aiReadyError) throw new Error(`load ai-ready metadata completeness: ${aiReadyError.message}`);
+    if (aiEnrichmentError) throw new Error(`load ai enrichment completeness: ${aiEnrichmentError.message}`);
     if (organizationError) throw new Error(`load organization metadata completeness: ${organizationError.message}`);
+    if (locationError) throw new Error(`load location metadata completeness: ${locationError.message}`);
     if (videoError) throw new Error(`load video metadata completeness: ${videoError.message}`);
     if (documentError) throw new Error(`load document metadata completeness: ${documentError.message}`);
     if (audioError) throw new Error(`load audio metadata completeness: ${audioError.message}`);
 
     const fileIds = new Set((fileMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const mediaIds = new Set((mediaMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const previewContentIds = new Set((previewMetadataRows ?? []).filter((row: any) => {
+      const thumbReady = row.thumbnail_generated === true || !!row.thumbnail_cache_key;
+      const previewReady = row.preview_generated === true || !!row.preview_cache_key;
+      return thumbReady || previewReady;
+    }).map((row: any) => row.asset_id).filter(Boolean));
     const previewIds = new Set((previewMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const aiReadyIds = new Set((aiReadyRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const aiEnrichmentIds = new Set((aiEnrichmentRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const organizationIds = new Set((organizationRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const locationIds = new Set((locationRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const videoIds = new Set((videoRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const documentIds = new Set((documentRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const audioIds = new Set((audioRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
@@ -471,8 +487,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         hasFileMetadata: fileIds.has(assetId),
         hasMediaMetadata: mediaIds.has(assetId),
         hasPreviewMetadata: previewIds.has(assetId),
+        hasPreviewContent: previewContentIds.has(assetId),
         hasAiReadyMetadata: aiReadyIds.has(assetId),
+        hasAiEnrichment: aiEnrichmentIds.has(assetId),
         hasOrganizationSignals: organizationIds.has(assetId),
+        hasLocationMetadata: locationIds.has(assetId),
         hasVideoMetadata: videoIds.has(assetId),
         hasDocumentMetadata: documentIds.has(assetId),
         hasAudioMetadata: audioIds.has(assetId),
@@ -553,8 +572,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasFileMetadata: false,
       hasMediaMetadata: false,
       hasPreviewMetadata: false,
+      hasPreviewContent: false,
       hasAiReadyMetadata: false,
+      hasAiEnrichment: false,
       hasOrganizationSignals: false,
+      hasLocationMetadata: false,
       hasVideoMetadata: false,
       hasDocumentMetadata: false,
       hasAudioMetadata: false,
@@ -567,8 +589,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasFileMetadata: currentMetadata.hasFileMetadata,
       hasMediaMetadata: currentMetadata.hasMediaMetadata,
       hasPreviewMetadata: currentMetadata.hasPreviewMetadata,
+      hasPreviewContent: currentMetadata.hasPreviewContent,
       hasAiReadyMetadata: currentMetadata.hasAiReadyMetadata,
+      hasAiEnrichment: currentMetadata.hasAiEnrichment,
       hasOrganizationSignals: currentMetadata.hasOrganizationSignals,
+      hasLocationMetadata: currentMetadata.hasLocationMetadata,
       hasVideoMetadata: currentMetadata.hasVideoMetadata,
       hasDocumentMetadata: currentMetadata.hasDocumentMetadata,
       hasAudioMetadata: currentMetadata.hasAudioMetadata,
@@ -676,7 +701,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
-  const progressIndexedCount = force ? seenTotal : indexedCount;
+  const progressIndexedCount = force ? Math.max(indexedCount, seenTotal) : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const processingTotal = Math.max(prevProcessingTotal, prevNormalized) + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
