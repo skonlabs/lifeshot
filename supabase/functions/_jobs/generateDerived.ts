@@ -168,9 +168,9 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     await sb.from("asset_preview_metadata").upsert({
       asset_id,
       user_id: asset.user_id,
-      thumbnail_generated: Boolean(asset.thumbnail_cache_key),
+      thumbnail_generated: Boolean(asset.thumbnail_cache_key ?? asset.proxy_cache_key),
       preview_generated: Boolean(asset.proxy_cache_key),
-      thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
+      thumbnail_cache_key: asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null,
       preview_cache_key: asset.proxy_cache_key ?? null,
     }, { onConflict: "asset_id" });
     if (asset.thumbnail_cache_key || asset.proxy_cache_key) {
@@ -202,7 +202,7 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   const thumb = written.find((w) => w.kind === "thumb");
   const preview = written.find((w) => w.kind === "preview");
 
-  const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? null;
+  const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? preview?.path ?? asset.proxy_cache_key ?? null;
   const fallbackPreviewKey = preview?.path ?? asset.proxy_cache_key ?? null;
   const { error: prevErr } = await sb.from("asset_preview_metadata").upsert({
     asset_id,
