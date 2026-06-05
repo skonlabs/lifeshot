@@ -150,12 +150,21 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     await sb.from("asset_preview_metadata").upsert({
       asset_id,
       user_id: asset.user_id,
-      thumbnail_generated: false,
-      preview_generated: false,
+      thumbnail_generated: Boolean(asset.thumbnail_cache_key),
+      preview_generated: Boolean(asset.proxy_cache_key),
       thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
       preview_cache_key: asset.proxy_cache_key ?? null,
     }, { onConflict: "asset_id" });
-    return { asset_id, derivatives: 0, skipped: "no_bytes" };
+    if (asset.thumbnail_cache_key || asset.proxy_cache_key) {
+      return {
+        asset_id,
+        derivatives: 0,
+        thumbnail: Boolean(asset.thumbnail_cache_key),
+        preview: Boolean(asset.proxy_cache_key),
+        reused_provider_urls: true,
+      };
+    }
+    throw new Error("retryable: no thumbnail or preview bytes available");
   }
 
   // Persist derivative records.

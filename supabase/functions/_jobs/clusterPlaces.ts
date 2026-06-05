@@ -73,6 +73,13 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
           location_source: "asset_row",
           location_confidence: 0.85,
         }, { onConflict: "asset_id" });
+        await sb.from("asset_locations").upsert({
+          asset_id,
+          lat: Number(assetGps.location_lat),
+          lng: Number(assetGps.location_lng),
+          confidence: 0.85,
+          geocoded_at: new Date().toISOString(),
+        }, { onConflict: "asset_id" });
       } else {
         return { user_id: uid, places: 0, located: 0, skipped: "no_gps" };
       }
