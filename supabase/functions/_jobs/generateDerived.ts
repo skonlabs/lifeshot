@@ -100,6 +100,15 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     thumbBytes = await fetchBytes(asset.thumbnail_cache_key, 2 * 1024 * 1024);
   }
 
+  // 3. Last resort: when there's no thumbnail URL at all, fetch the preview
+  //    URL and use it as the thumbnail too. This unblocks assets where the
+  //    listing step only populated `proxy_cache_key` (the original/full-res
+  //    URL) without a separate small thumbnail — common for Dropbox, OneDrive
+  //    and any source that doesn't expose a dedicated thumbnail endpoint.
+  if (!thumbBytes && asset.proxy_cache_key && /^https?:\/\//.test(asset.proxy_cache_key)) {
+    thumbBytes = await fetchBytes(asset.proxy_cache_key, 2 * 1024 * 1024);
+  }
+
   if (thumbBytes) {
     const ext = thumbBytes.mime.split("/")[1]?.split("+")[0] ?? "jpg";
     const path = `${asset.user_id}/${asset_id}/thumb.${ext}`;
