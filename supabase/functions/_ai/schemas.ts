@@ -226,7 +226,7 @@ export const FaceDetectResultZ = z.object({
       w: z.number().min(0).max(1),
       h: z.number().min(0).max(1),
     }).nullable(),
-    description: z.string().max(200).default(""),
+    description: z.string().max(280).default(""),
     confidence: z.number().min(0).max(1).default(0.5),
   })).max(20).default([]),
 });
@@ -250,7 +250,7 @@ export const FACE_DETECT_JSON_SCHEMA = {
                 { type: "null" },
               ],
             },
-            description: { type: "string", maxLength: 200 },
+            description: { type: "string", maxLength: 280 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
         },

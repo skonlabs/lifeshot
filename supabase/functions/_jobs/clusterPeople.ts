@@ -18,7 +18,11 @@ import type { JobContext } from "../_pipeline/runner.ts";
  * Idempotent: upserts on (person_id, asset_id).
  */
 
-const CLUSTER_THRESHOLD = 0.82; // cosine similarity; tune based on real data
+// Identity-signature embeddings (text-embedding-3-small over a deterministic
+// slot string) cluster tightly when the slots match; loosen the threshold so
+// minor slot differences (e.g. eye-color:brown vs hazel) still match the same
+// person across photos.
+const CLUSTER_THRESHOLD = 0.78;
 
 function cosineSim(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return 0;
