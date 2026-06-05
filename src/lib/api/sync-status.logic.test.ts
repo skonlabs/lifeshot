@@ -45,6 +45,40 @@ describe("shouldResyncAsset", () => {
     })).toBe(true);
   });
 
+  it("re-syncs unchanged photos when preview row exists but has no actual thumbnail or preview content", () => {
+    expect(shouldResyncAsset({
+      isNew: false,
+      mediaType: "photo",
+      existingSourceModifiedAt: "2026-06-01T00:00:00Z",
+      providerModifiedAt: "2026-06-01T00:00:00Z",
+      hasFileMetadata: true,
+      hasMediaMetadata: true,
+      hasPreviewMetadata: true,
+      hasPreviewContent: false,
+      hasAiReadyMetadata: true,
+      hasAiEnrichment: true,
+      hasOrganizationSignals: true,
+      hasLocationMetadata: true,
+    })).toBe(true);
+  });
+
+  it("re-syncs unchanged photos when AI enrichment or location metadata is missing", () => {
+    expect(shouldResyncAsset({
+      isNew: false,
+      mediaType: "photo",
+      existingSourceModifiedAt: "2026-06-01T00:00:00Z",
+      providerModifiedAt: "2026-06-01T00:00:00Z",
+      hasFileMetadata: true,
+      hasMediaMetadata: true,
+      hasPreviewMetadata: true,
+      hasPreviewContent: true,
+      hasAiReadyMetadata: true,
+      hasAiEnrichment: false,
+      hasOrganizationSignals: true,
+      hasLocationMetadata: false,
+    })).toBe(true);
+  });
+
   it("re-syncs unchanged audio when the audio metadata row is missing", () => {
     expect(shouldResyncAsset({
       isNew: false,
@@ -83,14 +117,17 @@ describe("shouldResyncAsset", () => {
       hasFileMetadata: true,
       hasMediaMetadata: true,
       hasPreviewMetadata: true,
+      hasPreviewContent: true,
       hasAiReadyMetadata: true,
+      hasAiEnrichment: true,
       hasOrganizationSignals: true,
+      hasLocationMetadata: true,
     })).toBe(false);
   });
 });
 
 describe("isStaleSyncQueueState", () => {
-  it("treats a pending job as stale when indexing already reached discovered total", () => {
+  it("does not treat a queued pending job as stale just because counts match", () => {
     expect(isStaleSyncQueueState({
       queueStatus: "pending",
       persistedStage: "queued",
@@ -98,7 +135,7 @@ describe("isStaleSyncQueueState", () => {
       discovered: 427,
       hasMore: false,
       hasQueueJob: true,
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it("treats a running job with completed stage as stale", () => {
@@ -154,5 +191,16 @@ describe("isStaleSyncQueueState", () => {
       hasMore: false,
       hasQueueJob: true,
     })).toBe(false);
+  });
+
+  it("treats pending jobs as stale only when the persisted stage is terminal", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "pending",
+      persistedStage: "completed",
+      indexed: 427,
+      discovered: 427,
+      hasMore: false,
+      hasQueueJob: true,
+    })).toBe(true);
   });
 });
