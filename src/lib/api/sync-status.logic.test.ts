@@ -40,8 +40,11 @@ describe("shouldResyncAsset", () => {
       hasFileMetadata: true,
       hasMediaMetadata: true,
       hasPreviewMetadata: false,
+      hasPreviewContent: false,
       hasAiReadyMetadata: true,
+      hasAiEnrichment: false,
       hasOrganizationSignals: true,
+      hasLocationMetadata: false,
     })).toBe(true);
   });
 
@@ -88,8 +91,11 @@ describe("shouldResyncAsset", () => {
       hasFileMetadata: true,
       hasMediaMetadata: true,
       hasPreviewMetadata: false,
+      hasPreviewContent: false,
       hasAiReadyMetadata: true,
+      hasAiEnrichment: true,
       hasOrganizationSignals: true,
+      hasLocationMetadata: true,
       hasAudioMetadata: false,
     })).toBe(true);
   });
@@ -103,8 +109,11 @@ describe("shouldResyncAsset", () => {
       hasFileMetadata: true,
       hasMediaMetadata: true,
       hasPreviewMetadata: true,
+      hasPreviewContent: true,
       hasAiReadyMetadata: true,
+      hasAiEnrichment: true,
       hasOrganizationSignals: true,
+      hasLocationMetadata: true,
     })).toBe(true);
   });
 
