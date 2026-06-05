@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { serviceClient } from "./clients.ts";
+import { ensureBuckets, serviceClient } from "./clients.ts";
 import { backoffSeconds } from "./ratelimit.ts";
 import { logger, metric, timed } from "./logger.ts";
 import { JOB_HANDLERS, type JobName } from "../_jobs/registry.ts";
@@ -31,6 +31,7 @@ const WORKER_ID = `worker-${crypto.randomUUID().slice(0, 8)}`;
 const DEFAULT_BATCH = 16;
 
 export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {}): Promise<{ claimed: number; ok: number; failed: number }> {
+  await ensureBuckets();
   const sb = serviceClient();
   const batch = opts.batch ?? DEFAULT_BATCH;
   const lanes = opts.lanes ?? null;
