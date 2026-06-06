@@ -114,9 +114,19 @@ describe("metadata pipeline invariants", () => {
     const awaitingProcessing = true;
     const indexed = effectiveNextCursor
       ? seenTotal
-      : (awaitingProcessing ? prevNormalized : seenTotal);
+      : seenTotal;
 
-    expect(indexed).toBe(15);
+    expect(indexed).toBe(27);
+    expect(indexed).toBeGreaterThan(prevNormalized);
+  });
+
+  it("keeps normalize progress monotonic during processing handoff", () => {
+    const previousIndexed = 427;
+    const normalizedCount = 12;
+
+    const indexed = Math.max(previousIndexed, normalizedCount);
+
+    expect(indexed).toBe(427);
   });
 
   it("only enqueues place clustering when coordinates exist", () => {
