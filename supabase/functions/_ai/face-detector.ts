@@ -1,88 +1,79 @@
 // deno-lint-ignore-file no-explicit-any
 /**
- * Real face detector using GPT-4o Vision.
- * Returns faces with bounding boxes (0-1 fractions of image dimensions) and
- * neutral text descriptions suitable for embedding as identity proxies.
+ * Face detector backed by AWS Rekognition.
+ *
+ * For each asset:
+ *   1. Fetches the image bytes from the signed thumbnail/preview URL.
+ *   2. Ensures the per-user collection exists.
+ *   3. Calls IndexFaces — detects all faces AND indexes them in the
+ *      collection. Returns a FaceId per face, used downstream by
+ *      clusterPeople (SearchFaces) for real identity matching.
  */
-import { visionStructured, embedBatch, type CallContext } from "./client.ts";
-import { FACE_DETECT_PROMPT } from "./prompts.ts";
-import { FaceDetectResultZ, FACE_DETECT_JSON_SCHEMA, type FaceDetectResult } from "./schemas.ts";
-import { intersectionOverUnion, sanitizeFaceBox } from "../_shared/face-box.ts";
-
-export type { FaceDetectResult };
+import { ensureCollection, indexFaces, collectionIdForUser, rekognitionConfigured } from "./rekognition.ts";
 
 export interface DetectedFace {
   bbox: { x: number; y: number; w: number; h: number } | null;
   description: string;
-  confidence: number;
+  confidence: number;     // 0..1
   embedding: number[] | null;
+  face_id: string | null; // AWS Rekognition FaceId
 }
 
-/**
- * Detect faces in an image URL and return them with 512-dim embeddings.
- * Uses GPT-4o-mini vision for detection + text-embedding-3-small (512d) for embeddings.
- */
+async function fetchImageBytes(url: string, maxBytes = 5 * 1024 * 1024): Promise<Uint8Array> {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`fetch image ${resp.status}`);
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  if (buf.byteLength > maxBytes) {
+    throw new Error(`image too large for Rekognition: ${buf.byteLength} bytes (max ${maxBytes})`);
+  }
+  return buf;
+}
+
 export async function detectFaces(opts: {
   imageUrl: string;
-  ctx?: CallContext;
+  userId: string;
+  assetId: string;
 }): Promise<DetectedFace[]> {
-  let result: FaceDetectResult;
-  try {
-    const { data } = await visionStructured<FaceDetectResult>({
-      imageUrl: opts.imageUrl,
-      prompt: FACE_DETECT_PROMPT,
-      schema: FACE_DETECT_JSON_SCHEMA,
-      parse: (raw) => FaceDetectResultZ.parse(raw),
-      ctx: opts.ctx,
-      maxTokens: 400,
-    });
-    result = data;
-  } catch (e: any) {
-    console.warn("face-detector: vision call failed", String(e?.message ?? e));
+  if (!rekognitionConfigured()) {
+    console.warn("face-detector: AWS Rekognition not configured — skipping");
     return [];
   }
 
-  if (!result.faces.length) return [];
-
-  const cleanedFaces = result.faces
-    .map((face) => ({
-      bbox: sanitizeFaceBox(face.bbox),
-      description: face.description,
-      confidence: face.confidence,
-    }))
-    .filter((face) => face.bbox && face.confidence >= 0.78)
-    .sort((a, b) => {
-      const confDelta = (b.confidence ?? 0) - (a.confidence ?? 0);
-      if (confDelta !== 0) return confDelta;
-      const areaA = (a.bbox?.w ?? 0) * (a.bbox?.h ?? 0);
-      const areaB = (b.bbox?.w ?? 0) * (b.bbox?.h ?? 0);
-      return areaB - areaA;
-    })
-    .filter((face, index, arr) => arr.findIndex((candidate, candidateIndex) => {
-      if (candidateIndex >= index) return false;
-      return intersectionOverUnion(candidate.bbox, face.bbox) >= 0.55;
-    }) === -1)
-    .slice(0, 8);
-
-  if (!cleanedFaces.length) return [];
-
-  // Embed descriptions as 512-dim vectors to use as coarse identity proxies.
-  // This is not true face recognition, so downstream code must treat it as a
-  // weak signal and rely on sanitized bboxes + conservative matching.
-  const descriptions = cleanedFaces.map((f) => f.description || "person face");
-  let embeddings: number[][] = [];
+  let bytes: Uint8Array;
   try {
-    embeddings = await embedBatch(descriptions, { dimensions: 512, ctx: opts.ctx });
+    bytes = await fetchImageBytes(opts.imageUrl);
   } catch (e: any) {
-    console.warn("face-detector: embedding failed", String(e?.message ?? e));
-    // Continue without embeddings rather than failing the whole detection.
-    embeddings = cleanedFaces.map(() => []);
+    console.warn("face-detector: image fetch failed", String(e?.message ?? e));
+    return [];
   }
 
-  return cleanedFaces.map((face, i) => ({
-    bbox: face.bbox,
-    description: face.description,
-    confidence: face.confidence,
-    embedding: embeddings[i]?.length ? embeddings[i] : null,
+  const collectionId = collectionIdForUser(opts.userId);
+  try {
+    await ensureCollection(collectionId);
+  } catch (e: any) {
+    console.error("face-detector: ensureCollection failed", String(e?.message ?? e));
+    return [];
+  }
+
+  let records;
+  try {
+    records = await indexFaces({
+      collectionId,
+      imageBytes: bytes,
+      externalImageId: opts.assetId,
+      maxFaces: 15,
+      qualityFilter: "AUTO",
+    });
+  } catch (e: any) {
+    console.warn("face-detector: indexFaces failed", String(e?.message ?? e));
+    return [];
+  }
+
+  return records.map((r) => ({
+    bbox: r.bbox,
+    description: "",
+    confidence: r.confidence / 100, // normalize to 0..1 for consistency with prior schema
+    embedding: null,
+    face_id: r.faceId,
   }));
 }
