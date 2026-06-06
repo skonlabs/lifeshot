@@ -148,6 +148,21 @@ export function useViewport(filters: Partial<TViewportIn>) {
   });
 }
 
+export function useActiveAssetCount() {
+  return useQuery({
+    queryKey: ["active-asset-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("assets")
+        .select("id", { count: "exact", head: true })
+        .eq("deleted_state", "active");
+      if (error) throw error;
+      return { count: count ?? 0 };
+    },
+    staleTime: 30_000,
+  });
+}
+
 export function useTimeline(granularity: "year" | "month" | "day" | "event" = "month") {
   return useQuery({
     queryKey: ["timeline", granularity],
