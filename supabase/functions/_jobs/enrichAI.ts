@@ -134,30 +134,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${error}`);
   }
 
-  // Re-index search document now that caption/tags are available.
+  // Index the search document exactly once per asset, AFTER enrichment data
+  // is available. Idempotency key matches ocrAsset's fallback so whichever
+  // job finishes first wins and the other is deduplicated by the ledger.
   await enqueueJob("indexSearchDocument", {
     userId: ctx.userId,
     payload: { asset_id },
-    idempotencyKey: `index-post-ai:${asset_id}`,
-  });
-
-  // Cluster faces into people when this asset has face signals (consent-gated
-  // inside the job). Scoped to this asset so it runs incrementally.
-  if (faces.length) {
-    await enqueueJob("clusterPeople", {
-      userId: ctx.userId,
-      payload: { user_id: asset.user_id, asset_id },
-      idempotencyKey: `people-post-ai:${asset_id}`,
-    });
-  }
-
-  // Re-detect events for this user so new assets fold into moments/stories.
-  // Use a daily bucket so events are re-computed once per day, not once ever.
-  const today = new Date().toISOString().slice(0, 10);
-  await enqueueJob("detectEvents", {
-    userId: ctx.userId,
-    payload: { user_id: asset.user_id },
-    idempotencyKey: `events:${asset.user_id}:${today}`,
+    idempotencyKey: `index:${asset_id}`,
   });
 
   return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };

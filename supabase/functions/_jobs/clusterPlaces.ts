@@ -179,7 +179,9 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       await enqueueJob("indexSearchDocument", {
         userId: uid,
         payload: { asset_id: aid },
-        idempotencyKey: `index-post-place:${aid}`,
+        // Share the canonical per-asset index key. If a previous index job
+        // already ran for this asset, the ledger dedupes — at-most-once.
+        idempotencyKey: `index:${aid}`,
       });
     }
   }

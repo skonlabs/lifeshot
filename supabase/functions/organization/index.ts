@@ -120,13 +120,17 @@ app.get("/people", async (c) => {
   const ids = peopleRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
   const coverMap: Record<string, string> = {};
+  const coverBboxMap: Record<string, any> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id, created_at").in("person_id", ids)
-      .order("created_at", { ascending: true });
+      .select("person_id, asset_id, bbox, confidence, created_at").in("person_id", ids)
+      .order("confidence", { ascending: false, nullsFirst: false });
     const seen: Record<string, Set<string>> = {};
     for (const f of faces ?? []) {
-      if (!coverMap[f.person_id]) coverMap[f.person_id] = f.asset_id;
+      if (!coverMap[f.person_id]) {
+        coverMap[f.person_id] = f.asset_id;
+        coverBboxMap[f.person_id] = f.bbox ?? null;
+      }
       (seen[f.person_id] ??= new Set()).add(f.asset_id);
     }
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
@@ -161,6 +165,7 @@ app.get("/people", async (c) => {
       capture_time: asset.capture_time ?? null,
       media_type: asset.media_type ?? "photo",
       source_badge: null,
+      face_bbox: coverBboxMap[p.id] ?? null,
       hydration_status: ((preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key) ? "ready" : "pending") as const,
     } : null;
 

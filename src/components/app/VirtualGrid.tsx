@@ -26,7 +26,7 @@ interface Props {
 
 export function VirtualGrid({ items, fetchNext, hasNext, isFetching, selectionMode, selected, onToggleSelect }: Props) {
   const parentRef = useRef<HTMLDivElement | null>(null);
-  const COLS = 6;
+  const COLS = 8;
   const rows = useMemo(() => {
     const out: Descriptor[][] = [];
     for (let i = 0; i < items.length; i += COLS) out.push(items.slice(i, i + COLS));
