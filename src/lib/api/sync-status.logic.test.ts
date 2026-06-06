@@ -202,6 +202,17 @@ describe("isStaleSyncQueueState", () => {
     })).toBe(false);
   });
 
+  it("treats queue rows marked completed as non-stale terminal state", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "completed",
+      persistedStage: "completed",
+      indexed: 427,
+      discovered: 427,
+      hasMore: false,
+      hasQueueJob: true,
+    })).toBe(false);
+  });
+
   it("treats pending jobs as stale only when the persisted stage is terminal", () => {
     expect(isStaleSyncQueueState({
       queueStatus: "pending",
