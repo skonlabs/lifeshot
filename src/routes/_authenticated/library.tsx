@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
-import { useBulkAssetAction, useTimeline, useViewport } from "@/lib/api/hooks";
+import { useActiveAssetCount, useBulkAssetAction, useTimeline, useViewport } from "@/lib/api/hooks";
 import { VirtualGrid } from "@/components/app/VirtualGrid";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckSquare, Trash2, X } from "lucide-react";
@@ -15,6 +15,7 @@ function Library() {
   const [range, setRange] = useState<{ from?: string; to?: string } | null>(null);
   const viewport = useViewport({ viewport_size: 60, timeline_filter: range ?? undefined });
   const timeline = useTimeline(granularity);
+  const assetCount = useActiveAssetCount();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<string | null>(null);
@@ -24,6 +25,7 @@ function Library() {
     () => viewport.data?.pages.flatMap((p) => p.items) ?? [],
     [viewport.data],
   );
+  const totalCount = range ? (viewport.data?.pages[0]?.total_count ?? items.length) : (assetCount.data?.count ?? viewport.data?.pages[0]?.total_count ?? items.length);
 
   function toggle(id: string, shift: boolean) {
     setSelected((prev) => {
@@ -66,7 +68,7 @@ function Library() {
       <header className="hairline-b mb-6 flex flex-wrap items-end justify-between gap-4 pb-4">
         <div>
           <span className="text-archive-label">the archive</span>
-          <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">{items.length.toLocaleString()} memories, in order</h1>
+          <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">{totalCount.toLocaleString()} memories, in order</h1>
           {range && (
             <button onClick={() => setRange(null)} className="mt-2 inline-flex items-center gap-1 rounded-full bg-[color:var(--ink)]/10 px-2.5 py-0.5 text-[11px] text-[color:var(--ink)]">
               {range.from?.slice(0,10)} → {range.to?.slice(0,10)} <X className="h-3 w-3" />

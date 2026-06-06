@@ -48,6 +48,15 @@ async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
   };
 }
 
+function applyViewportFilters(q: any, body: z.infer<typeof ViewportIn>, restrictIds: string[] | null) {
+  let next = q.eq("deleted_state", "active");
+  if (body.timeline_filter?.from) next = next.gte("capture_time", body.timeline_filter.from);
+  if (body.timeline_filter?.to)   next = next.lte("capture_time", body.timeline_filter.to);
+  if (body.event_filter?.length)  next = next.in("event_id", body.event_filter);
+  if (restrictIds)                next = next.in("id", restrictIds);
+  return next;
+}
+
 app.get("/assets/:id", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
@@ -162,20 +171,27 @@ app.post("/memory/viewport", async (c) => {
       restrictIds = ids;
     }
     if (restrictIds.length === 0) {
-      return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
+      return c.json({ items: [], next_cursor: null, total_count: 0, cache: { hit: false, ttl_seconds: 30 } });
     }
   }
-  let q = supa.from("assets")
+  const countQuery = applyViewportFilters(
+    supa.from("assets").select("id", { count: "exact", head: true }),
+    body,
+    restrictIds,
+  );
+  const { count: totalCount, error: countError } = await countQuery;
+  if (countError) throw new ApiError("internal", countError.message);
+
+  let q = applyViewportFilters(
+    supa.from("assets")
     .select("id, capture_time, media_type, thumbnail_cache_key, blurhash, dominant_color, width, height")
-    .eq("deleted_state", "active")
     .order("capture_time", { ascending: false, nullsFirst: false })
     .order("id", { ascending: false })
-    .limit(body.viewport_size);
+    .limit(body.viewport_size),
+    body,
+    restrictIds,
+  );
   if (cur?.before) q = q.lt("capture_time", cur.before);
-  if (body.timeline_filter?.from) q = q.gte("capture_time", body.timeline_filter.from);
-  if (body.timeline_filter?.to)   q = q.lte("capture_time", body.timeline_filter.to);
-  if (body.event_filter?.length)  q = q.in("event_id", body.event_filter);
-  if (restrictIds)                q = q.in("id", restrictIds);
 
   const { data, error } = await q;
   if (error) throw new ApiError("internal", error.message);
@@ -196,7 +212,7 @@ app.post("/memory/viewport", async (c) => {
     })));
   const last = data?.[data.length - 1];
   const next_cursor = last?.capture_time ? encodeCursor({ before: last.capture_time }) : null;
-  const out = { items, next_cursor };
+  const out = { items, next_cursor, total_count: totalCount ?? 0 };
   await cache.set(c, cacheKey, out, 30, uid);
   emitEvent(c, "catalog.viewport", { size: items.length, cursor: !!body.cursor });
   return c.json({ ...out, cache: { hit: false, ttl_seconds: 30 } });
@@ -207,10 +223,52 @@ app.get("/dashboard", async (c) => {
   await enforceRateLimit(uid, "general");
   const hit = await cache.get<any>(c, keys.dashboard(uid));
   if (hit) return c.json({ ...hit, cache: { hit: true } });
-  const { data, error } = await supa.rpc("get_dashboard_counts");
-  if (error) throw new ApiError("internal", error.message);
+
+  const [assetsRes, dupesRes, sourceRefsRes] = await Promise.all([
+    supa.from("assets")
+      .select("id, capture_time, source_count")
+      .eq("deleted_state", "active"),
+    supa.from("duplicate_groups")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "open"),
+    supa.from("asset_source_refs")
+      .select("asset_id, account:source_accounts(provider:source_providers(kind))"),
+  ]);
+  if (assetsRes.error) throw new ApiError("internal", assetsRes.error.message);
+  if (dupesRes.error) throw new ApiError("internal", dupesRes.error.message);
+  if (sourceRefsRes.error) throw new ApiError("internal", sourceRefsRes.error.message);
+
+  const assets = assetsRes.data ?? [];
+  const total_assets = assets.length;
+  const at_risk = assets.filter((asset: any) => (asset.source_count ?? 0) <= 1).length;
+
+  const per_year: Record<string, number> = {};
+  for (const asset of assets) {
+    if (!asset.capture_time) continue;
+    const year = new Date(asset.capture_time).getUTCFullYear();
+    if (!Number.isFinite(year)) continue;
+    per_year[String(year)] = (per_year[String(year)] ?? 0) + 1;
+  }
+
+  const activeIds = new Set(assets.map((asset: any) => asset.id));
+  const perSourceSets = new Map<string, Set<string>>();
+  for (const row of sourceRefsRes.data ?? []) {
+    if (!activeIds.has(row.asset_id)) continue;
+    const kind = row.account?.provider?.kind ?? "unknown";
+    if (!perSourceSets.has(kind)) perSourceSets.set(kind, new Set());
+    perSourceSets.get(kind)!.add(row.asset_id);
+  }
+  const per_source = Object.fromEntries(Array.from(perSourceSets.entries()).map(([kind, ids]) => [kind, ids.size]));
+
+  const data = {
+    total_assets,
+    at_risk,
+    duplicate_groups: dupesRes.count ?? 0,
+    per_year,
+    per_source,
+  };
   await cache.set(c, keys.dashboard(uid), data, 60, uid);
-  return c.json({ ...(data as any), cache: { hit: false } });
+  return c.json({ ...data, cache: { hit: false } });
 });
 
 Deno.serve(app.fetch);

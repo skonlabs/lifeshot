@@ -16,6 +16,7 @@ function Person() {
   const p = (data as { person?: { display_name?: string | null }; display_name?: string | null; asset_count?: number } | undefined);
   const displayName = p?.person?.display_name ?? p?.display_name ?? "Unknown";
   const assets = viewport.data?.pages.flatMap((pg) => pg.items) ?? [];
+  const totalCount = viewport.data?.pages[0]?.total_count ?? p?.asset_count ?? assets.length;
   const [name, setName] = useState("");
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-8">
@@ -28,7 +29,7 @@ function Person() {
         <header className="hairline-b mb-6 pb-4">
           <span className="text-archive-label">a person in your archive</span>
           <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">{displayName}</h1>
-          <p className="mt-1 text-sm text-[color:var(--umber)]">{assets.length} memories indexed</p>
+          <p className="mt-1 text-sm text-[color:var(--umber)]">{totalCount} memories indexed</p>
         </header>
       )}
       <section className="hairline mb-8 rounded-md border bg-[color:var(--paper)] p-4">
