@@ -26,17 +26,6 @@ import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
 
 
-async function resolveBrowserStorageUrl(cacheKey: string | null): Promise<string | null> {
-  if (!cacheKey) return null;
-  if (/^https?:\/\//.test(cacheKey)) return cacheKey;
-  for (const bucket of ["thumbnails", "lifeshot-derived"] as const) {
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(cacheKey, 60 * 60);
-    if (data?.signedUrl) return data.signedUrl;
-  }
-  return null;
-}
-
-
 type SourceAccountsResponse = {
   accounts: Array<{
     id: string;
@@ -578,46 +567,7 @@ export function useConfirmDuplicate() {
 export function usePeople() {
   return useQuery({
     queryKey: ["people"],
-    queryFn: async () => {
-      const res = await api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; hydration_status: "pending" | "ready" } | null }> }>("/people");
-      if (res.people.some((person) => person.cover)) return res;
-
-      const people = await Promise.all(res.people.map(async (person) => {
-        const { data: face } = await supabase
-          .from("person_faces")
-          .select("asset_id")
-          .eq("person_id", person.id)
-          .limit(1)
-          .maybeSingle();
-        if (!face?.asset_id) return { ...person, cover: null };
-
-        const { data: asset } = await supabase
-          .from("asset_preview_metadata")
-          .select("asset_id, thumbnail_cache_key, blurhash, dominant_color")
-          .eq("asset_id", face.asset_id)
-          .maybeSingle();
-
-        const thumbnailUrl = await resolveBrowserStorageUrl(asset?.thumbnail_cache_key ?? null);
-
-        return {
-          ...person,
-          cover: asset ? {
-            asset_id: asset.asset_id,
-            thumbnail_url: thumbnailUrl,
-            blurhash: asset.blurhash ?? null,
-            dominant_color: asset.dominant_color ?? null,
-            width: null,
-            height: null,
-            capture_time: null,
-            media_type: "photo",
-            source_badge: null,
-            hydration_status: asset.thumbnail_cache_key ? "ready" as const : "pending" as const,
-          } : null,
-        };
-      }));
-
-      return { people };
-    },
+    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people"),
   });
 }
 
