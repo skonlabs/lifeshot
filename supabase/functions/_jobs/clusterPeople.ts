@@ -24,6 +24,11 @@ import type { JobContext } from "../_pipeline/runner.ts";
 // person across photos.
 const CLUSTER_THRESHOLD = 0.78;
 
+function bboxArea(bbox: { w?: number; h?: number } | null | undefined): number {
+  if (!bbox) return 0;
+  return Math.max(Number(bbox.w ?? 0), 0) * Math.max(Number(bbox.h ?? 0), 0);
+}
+
 function cosineSim(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return 0;
   let dot = 0, na = 0, nb = 0;
@@ -98,6 +103,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, people: 0, clustered: 0, skipped_faces: true };
   }
 
+  faceEntries.sort((a, b) => {
+    const confDelta = (b.confidence ?? 0) - (a.confidence ?? 0);
+    if (confDelta !== 0) return confDelta;
+    return bboxArea(b.bbox) - bboxArea(a.bbox);
+  });
+
   // Load existing people with representative face vectors to match against.
   // We use the first face_vector stored per person as the representative centroid.
   const { data: existingPeople } = await sb
@@ -133,8 +144,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ...(existingPeople ?? []).map((p) => Number(String(p.auto_label ?? "").split(":").at(-1) ?? 0)).filter(Number.isFinite),
   );
   let clusteredFaces = 0;
+  const assignedAssetFace = new Set<string>();
 
   for (const entry of faceEntries) {
+    if (assignedAssetFace.has(entry.asset_id)) continue;
     let matchedPersonId: string | null = null;
     let bestSim = -1;
 
@@ -174,7 +187,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       face_vector: entry.embedding,
     }, { onConflict: "person_id,asset_id" });
     if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
-    else clusteredFaces++;
+    else {
+      clusteredFaces++;
+      assignedAssetFace.add(entry.asset_id);
+    }
   }
 
   return {
