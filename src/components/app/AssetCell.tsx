@@ -46,8 +46,8 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
         <img
           src={d.thumbnail_url}
           alt=""
-          width={128}
-          height={128}
+          width={96}
+          height={96}
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}
