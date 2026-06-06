@@ -165,7 +165,8 @@ describe("metadata pipeline invariants", () => {
 
   it("dedupes face clusters by a stable face signature before rendering people tiles", () => {
     const faceSignature = (bbox: { x: number; y: number; w: number; h: number }, vector: number[]) => {
-      const bboxPart = [bbox.x, bbox.y, bbox.w, bbox.h].map((n) => n.toFixed(3)).join(":");
+      const quantize = (n: number) => Math.round(n * 100) / 100;
+      const bboxPart = [bbox.x, bbox.y, bbox.w, bbox.h].map((n) => quantize(n).toFixed(2)).join(":");
       const vectorPart = vector.slice(0, 3).map((n) => n.toFixed(4)).join(":");
       return `${bboxPart}:${vectorPart}`;
     };
