@@ -17,6 +17,104 @@ const ListPage = z.object({
 
 const app = authed(createApi("/organization/v1"));
 
+// ---------- face scan (browser-side detector) ----------
+
+app.get("/face-scan/queue", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  await enforceRateLimit(uid, "general");
+  const { data: privacy } = await supa.from("privacy_settings")
+    .select("face_processing_enabled").eq("user_id", uid).maybeSingle();
+  if (!privacy?.face_processing_enabled) {
+    return c.json({ assets: [], face_processing_disabled: true });
+  }
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? "8"), 1), 25);
+  const { data, error } = await supa.from("assets")
+    .select("id, thumbnail_cache_key, proxy_cache_key, width, height, capture_time")
+    .eq("user_id", uid)
+    .eq("deleted_state", "active")
+    .eq("media_type", "photo")
+    .is("face_scanned_at", null)
+    .order("capture_time", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) throw new ApiError("internal", error.message);
+
+  const assets = await Promise.all((data ?? []).map(async (a: any) => {
+    const url = await resolveThumbUrl(
+      c, supa, uid, a.id,
+      a.proxy_cache_key ?? a.thumbnail_cache_key ?? null,
+      "preview",
+    );
+    return url ? { id: a.id, image_url: url, width: a.width, height: a.height } : null;
+  }));
+  return c.json({ assets: assets.filter(Boolean) });
+});
+
+const FaceSubmitIn = z.object({
+  asset_id: z.string().uuid(),
+  image_width: z.number().positive(),
+  image_height: z.number().positive(),
+  faces: z.array(z.object({
+    descriptor: z.array(z.number()).length(128),
+    score: z.number().min(0).max(1),
+    box: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+    dataUrl: z.string().min(1).max(120_000),
+  })).max(20),
+}).strict();
+
+app.post("/face-scan/submit", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const body = await parseBody(c, FaceSubmitIn);
+
+  const { data: asset } = await supa.from("assets")
+    .select("id, user_id")
+    .eq("id", body.asset_id).maybeSingle();
+  if (!asset || asset.user_id !== uid) throw new ApiError("not_found", "asset");
+
+  const W = Math.max(body.image_width, 1);
+  const H = Math.max(body.image_height, 1);
+  const enrichmentFaces = body.faces.map((f) => ({
+    bbox: {
+      x: Math.max(0, Math.min(1, f.box.x / W)),
+      y: Math.max(0, Math.min(1, f.box.y / H)),
+      w: Math.max(0, Math.min(1, f.box.width / W)),
+      h: Math.max(0, Math.min(1, f.box.height / H)),
+    },
+    score: f.score,
+    description: null,
+    embedding: f.descriptor,
+    face_crop: f.dataUrl,
+  }));
+
+  // Merge into asset_ai_enrichment.faces without nuking caption/tags/objects.
+  const { data: existing } = await supa.from("asset_ai_enrichment")
+    .select("asset_id, caption, tags, objects")
+    .eq("asset_id", body.asset_id).maybeSingle();
+
+  await supa.from("asset_ai_enrichment").upsert({
+    asset_id: body.asset_id,
+    user_id: uid,
+    caption: existing?.caption ?? "",
+    tags: existing?.tags ?? [],
+    objects: existing?.objects ?? [],
+    faces: enrichmentFaces,
+    enriched_at: new Date().toISOString(),
+  }, { onConflict: "asset_id" });
+
+  await supa.from("assets")
+    .update({ face_scanned_at: new Date().toISOString() })
+    .eq("id", body.asset_id);
+
+  if (enrichmentFaces.length > 0) {
+    await jobEnqueuer.enqueue(
+      "clusterPeople",
+      { user_id: uid, asset_id: body.asset_id },
+      { userId: uid, idempotencyKey: `cluster:${body.asset_id}:${Date.now()}` },
+    );
+  }
+
+  return c.json({ ok: true, faces: enrichmentFaces.length });
+});
+
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { limit } = parseQuery(c, ListPage);
@@ -126,12 +224,13 @@ app.get("/people", async (c) => {
   const signatureMap: Record<string, string> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id, bbox, confidence, created_at, face_vector").in("person_id", ids)
+      .select("person_id, asset_id, bbox, confidence, created_at, face_vector, face_crop").in("person_id", ids)
       .order("confidence", { ascending: false, nullsFirst: false });
     const seen: Record<string, Set<string>> = {};
     const perAssetFaceCount = new Map<string, number>();
     const signatureOwner = new Map<string, { person_id: string; confidence: number }>();
     const bestCoverScore = new Map<string, number>();
+    const coverFaceCropMap: Record<string, string | null> = {};
 
     const signatureFor = (assetId: string, bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
       const safeBox = sanitizeFaceBox(bbox);
@@ -162,6 +261,7 @@ app.get("/people", async (c) => {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
         bestCoverScore.set(f.person_id, score);
       }
       (seen[f.person_id] ??= new Set()).add(f.asset_id);
@@ -173,9 +273,12 @@ app.get("/people", async (c) => {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
       }
     }
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
+    // Stash cover crop map in outer closure scope via Object so it's readable below.
+    (peopleRows as any).__coverFaceCropMap = coverFaceCropMap;
   }
 
   const coverIds = Array.from(new Set(Object.values(coverMap)));
@@ -197,9 +300,12 @@ app.get("/people", async (c) => {
     const coverAssetId = coverMap[p.id] ?? null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
     const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
+    const faceCropDataUrl = (peopleRows as any).__coverFaceCropMap?.[p.id] ?? null;
     const cover = coverAssetId && asset ? {
       asset_id: coverAssetId,
-      thumbnail_url: await resolveThumbUrl(
+      // Prefer the pre-aligned 48x48 face_crop produced by face-api.js in the browser.
+      // Fall back to the asset thumbnail if for some reason a crop wasn't stored.
+      thumbnail_url: faceCropDataUrl ?? await resolveThumbUrl(
         c,
         supa,
         uid,
@@ -214,9 +320,10 @@ app.get("/people", async (c) => {
       capture_time: asset.capture_time ?? null,
       media_type: asset.media_type ?? "photo",
       source_badge: null,
-      face_bbox: coverBboxMap[p.id] ?? null,
+      // When face_crop is used, the image IS the face — no further cropping needed.
+      face_bbox: faceCropDataUrl ? null : (coverBboxMap[p.id] ?? null),
       face_count: faceCountMap[p.id] ?? 1,
-      hydration_status: ((preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key) ? "ready" : "pending") as const,
+      hydration_status: (faceCropDataUrl || preview?.thumbnail_cache_key || asset.thumbnail_cache_key ? "ready" : "pending") as const,
     } : null;
 
     return { ...p, asset_count: counts[p.id] ?? 0, cover };

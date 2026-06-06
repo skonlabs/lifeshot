@@ -19,26 +19,24 @@ import { faceVisualSignature, sanitizeFaceBox } from "../_shared/face-box.ts";
  * Idempotent: upserts on (person_id, asset_id).
  */
 
-// Identity-signature embeddings (text-embedding-3-small over a deterministic
-// slot string) are still too weak to safely merge people at a low threshold.
-// Raise the cutoff so we stop splitting the same photo into duplicate people
-// or cross-linking nearby faces that share coarse attributes.
-const CLUSTER_THRESHOLD = 0.94;
+// face-api.js descriptors are L2-normalized 128-d vectors. Same-person pairs
+// typically have euclidean distance ≤ 0.55; we tighten slightly to 0.5 to
+// minimize false merges. Two faces match when distance ≤ DISTANCE_THRESHOLD.
+const DISTANCE_THRESHOLD = 0.5;
 
 function bboxArea(bbox: { w?: number; h?: number } | null | undefined): number {
   if (!bbox) return 0;
   return Math.max(Number(bbox.w ?? 0), 0) * Math.max(Number(bbox.h ?? 0), 0);
 }
 
-function cosineSim(a: number[], b: number[]): number {
-  if (!a.length || !b.length || a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
+function euclideanDist(a: number[], b: number[]): number {
+  if (!a.length || !b.length || a.length !== b.length) return Number.POSITIVE_INFINITY;
+  let sum = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+    const d = a[i] - b[i];
+    sum += d * d;
   }
-  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+  return Math.sqrt(sum);
 }
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
@@ -75,6 +73,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     description: string;
     confidence: number;
     embedding: number[];
+    face_crop: string | null;
   }
 
   const faceEntries: FaceEntry[] = [];
@@ -88,7 +87,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       const bbox = sanitizeFaceBox(f.bbox ?? null);
       const confidence = f.score ?? f.confidence ?? 0.5;
       const hasUsableBbox = bbox && bbox.w > 0.04 && bbox.h > 0.04;
-      if (emb && hasUsableBbox && confidence >= 0.72) {
+      if (emb && emb.length === 128 && hasUsableBbox && confidence >= 0.5) {
         const entry = {
           asset_id: row.asset_id,
           face_index: i,
@@ -96,6 +95,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           description: f.description ?? "",
           confidence,
           embedding: emb,
+          face_crop: typeof f.face_crop === "string" ? f.face_crop : null,
         };
 
         const identityKey = faceVisualSignature(row.asset_id, bbox);
@@ -160,15 +160,15 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const faceKey = `${entry.asset_id}:${entry.face_index}`;
     if (assignedFaceKeys.has(faceKey)) continue;
     let matchedPersonId: string | null = null;
-    let bestSim = -1;
+    let bestDist = Number.POSITIVE_INFINITY;
 
     for (const pv of personVectors.values()) {
-      const sim = cosineSim(entry.embedding, pv.centroid);
-      if (sim > bestSim) { bestSim = sim; matchedPersonId = pv.personId; }
+      const dist = euclideanDist(entry.embedding, pv.centroid);
+      if (dist < bestDist) { bestDist = dist; matchedPersonId = pv.personId; }
     }
 
     let personId: string;
-    if (matchedPersonId && bestSim >= CLUSTER_THRESHOLD) {
+    if (matchedPersonId && bestDist <= DISTANCE_THRESHOLD) {
       personId = matchedPersonId;
     } else {
       // Create a new person cluster.
@@ -196,6 +196,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       bbox: entry.bbox,
       confidence: entry.confidence,
       face_vector: entry.embedding,
+      face_crop: entry.face_crop,
     }, { onConflict: "person_id,asset_id" });
     if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
     else {

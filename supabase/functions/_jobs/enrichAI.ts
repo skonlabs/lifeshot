@@ -93,32 +93,31 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let tags: string[] = [];
   let objects: Array<{ label: string; score: number }> = [];
   let error: string | null = null;
-  let detectedFaces: Array<{ bbox: { x: number; y: number; w: number; h: number } | null; description: string; confidence: number; embedding: number[] | null }> = [];
 
   try {
-    const [capResult, objResult, faceResult] = await Promise.all([
+    const [capResult, objResult] = await Promise.all([
       providers.ai.caption({ url }),
       providers.ai.detectObjects({ url }),
-      providers.faceDetector.detectFaces({ url }),
     ]);
     caption = capResult.caption;
     tags = capResult.tags ?? [];
     objects = objResult ?? [];
-    detectedFaces = faceResult ?? [];
   } catch (e: any) {
     error = String(e?.message ?? e);
     console.error("enrichAI vision failed", { asset_id, error });
     // Record the failure but do not throw — enrichment is best-effort.
   }
 
-  // Map detected faces to the storage format. Each face has a real bbox
-  // (from GPT-4o Vision) and a 512-dim embedding of its description text.
-  const faces = detectedFaces.map((f) => ({
-    bbox: f.bbox ?? null,
-    score: f.confidence ?? null,
-    description: f.description ?? null,
-    embedding: f.embedding ?? null,
-  }));
+  // Face detection now runs in the browser via face-api.js (see src/lib/face).
+  // Browser calls organization /face-scan/submit which writes faces into this
+  // table. We must not overwrite that field here — read existing faces and
+  // pass them through unchanged.
+  const { data: existingEnrich } = await sb
+    .from("asset_ai_enrichment")
+    .select("faces")
+    .eq("asset_id", asset_id)
+    .maybeSingle();
+  const faces = Array.isArray(existingEnrich?.faces) ? existingEnrich!.faces : [];
 
   await sb.from("asset_ai_enrichment").upsert({
     asset_id,
@@ -143,5 +142,5 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     idempotencyKey: `index:${asset_id}`,
   });
 
-  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };
+  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, error };
 }
