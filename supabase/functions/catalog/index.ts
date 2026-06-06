@@ -30,9 +30,7 @@ const TimelineIn = z.object({
 const app = authed(createApi("/catalog/v1"));
 
 async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
-  const preferredImageKey = row.media_type === "photo"
-    ? (row.preview_cache_key ?? row.thumbnail_cache_key ?? null)
-    : (row.thumbnail_cache_key ?? row.preview_cache_key ?? null);
+  const preferredImageKey = row.thumbnail_cache_key ?? row.preview_cache_key ?? null;
   return {
     asset_id: row.asset_id ?? row.id,
     thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id ?? row.id, preferredImageKey),
