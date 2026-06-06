@@ -114,8 +114,7 @@ app.get("/people", async (c) => {
     return c.json({ people: [], face_processing_disabled: true });
   }
   const { data, error } = await supa.from("people")
-    .select("id, display_name, is_child, is_elder, consent_required")
-    .neq("auto_label", "auto:unclustered-faces");
+    .select("id, display_name, is_child, is_elder, consent_required, auto_label");
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
   const ids = peopleRows.map((p: any) => p.id);
@@ -171,7 +170,7 @@ app.get("/people", async (c) => {
     } : null;
 
     return { ...p, asset_count: counts[p.id] ?? 0, cover };
-  }))).filter((person: any) => person.asset_count > 0 && person.cover?.thumbnail_url);
+  }))).filter((person: any) => person.auto_label !== "auto:unclustered-faces" && person.asset_count > 0 && person.cover?.thumbnail_url);
   return c.json({ people, face_processing_disabled: false });
 });
 
@@ -197,12 +196,21 @@ app.get("/places", async (c) => {
   const latestAssetByPlace: Record<string, { asset_id: string; capture_time: string | null }> = {};
   if (ids.length) {
     const { data: locations, error: locErr } = await supa.from("asset_locations")
-      .select("place_id, asset_id, lat, lng, city, country, assets(capture_time)")
+      .select("place_id, asset_id")
       .in("place_id", ids);
     if (locErr) throw new ApiError("internal", locErr.message);
+    const assetIds = Array.from(new Set((locations ?? []).map((row: any) => row.asset_id)));
+    const assetTimes = new Map<string, string | null>();
+    if (assetIds.length) {
+      const { data: assets, error: assetErr } = await supa.from("assets")
+        .select("id, capture_time")
+        .in("id", assetIds);
+      if (assetErr) throw new ApiError("internal", assetErr.message);
+      for (const asset of assets ?? []) assetTimes.set(asset.id, asset.capture_time ?? null);
+    }
     for (const row of locations ?? []) {
       counts[row.place_id] = (counts[row.place_id] ?? 0) + 1;
-      const captureTime = row.assets?.capture_time ?? null;
+      const captureTime = assetTimes.get(row.asset_id) ?? null;
       const prev = latestAssetByPlace[row.place_id];
       if (!prev || (captureTime && (!prev.capture_time || captureTime > prev.capture_time))) {
         latestAssetByPlace[row.place_id] = { asset_id: row.asset_id, capture_time: captureTime };
