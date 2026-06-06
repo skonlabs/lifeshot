@@ -153,6 +153,28 @@ describe("metadata pipeline invariants", () => {
     expect(className).not.toContain("object-cover");
   });
 
+  it("prefers preview imagery for photo tiles so provider square thumbs do not crop the frame", () => {
+    const choosePreferredImageKey = (row: {
+      media_type?: string | null;
+      thumbnail_cache_key?: string | null;
+      preview_cache_key?: string | null;
+    }) => row.media_type === "photo"
+      ? (row.preview_cache_key ?? row.thumbnail_cache_key ?? null)
+      : (row.thumbnail_cache_key ?? row.preview_cache_key ?? null);
+
+    expect(choosePreferredImageKey({
+      media_type: "photo",
+      thumbnail_cache_key: "thumb.jpg",
+      preview_cache_key: "preview.jpg",
+    })).toBe("preview.jpg");
+
+    expect(choosePreferredImageKey({
+      media_type: "video",
+      thumbnail_cache_key: "thumb.jpg",
+      preview_cache_key: "preview.jpg",
+    })).toBe("thumb.jpg");
+  });
+
   it("reduces per-asset downstream jobs to the critical set plus coalesced library jobs", () => {
     const perAssetJobs = ["hashAsset", "generateDerived", "ocrAsset", "enrichAI"];
     const coalescedJobs = ["clusterPeople", "clusterPlaces", "detectEvents"];
