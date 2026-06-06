@@ -147,10 +147,10 @@ describe("metadata pipeline invariants", () => {
     expect(cropY).toBeGreaterThan(cover.height * 0.05);
   });
 
-  it("uses object-contain thumbnails so square cells do not crop the image bottom edge", () => {
-    const className = "absolute inset-0 h-full w-full object-contain object-center transition-opacity duration-300";
-    expect(className).toContain("object-contain");
-    expect(className).not.toContain("object-cover");
+  it("uses object-fill thumbnails so each tile renders as an exact 128x128 square", () => {
+    const className = "absolute inset-0 h-full w-full object-fill transition-opacity duration-300";
+    expect(className).toContain("object-fill");
+    expect(className).not.toContain("object-contain");
   });
 
   it("prefers preview imagery for photo tiles so provider square thumbs do not crop the frame", () => {
