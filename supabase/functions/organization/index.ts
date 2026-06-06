@@ -182,7 +182,14 @@ app.get("/people", async (c) => {
     } : null;
 
     return { ...p, asset_count: counts[p.id] ?? 0, cover };
-  }))).filter((person: any) => person.auto_label !== "auto:unclustered-faces" && person.asset_count > 0 && person.cover?.thumbnail_url);
+  }))).filter((person: any) => {
+    if (person.auto_label === "auto:unclustered-faces") return false;
+    if (!(person.asset_count > 0)) return false;
+    if (!person.cover?.thumbnail_url) return false;
+    const bb = person.cover?.face_bbox;
+    // Require a usable bbox so each tile renders ONLY the face, not the whole photo.
+    return !!(bb && bb.w > 0.05 && bb.h > 0.05 && bb.w <= 1 && bb.h <= 1);
+  });
   return c.json({ people, face_processing_disabled: false });
 });
 
