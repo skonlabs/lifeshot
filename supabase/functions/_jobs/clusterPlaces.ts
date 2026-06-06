@@ -4,50 +4,19 @@ import { providers } from "./mocks.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
 /**
- * clusterPlaces — turns raw GPS coordinates into named places and per-asset
- * location rows.
+ * clusterPlaces — turns raw GPS coordinates into named places.
  *
- * Sources GPS from BOTH assets.location_lat/lng (source of truth, set by the
- * connector or phase-1/2 of normalizeMetadata) AND from asset_gps. Processes
- * any asset that has coords but no asset_locations row yet (or has a row
- * missing place_id). Idempotent.
+ * Source of truth: `asset_gps` (preferred) + `assets.location_lat/lng`
+ * (fallback). On success it back-fills the reverse-geocoded city / country /
+ * place_name onto `asset_gps`, ensures a `places` row exists, and mirrors
+ * the resolved place onto `assets.place_id / place_name / location_city /
+ * location_country` so callers can query in a single join.
+ * We no longer write to `asset_locations` — that table is deprecated.
  */
 
 // Round coords to ~1km so nearby assets share a single geocode lookup.
 function geoKey(lat: number, lng: number): string {
   return `${lat.toFixed(2)}:${lng.toFixed(2)}`;
-}
-
-function isMissingColumnError(message?: string | null, column?: string) {
-  if (!message || !column) return false;
-  const m = message.toLowerCase();
-  const t = column.toLowerCase();
-  return m.includes(t) && (m.includes("schema cache") || m.includes("does not exist") || m.includes("could not find"));
-}
-
-/** Upsert into asset_locations with defensive fallbacks for legacy schemas. */
-async function upsertAssetLocation(
-  sb: ReturnType<typeof serviceClient>,
-  uid: string,
-  row: { asset_id: string; lat: number; lng: number; city: string | null; country: string | null; place_id: string | null },
-): Promise<string | null> {
-  // Try richest payload first.
-  const variants: Array<Record<string, unknown>> = [
-    { asset_id: row.asset_id, user_id: uid, lat: row.lat, lng: row.lng, city: row.city, country: row.country, place_id: row.place_id, geocoded_at: new Date().toISOString() },
-    { asset_id: row.asset_id,                 lat: row.lat, lng: row.lng, city: row.city, country: row.country, place_id: row.place_id, geocoded_at: new Date().toISOString() },
-    { asset_id: row.asset_id,                 lat: row.lat, lng: row.lng, city: row.city, country: row.country,                          geocoded_at: new Date().toISOString() },
-  ];
-  let lastErr: string | null = null;
-  for (const v of variants) {
-    const { error } = await (sb.from("asset_locations") as any).upsert(v, { onConflict: "asset_id" });
-    if (!error) return null;
-    lastErr = error.message;
-    // Only retry with simpler payload if it's a missing-column issue.
-    if (!isMissingColumnError(error.message, "user_id") && !isMissingColumnError(error.message, "place_id")) {
-      return error.message;
-    }
-  }
-  return lastErr;
 }
 
 export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
@@ -93,15 +62,15 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, places: 0, located: 0, reason: "no_gps" };
   }
 
-  // ── 2. Skip assets that are already geocoded with a place_id ──────────────
+  // ── 2. Skip assets that already have a reverse-geocoded place_name ────────
   const allIds = Array.from(coordsByAsset.keys());
-  const { data: existingLoc } = await sb.from("asset_locations")
-    .select("asset_id, place_id")
-    .in("asset_id", allIds);
   const alreadyDone = new Set<string>();
   if (!asset_id) {
-    for (const r of (existingLoc ?? []) as any[]) {
-      if (r.place_id) alreadyDone.add(r.asset_id);
+    const { data: existingGps } = await sb.from("asset_gps")
+      .select("asset_id, place_name")
+      .in("asset_id", allIds);
+    for (const r of (existingGps ?? []) as any[]) {
+      if (r.place_name) alreadyDone.add(r.asset_id);
     }
   }
   const todo = allIds.filter((id) => !alreadyDone.has(id));
@@ -155,22 +124,29 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       placeIdByName.set(placeName, placeId);
     }
 
-    // Back-fill reverse-geocode fields on asset_gps if a row exists.
-    await sb.from("asset_gps").update({
+    // Upsert asset_gps with the reverse-geocode (creates the row if EXIF
+    // wasn't the GPS source, so coords pulled from assets.location_lat/lng
+    // still get a row here).
+    const { error: gErr } = await sb.from("asset_gps").upsert({
+      asset_id: assetId, user_id: uid,
+      gps_latitude: lat, gps_longitude: lng,
       place_name: placeName,
       reverse_geocoded_city: geo.admin ?? null,
       reverse_geocoded_country: geo.country ?? null,
-    }).eq("asset_id", assetId);
-
-    const lErr = await upsertAssetLocation(sb, uid, {
-      asset_id: assetId, lat, lng,
-      city: geo.admin ?? null, country: geo.country ?? null, place_id: placeId,
-    });
-    if (lErr) {
-      console.error("clusterPlaces asset_locations upsert failed", { assetId, err: lErr });
-      if (!firstError) firstError = `asset_locations upsert: ${lErr}`;
+    }, { onConflict: "asset_id" });
+    if (gErr) {
+      console.error("clusterPlaces asset_gps upsert failed", { assetId, err: gErr.message });
+      if (!firstError) firstError = `asset_gps upsert: ${gErr.message}`;
       continue;
     }
+
+    // Mirror onto canonical assets row for direct queries (places API joins here).
+    await sb.from("assets").update({
+      place_id: placeId,
+      place_name: placeName,
+      location_city: geo.admin ?? null,
+      location_country: geo.country ?? null,
+    }).eq("id", assetId);
 
     affectedAssets.push(assetId);
     located++;

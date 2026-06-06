@@ -245,25 +245,19 @@ app.get("/places", async (c) => {
   const counts: Record<string, number> = {};
   const latestAssetByPlace: Record<string, { asset_id: string; capture_time: string | null }> = {};
   if (ids.length) {
-    const { data: locations, error: locErr } = await supa.from("asset_locations")
-      .select("place_id, asset_id")
+    // Count assets directly off `assets.place_id` (set by clusterPlaces).
+    // This replaces the deprecated `asset_locations` join.
+    const { data: assetRows, error: aErr } = await supa.from("assets")
+      .select("id, place_id, capture_time")
+      .eq("user_id", uid)
       .in("place_id", ids);
-    if (locErr) throw new ApiError("internal", locErr.message);
-    const assetIds = Array.from(new Set((locations ?? []).map((row: any) => row.asset_id)));
-    const assetTimes = new Map<string, string | null>();
-    if (assetIds.length) {
-      const { data: assets, error: assetErr } = await supa.from("assets")
-        .select("id, capture_time")
-        .in("id", assetIds);
-      if (assetErr) throw new ApiError("internal", assetErr.message);
-      for (const asset of assets ?? []) assetTimes.set(asset.id, asset.capture_time ?? null);
-    }
-    for (const row of locations ?? []) {
+    if (aErr) throw new ApiError("internal", aErr.message);
+    for (const row of assetRows ?? []) {
       counts[row.place_id] = (counts[row.place_id] ?? 0) + 1;
-      const captureTime = assetTimes.get(row.asset_id) ?? null;
       const prev = latestAssetByPlace[row.place_id];
-      if (!prev || (captureTime && (!prev.capture_time || captureTime > prev.capture_time))) {
-        latestAssetByPlace[row.place_id] = { asset_id: row.asset_id, capture_time: captureTime };
+      const ct = row.capture_time ?? null;
+      if (!prev || (ct && (!prev.capture_time || ct > prev.capture_time))) {
+        latestAssetByPlace[row.place_id] = { asset_id: row.id, capture_time: ct };
       }
     }
   }
