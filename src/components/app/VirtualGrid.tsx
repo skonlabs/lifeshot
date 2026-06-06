@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { AssetCell } from "./AssetCell";
+
+const CELL_SIZE = 128;
+const GRID_GAP = 8;
 
 interface Descriptor {
   asset_id: string;
@@ -26,16 +29,34 @@ interface Props {
 
 export function VirtualGrid({ items, fetchNext, hasNext, isFetching, selectionMode, selected, onToggleSelect }: Props) {
   const parentRef = useRef<HTMLDivElement | null>(null);
-  const COLS = 8;
+  const [cols, setCols] = useState(1);
+
+  useEffect(() => {
+    const node = parentRef.current;
+    if (!node) return;
+
+    const updateCols = () => {
+      const availableWidth = node.clientWidth;
+      const nextCols = Math.max(1, Math.floor((availableWidth + GRID_GAP) / (CELL_SIZE + GRID_GAP)));
+      setCols(nextCols);
+    };
+
+    updateCols();
+    const observer = new ResizeObserver(updateCols);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, []);
+
   const rows = useMemo(() => {
     const out: Descriptor[][] = [];
-    for (let i = 0; i < items.length; i += COLS) out.push(items.slice(i, i + COLS));
+    for (let i = 0; i < items.length; i += cols) out.push(items.slice(i, i + cols));
     return out;
-  }, [items]);
+  }, [cols, items]);
 
   const virtualizer = useWindowVirtualizer({
     count: rows.length,
-    estimateSize: () => 200,
+    estimateSize: () => CELL_SIZE + GRID_GAP,
     overscan: 4,
     scrollMargin: parentRef.current?.offsetTop ?? 0,
   });
@@ -59,13 +80,14 @@ export function VirtualGrid({ items, fetchNext, hasNext, isFetching, selectionMo
               className="absolute left-0 right-0 grid gap-2 px-1"
               style={{
                 transform: `translateY(${vr.start - virtualizer.options.scrollMargin}px)`,
-                gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))`,
+                gridTemplateColumns: `repeat(${cols}, ${CELL_SIZE}px)`,
+                justifyContent: "start",
               }}
             >
               {row.map((d) => (
                 <div
                   key={d.asset_id}
-                  className="aspect-square relative"
+                  className="relative h-32 w-32"
                   onClick={(e) => {
                     if (!selectionMode) return;
                     e.preventDefault();
