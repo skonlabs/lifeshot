@@ -3,6 +3,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
 import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
+import { LANES, laneFor } from "../_pipeline/lanes.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -77,7 +78,12 @@ function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null
 }
 
 async function nudgeWorkerDrain() {
-  await wakeWorkerDrain({ batch: 1, budgetMs: 50_000 });
+  await wakeWorkerDrain({
+    batch: 1,
+    budgetMs: 50_000,
+    lanes: [LANES[laneFor("syncSource")].name],
+    background: false,
+  });
 }
 
 async function nudgeIngestDrain() {
