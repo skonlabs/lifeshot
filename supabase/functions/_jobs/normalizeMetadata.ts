@@ -15,7 +15,7 @@ import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
-import { extractExifFromBytes } from "../_extractors/exif.ts";
+import { extractExifFromBytes, extractExifFromBytesRaw } from "../_extractors/exif.ts";
 
 const HEAD_BYTES = 384 * 1024;
 
@@ -309,8 +309,14 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         }, sb);
 
         const head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
+        console.log("normalizeMetadata phase2 head fetched", { asset_id, bytes: head?.bytes?.byteLength ?? 0 });
         if (head?.bytes?.byteLength) {
           const ex = await extractExifFromBytes(head.bytes);
+          console.log("normalizeMetadata phase2 exif parsed", {
+            asset_id,
+            hasExif: !!ex.exif, hasGps: !!ex.gps, hasMedia: !!ex.media,
+            gpsLat: ex.gps?.latitude ?? null, gpsLng: ex.gps?.longitude ?? null,
+          });
 
           if (ex.exif) {
             await upsertLog(sb, "asset_exif", {
@@ -363,17 +369,17 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
             }, { onConflict: "asset_id" }, "phase2-gps");
             byteExtractionSuccess = true;
             console.log("normalizeMetadata phase2-gps OK", { asset_id, lat, lng });
-          } else if (ex.exif) {
-            // EXIF parsed but no GPS — log diagnostics so we can see WHY.
+          } else {
+            // No GPS detected — log raw keys so we can see WHY.
             try {
-              const { extractExifFromBytesRaw } = await import("../_extractors/exif.ts");
               const raw = await extractExifFromBytesRaw(head.bytes);
-              const gpsKeys = raw ? Object.keys(raw).filter((k) => /gps|latitude|longitude/i.test(k)) : [];
+              const allKeys = raw ? Object.keys(raw) : [];
+              const gpsKeys = allKeys.filter((k) => /gps|latitude|longitude/i.test(k));
               const sample: Record<string, unknown> = {};
               for (const k of gpsKeys) sample[k] = (raw as any)[k];
               console.warn("normalizeMetadata phase2-gps MISSING", {
                 asset_id, device: `${asset.device_make}/${asset.device_model}`,
-                gpsKeysFound: gpsKeys, sample,
+                totalKeys: allKeys.length, gpsKeysFound: gpsKeys, sample,
               });
             } catch (e) {
               console.warn("normalizeMetadata phase2-gps diagnostic failed", String((e as Error)?.message ?? e));
