@@ -66,38 +66,41 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
   const bb = cover.face_bbox;
-  const imgAspect = cover.width && cover.height ? cover.width / cover.height : 1;
-  let style: React.CSSProperties = {
-    backgroundImage: `url(${cover.thumbnail_url})`,
-    backgroundSize: "cover",
-    backgroundPosition: "center center",
+  let imageStyle: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    objectPosition: "center center",
   };
   if (bb && bb.w > 0 && bb.h > 0) {
-    const pad = 0.18;
-    const faceCx = bb.x + bb.w / 2;
-    const faceCy = bb.y + bb.h / 2;
-    const cropW = Math.min(1, bb.w * (1 + pad * 2));
-    const cropH = Math.min(1, bb.h * (1 + pad * 2));
-    const effectiveCrop = Math.max(cropW, cropH * imgAspect);
-    const scale = 1 / Math.max(effectiveCrop, 0.12);
-    const denomX = Math.max(1 - 1 / scale, 0.001);
-    const denomY = Math.max(1 - 1 / scale, 0.001);
-    const posX = ((faceCx - 0.5 / scale) / denomX) * 100;
-    const posY = ((faceCy - 0.5 / scale) / denomY) * 100;
-    style = {
-      backgroundImage: `url(${cover.thumbnail_url})`,
-      backgroundSize: `${scale * 100}% ${scale * 100}%`,
-      backgroundPosition: `${clamp(posX, 0, 100)}% ${clamp(posY, 0, 100)}%`,
-      backgroundRepeat: "no-repeat",
+    const width = Math.max(cover.width ?? 1, 1);
+    const height = Math.max(cover.height ?? 1, 1);
+    const faceCx = (bb.x + bb.w / 2) * width;
+    const faceCy = (bb.y + bb.h / 2) * height;
+    const faceW = bb.w * width;
+    const faceH = bb.h * height;
+    const cropSide = clamp(Math.max(faceW, faceH) * 1.22, Math.min(width, height) * 0.12, Math.min(width, height));
+    const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(width - cropSide, 0));
+    const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(height - cropSide, 0));
+    imageStyle = {
+      position: "absolute",
+      width: `${(width / cropSide) * 100}%`,
+      maxWidth: "none",
+      height: "auto",
+      left: `${-(cropX / cropSide) * 100}%`,
+      top: `${-(cropY / cropSide) * 100}%`,
     };
   }
   return (
     <div
       className="hairline mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]"
-      style={style}
       role="img"
       aria-label="Face thumbnail"
-    />
+    >
+      <img src={cover.thumbnail_url} alt="" loading="lazy" decoding="async" style={imageStyle} />
+    </div>
   );
 }
 
