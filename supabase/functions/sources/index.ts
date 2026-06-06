@@ -63,6 +63,11 @@ async function cancelExistingSyncRuns(
     .eq("job_name", "syncSource")
     .contains("payload", { source_account_id: sourceAccountId });
 
+  await svc.from("job_queue").delete()
+    .eq("status", "pending")
+    .eq("job_name", "normalizeMetadata")
+    .contains("payload", { source_account_id: sourceAccountId });
+
   await svc.from("job_queue")
     .update({
       status: "failed",
@@ -530,10 +535,13 @@ app.get("/v1/:id/status", async (c) => {
   const accountRevoked = acc.status === "revoked";
   const unauthorized = accountRevoked || /unauthorized/i.test(lastErrorMessage ?? "");
   const processingOnlyActive = !unauthorized && processingOnly;
+  const awaitingMetadataProcessing =
+    persistedStage === "processing" &&
+    Number(jobStats.processing_total ?? 0) > Number(jobStats.normalized ?? 0);
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = processingOnlyActive || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
+  const syncing = processingOnlyActive || awaitingMetadataProcessing || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
   const accountStatus = accountRevoked
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
@@ -549,6 +557,14 @@ app.get("/v1/:id/status", async (c) => {
       batch: 4,
       budgetMs: 50_000,
       lanes: [syncLane],
+    });
+  } else if (awaitingMetadataProcessing) {
+    await nudgeWorkerDrain({
+      authHeader: c.req.header("Authorization"),
+      requestUrl: c.req.url,
+      batch: 12,
+      budgetMs: 50_000,
+      lanes: [LANES[laneFor("normalizeMetadata")].name],
     });
   }
   return c.json({
