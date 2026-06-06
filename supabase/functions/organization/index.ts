@@ -8,6 +8,7 @@ import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
+import { faceQualityScore, faceVisualSignature, sanitizeFaceBox } from "../_shared/face-box.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -130,10 +131,12 @@ app.get("/people", async (c) => {
     const seen: Record<string, Set<string>> = {};
     const perAssetFaceCount = new Map<string, number>();
     const signatureOwner = new Map<string, { person_id: string; confidence: number }>();
+    const bestCoverScore = new Map<string, number>();
 
-    const signatureFor = (bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
-      const bboxPart = bbox
-        ? [bbox.x, bbox.y, bbox.w, bbox.h].map((n) => Number(n ?? 0).toFixed(3)).join(":")
+    const signatureFor = (assetId: string, bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
+      const safeBox = sanitizeFaceBox(bbox);
+      const bboxPart = safeBox
+        ? faceVisualSignature(assetId, safeBox)
         : "no-bbox";
       const vectorPart = Array.isArray(vector) && vector.length
         ? vector.slice(0, 12).map((n) => Number(n).toFixed(4)).join(":")
@@ -143,7 +146,9 @@ app.get("/people", async (c) => {
 
     for (const f of faces ?? []) perAssetFaceCount.set(f.asset_id, (perAssetFaceCount.get(f.asset_id) ?? 0) + 1);
     for (const f of faces ?? []) {
-      const signature = signatureFor(f.bbox ?? null, Array.isArray(f.face_vector) ? f.face_vector as number[] : null);
+      const safeBox = sanitizeFaceBox(f.bbox ?? null);
+      if (!safeBox) continue;
+      const signature = signatureFor(f.asset_id, safeBox, Array.isArray(f.face_vector) ? f.face_vector as number[] : null);
       const owner = signatureOwner.get(signature);
       if (owner && owner.person_id !== f.person_id) continue;
       signatureOwner.set(signature, {
@@ -151,17 +156,22 @@ app.get("/people", async (c) => {
         confidence: Math.max(Number(f.confidence ?? 0), owner?.confidence ?? 0),
       });
       signatureMap[f.person_id] = signature;
-      if (!coverMap[f.person_id] && perAssetFaceCount.get(f.asset_id) === 1) {
+      const score = faceQualityScore(safeBox, Number(f.confidence ?? 0), perAssetFaceCount.get(f.asset_id) ?? 1);
+      const previousScore = bestCoverScore.get(f.person_id) ?? Number.NEGATIVE_INFINITY;
+      if (score > previousScore) {
         coverMap[f.person_id] = f.asset_id;
-        coverBboxMap[f.person_id] = f.bbox ?? null;
+        coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+        bestCoverScore.set(f.person_id, score);
       }
       (seen[f.person_id] ??= new Set()).add(f.asset_id);
     }
     for (const f of faces ?? []) {
+      const safeBox = sanitizeFaceBox(f.bbox ?? null);
+      if (!safeBox) continue;
       if (!coverMap[f.person_id]) {
         coverMap[f.person_id] = f.asset_id;
-        coverBboxMap[f.person_id] = f.bbox ?? null;
+        coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
       }
     }
