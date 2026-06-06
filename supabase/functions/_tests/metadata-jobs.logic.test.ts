@@ -157,10 +157,26 @@ describe("metadata pipeline invariants", () => {
     expect(cropY).toBeGreaterThan(cover.height * 0.05);
   });
 
-  it("uses object-fill thumbnails so each tile renders as an exact 128x128 square", () => {
-    const className = "absolute inset-0 h-full w-full object-fill transition-opacity duration-300";
-    expect(className).toContain("object-fill");
-    expect(className).not.toContain("object-contain");
+  it("uses object-contain thumbnails so photo tiles do not crop the frame", () => {
+    const className = "absolute inset-0 h-full w-full object-contain transition-opacity duration-300";
+    expect(className).toContain("object-contain");
+    expect(className).not.toContain("object-fill");
+  });
+
+  it("dedupes face clusters by a stable face signature before rendering people tiles", () => {
+    const faceSignature = (bbox: { x: number; y: number; w: number; h: number }, vector: number[]) => {
+      const bboxPart = [bbox.x, bbox.y, bbox.w, bbox.h].map((n) => n.toFixed(3)).join(":");
+      const vectorPart = vector.slice(0, 3).map((n) => n.toFixed(4)).join(":");
+      return `${bboxPart}:${vectorPart}`;
+    };
+
+    expect(faceSignature(
+      { x: 0.1012, y: 0.2023, w: 0.3034, h: 0.4045 },
+      [0.123456, 0.223456, 0.323456],
+    )).toBe(faceSignature(
+      { x: 0.10121, y: 0.20231, w: 0.30341, h: 0.40449 },
+      [0.123451, 0.223454, 0.323459],
+    ));
   });
 
   it("prefers preview imagery for photo tiles so provider square thumbs do not crop the frame", () => {
