@@ -10,6 +10,7 @@ function Places() {
   const { data, isLoading } = usePlaces();
   const places = data?.places ?? [];
   const withCoords = useMemo(() => places.filter((p) => p.lat != null && p.lng != null), [places]);
+  const featured = withCoords.slice(0, 6);
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-8">
@@ -20,7 +21,34 @@ function Places() {
       {isLoading ? (
         <Skeleton className="h-[420px] w-full rounded-md" />
       ) : (
-        <div className="grid grid-cols-12 gap-6">
+        <div className="space-y-6">
+          {featured.length > 0 && (
+            <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {featured.map((p) => (
+                <Link
+                  key={`feature-${p.id}`}
+                  to="/search"
+                  search={{ q: p.name }}
+                  className="hairline rounded-md border bg-[color:var(--paper)] p-4 transition-colors hover:bg-[color:var(--paper-2)]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-archive-label">place</div>
+                      <h2 className="mt-1 font-display text-xl text-[color:var(--ink)]">{p.label ?? p.name}</h2>
+                      <p className="mt-1 text-sm text-[color:var(--umber)]">
+                        {p.latest_capture_time ? new Date(p.latest_capture_time).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Undated"}
+                      </p>
+                    </div>
+                    <div className="text-right text-sm text-[color:var(--umber)]">
+                      <div>{p.asset_count} photo{p.asset_count === 1 ? "" : "s"}</div>
+                      <div>{p.lat?.toFixed(2)}, {p.lng?.toFixed(2)}</div>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </section>
+          )}
+          <div className="grid grid-cols-12 gap-6">
           {/* Schematic map projection */}
           <div className="col-span-12 lg:col-span-8">
             <div className="hairline relative aspect-[16/10] overflow-hidden rounded-md border bg-[color:var(--paper)]">
@@ -31,7 +59,7 @@ function Places() {
                 {withCoords.map((p) => {
                   const cx = p.lng!;
                   const cy = -p.lat!;
-                  const r = Math.max(1.4, Math.min(6, Math.sqrt(p.asset_count) * 0.6));
+                  const r = Math.max(1.5, Math.min(8, Math.log2(p.asset_count + 1) * 1.2));
                   return (
                     <g key={p.id}>
                       <circle cx={cx} cy={cy} r={r} className="fill-[color:var(--ink)]/70" />
@@ -50,14 +78,16 @@ function Places() {
               <li key={p.id}>
                 <Link
                   to="/search"
-                  search={{ q: p.name }}
+                    search={{ q: p.name }}
                   className="hairline group flex items-center justify-between rounded-md border bg-[color:var(--paper)] px-3 py-2 hover:bg-[color:var(--paper-2)]"
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <MapPin className="h-3.5 w-3.5 shrink-0 text-[color:var(--umber)]" />
                     <div className="min-w-0">
-                      <div className="truncate font-medium text-[color:var(--ink)]">{p.name}</div>
-                      <div className="text-[11px] text-[color:var(--umber)]">{p.lat?.toFixed(2) ?? "—"}, {p.lng?.toFixed(2) ?? "—"}</div>
+                        <div className="truncate font-medium text-[color:var(--ink)]">{p.label ?? p.name}</div>
+                        <div className="text-[11px] text-[color:var(--umber)]">
+                          {p.latest_capture_time ? new Date(p.latest_capture_time).getFullYear() : "Undated"} · {p.lat?.toFixed(2) ?? "—"}, {p.lng?.toFixed(2) ?? "—"}
+                        </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 text-xs tabular-nums text-[color:var(--umber)]">
@@ -68,6 +98,7 @@ function Places() {
               </li>
             ))}
           </ul>
+        </div>
         </div>
       )}
     </div>
