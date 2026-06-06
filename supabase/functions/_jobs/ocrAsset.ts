@@ -87,13 +87,15 @@ export async function ocrAsset(ctx: JobContext): Promise<unknown> {
       { onConflict: "asset_id" },
     );
 
-    // Re-index search document so OCR text is searchable immediately.
+    // Ensure the asset gets indexed. Shares the canonical `index:${asset_id}`
+    // key with enrichAI — whichever job finishes first wins and the other
+    // is deduplicated by the job ledger. No extra jobs are created.
     if (text.length > 0) {
       const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
       await enqueueJob("indexSearchDocument", {
         userId: ctx.userId,
         payload: { asset_id },
-        idempotencyKey: `index-post-ocr:${asset_id}`,
+        idempotencyKey: `index:${asset_id}`,
       });
     }
   }
