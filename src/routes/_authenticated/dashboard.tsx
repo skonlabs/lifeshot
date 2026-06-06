@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { useDashboard, useEvents, usePeople, useSourceAccounts, useViewport } from "@/lib/api/hooks";
+import { useActiveAssetCount, useDashboard, useEvents, usePeople, useSourceAccounts, useViewport } from "@/lib/api/hooks";
 import { useSourceProgress } from "@/lib/realtime/useSourceProgress";
 import { AssetCell } from "@/components/app/AssetCell";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,6 +11,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({ component: D
 function Dashboard() {
   useSourceProgress();
   const dash = useDashboard();
+  const assetCount = useActiveAssetCount();
   const viewport = useViewport({ viewport_size: 12, quality_preference: "best" });
   const events = useEvents();
   const people = usePeople();
@@ -76,7 +77,7 @@ function Dashboard() {
 
       {/* Bento: stats + lenses */}
       <section className="grid grid-cols-12 gap-3 py-8">
-        <Stat title="Indexed memories" value={d?.total_assets} accent />
+        <Stat title="Indexed memories" value={assetCount.data?.count ?? d?.total_assets} accent />
         <Stat title="At risk" value={d?.at_risk} href="/sources" />
         <Stat title="Duplicate groups" value={d?.duplicate_groups} href="/duplicates" />
         <Stat title="People" value={people.data?.people?.length} href="/people" icon={Users} />
