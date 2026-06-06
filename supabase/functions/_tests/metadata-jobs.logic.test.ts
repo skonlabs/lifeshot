@@ -175,6 +175,22 @@ describe("metadata pipeline invariants", () => {
     })).toBe("thumb.jpg");
   });
 
+  it("versions signed-url cache keys by source image key so stale thumb URLs are not reused", () => {
+    const fingerprint = (value: string) => {
+      let hash = 5381;
+      for (let i = 0; i < value.length; i += 1) {
+        hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+      }
+      return (hash >>> 0).toString(16);
+    };
+
+    const signedUrlKey = (uid: string, assetId: string, size: string, cacheKey: string | null) =>
+      `v2:signed:${uid}:${assetId}:${size}:${fingerprint(cacheKey ?? "_")}`;
+
+    expect(signedUrlKey("u1", "a1", "medium", "thumb.jpg"))
+      .not.toBe(signedUrlKey("u1", "a1", "medium", "preview.jpg"));
+  });
+
   it("reduces per-asset downstream jobs to the critical set plus coalesced library jobs", () => {
     const perAssetJobs = ["hashAsset", "generateDerived", "ocrAsset", "enrichAI"];
     const coalescedJobs = ["clusterPeople", "clusterPlaces", "detectEvents"];

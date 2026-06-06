@@ -31,15 +31,23 @@ export const cache = {
   },
 };
 
+function fingerprint(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(16);
+}
+
 export const keys = {
   viewport: (uid: string, filterHash: string, cursor?: string | null) =>
-    `v1:viewport:${uid}:${filterHash}:${cursor ?? "_"}`,
+    `v2:viewport:${uid}:${filterHash}:${cursor ?? "_"}`,
   dashboard: (uid: string) => `v1:dashboard:${uid}`,
   facets:    (uid: string, filterHash: string) => `v1:facets:${uid}:${filterHash}`,
   search:    (uid: string, qhash: string) => `v1:search:${uid}:${qhash}`,
   providers: () => `v1:providers`,
-  signedUrl: (uid: string, assetId: string, size: string) =>
-    `v1:signed:${uid}:${assetId}:${size}`,
+  signedUrl: (uid: string, assetId: string, size: string, cacheKey: string | null) =>
+    `v2:signed:${uid}:${assetId}:${size}:${fingerprint(cacheKey ?? "_")}`,
 };
 
 export async function hashJson(o: unknown): Promise<string> {

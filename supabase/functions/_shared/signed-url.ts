@@ -14,7 +14,7 @@ export async function resolveThumbUrl(
 ): Promise<string | null> {
   if (!cacheKey) return null;
   if (/^https?:\/\//.test(cacheKey)) return cacheKey;
-  const ck = keys.signedUrl(userId, assetId, size);
+  const ck = keys.signedUrl(userId, assetId, size, cacheKey);
   const cached = await cache.get<string>(c, ck);
   if (cached) return cached;
   let url: string | null = null;
