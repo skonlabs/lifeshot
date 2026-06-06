@@ -224,12 +224,13 @@ app.get("/people", async (c) => {
   const signatureMap: Record<string, string> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id, bbox, confidence, created_at, face_vector").in("person_id", ids)
+      .select("person_id, asset_id, bbox, confidence, created_at, face_vector, face_crop").in("person_id", ids)
       .order("confidence", { ascending: false, nullsFirst: false });
     const seen: Record<string, Set<string>> = {};
     const perAssetFaceCount = new Map<string, number>();
     const signatureOwner = new Map<string, { person_id: string; confidence: number }>();
     const bestCoverScore = new Map<string, number>();
+    const coverFaceCropMap: Record<string, string | null> = {};
 
     const signatureFor = (assetId: string, bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
       const safeBox = sanitizeFaceBox(bbox);
@@ -260,6 +261,7 @@ app.get("/people", async (c) => {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
         bestCoverScore.set(f.person_id, score);
       }
       (seen[f.person_id] ??= new Set()).add(f.asset_id);
@@ -271,9 +273,12 @@ app.get("/people", async (c) => {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = safeBox;
         faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
       }
     }
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
+    // Stash cover crop map in outer closure scope via Object so it's readable below.
+    (peopleRows as any).__coverFaceCropMap = coverFaceCropMap;
   }
 
   const coverIds = Array.from(new Set(Object.values(coverMap)));
@@ -295,9 +300,12 @@ app.get("/people", async (c) => {
     const coverAssetId = coverMap[p.id] ?? null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
     const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
+    const faceCropDataUrl = (peopleRows as any).__coverFaceCropMap?.[p.id] ?? null;
     const cover = coverAssetId && asset ? {
       asset_id: coverAssetId,
-      thumbnail_url: await resolveThumbUrl(
+      // Prefer the pre-aligned 48x48 face_crop produced by face-api.js in the browser.
+      // Fall back to the asset thumbnail if for some reason a crop wasn't stored.
+      thumbnail_url: faceCropDataUrl ?? await resolveThumbUrl(
         c,
         supa,
         uid,
@@ -312,9 +320,10 @@ app.get("/people", async (c) => {
       capture_time: asset.capture_time ?? null,
       media_type: asset.media_type ?? "photo",
       source_badge: null,
-      face_bbox: coverBboxMap[p.id] ?? null,
+      // When face_crop is used, the image IS the face — no further cropping needed.
+      face_bbox: faceCropDataUrl ? null : (coverBboxMap[p.id] ?? null),
       face_count: faceCountMap[p.id] ?? 1,
-      hydration_status: ((preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key) ? "ready" : "pending") as const,
+      hydration_status: (faceCropDataUrl || preview?.thumbnail_cache_key || asset.thumbnail_cache_key ? "ready" : "pending") as const,
     } : null;
 
     return { ...p, asset_count: counts[p.id] ?? 0, cover };
