@@ -114,7 +114,8 @@ app.get("/people", async (c) => {
     return c.json({ people: [], face_processing_disabled: true });
   }
   const { data, error } = await supa.from("people")
-    .select("id, display_name, is_child, is_elder, consent_required");
+    .select("id, display_name, is_child, is_elder, consent_required")
+    .neq("auto_label", "auto:unclustered-faces");
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
   const ids = peopleRows.map((p: any) => p.id);
@@ -151,7 +152,7 @@ app.get("/people", async (c) => {
     for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
   }
 
-  const people = await Promise.all(peopleRows.map(async (p: any) => {
+  const people = (await Promise.all(peopleRows.map(async (p: any) => {
     const coverAssetId = coverMap[p.id] ?? null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
     const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
@@ -170,7 +171,7 @@ app.get("/people", async (c) => {
     } : null;
 
     return { ...p, asset_count: counts[p.id] ?? 0, cover };
-  }));
+  }))).filter((person: any) => person.asset_count > 0 && person.cover?.thumbnail_url);
   return c.json({ people, face_processing_disabled: false });
 });
 
@@ -188,28 +189,36 @@ app.get("/people/:id", async (c) => {
 
 app.get("/places", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
-  const { data, error } = await supa.from("places").select("*").limit(500);
+  const { data, error } = await supa.from("places").select("*").eq("user_id", uid).limit(500);
   if (error) throw new ApiError("internal", error.message);
   const placeRows = data ?? [];
   const ids = placeRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
+  const latestAssetByPlace: Record<string, { asset_id: string; capture_time: string | null }> = {};
   if (ids.length) {
-    const { data: ep } = await supa.from("event_places")
-      .select("place_id, event_id").in("place_id", ids);
-    const byPlace: Record<string, string[]> = {};
-    for (const r of ep ?? []) (byPlace[r.place_id] ??= []).push(r.event_id);
-    const allEventIds = Array.from(new Set((ep ?? []).map((r: any) => r.event_id)));
-    const evCount: Record<string, number> = {};
-    if (allEventIds.length) {
-      const { data: ea } = await supa.from("event_assets")
-        .select("event_id, asset_id").in("event_id", allEventIds);
-      for (const r of ea ?? []) evCount[r.event_id] = (evCount[r.event_id] ?? 0) + 1;
-    }
-    for (const [pid, evIds] of Object.entries(byPlace)) {
-      counts[pid] = evIds.reduce((acc, eid) => acc + (evCount[eid] ?? 0), 0);
+    const { data: locations, error: locErr } = await supa.from("asset_locations")
+      .select("place_id, asset_id, lat, lng, city, country, assets(capture_time)")
+      .in("place_id", ids);
+    if (locErr) throw new ApiError("internal", locErr.message);
+    for (const row of locations ?? []) {
+      counts[row.place_id] = (counts[row.place_id] ?? 0) + 1;
+      const captureTime = row.assets?.capture_time ?? null;
+      const prev = latestAssetByPlace[row.place_id];
+      if (!prev || (captureTime && (!prev.capture_time || captureTime > prev.capture_time))) {
+        latestAssetByPlace[row.place_id] = { asset_id: row.asset_id, capture_time: captureTime };
+      }
     }
   }
-  const places = placeRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+  const places = placeRows
+    .map((p: any) => ({
+      ...p,
+      asset_count: counts[p.id] ?? 0,
+      latest_asset_id: latestAssetByPlace[p.id]?.asset_id ?? null,
+      latest_capture_time: latestAssetByPlace[p.id]?.capture_time ?? null,
+      label: [p.name, p.country].filter(Boolean).join(", "),
+    }))
+    .filter((p: any) => p.asset_count > 0)
+    .sort((a: any, b: any) => b.asset_count - a.asset_count || String(b.latest_capture_time ?? "").localeCompare(String(a.latest_capture_time ?? "")));
   return c.json({ places });
 });
 
