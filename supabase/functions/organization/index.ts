@@ -121,17 +121,28 @@ app.get("/people", async (c) => {
   const counts: Record<string, number> = {};
   const coverMap: Record<string, string> = {};
   const coverBboxMap: Record<string, any> = {};
+  const faceCountMap: Record<string, number> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
       .select("person_id, asset_id, bbox, confidence, created_at").in("person_id", ids)
       .order("confidence", { ascending: false, nullsFirst: false });
     const seen: Record<string, Set<string>> = {};
+    const perAssetFaceCount = new Map<string, number>();
+    for (const f of faces ?? []) perAssetFaceCount.set(f.asset_id, (perAssetFaceCount.get(f.asset_id) ?? 0) + 1);
+    for (const f of faces ?? []) {
+      if (!coverMap[f.person_id] && perAssetFaceCount.get(f.asset_id) === 1) {
+        coverMap[f.person_id] = f.asset_id;
+        coverBboxMap[f.person_id] = f.bbox ?? null;
+        faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
+      }
+      (seen[f.person_id] ??= new Set()).add(f.asset_id);
+    }
     for (const f of faces ?? []) {
       if (!coverMap[f.person_id]) {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = f.bbox ?? null;
+        faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
       }
-      (seen[f.person_id] ??= new Set()).add(f.asset_id);
     }
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
   }
@@ -166,6 +177,7 @@ app.get("/people", async (c) => {
       media_type: asset.media_type ?? "photo",
       source_badge: null,
       face_bbox: coverBboxMap[p.id] ?? null,
+      face_count: faceCountMap[p.id] ?? 1,
       hydration_status: ((preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key) ? "ready" : "pending") as const,
     } : null;
 
