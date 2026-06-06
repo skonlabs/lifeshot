@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { usePeople } from "@/lib/api/hooks";
+import { usePeople, useCorrection } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ShieldAlert, UserRound } from "lucide-react";
 
@@ -25,25 +26,75 @@ function People() {
         </div>
       )}
       {isLoading ? (
-        <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
-          {Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="aspect-square rounded-full" />)}
+        <div className="grid grid-cols-6 gap-3 md:grid-cols-12">
+          {Array.from({ length: 24 }).map((_, i) => <Skeleton key={i} className="aspect-square rounded-full" />)}
         </div>
       ) : people.length === 0 && !faceOff ? (
         <div className="hairline rounded-md border border-dashed bg-[color:var(--paper)] py-16 text-center text-sm text-[color:var(--umber)]">
           No people clustered yet — sync a source to begin.
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-4 md:grid-cols-6">
+        <div className="grid grid-cols-6 gap-3 md:grid-cols-12">
           {people.map((p) => (
-            <Link key={p.id} to="/people/$id" params={{ id: p.id }}
-              className="group block text-center">
-              <FaceAvatar cover={p.cover} />
-              <div className="mt-2 truncate text-sm font-medium text-[color:var(--ink)]">{p.display_name ?? "Unknown"}</div>
-              <div className="text-xs text-[color:var(--umber)]">{p.asset_count} photo{p.asset_count === 1 ? "" : "s"}</div>
-            </Link>
+            <PersonTile key={p.id} person={p} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+type Person = {
+  id: string;
+  display_name: string | null;
+  asset_count: number;
+  cover?: Cover;
+};
+
+function PersonTile({ person }: { person: Person }) {
+  const correction = useCorrection();
+  const [name, setName] = useState(person.display_name ?? "");
+  const [editing, setEditing] = useState(false);
+  const commit = () => {
+    const trimmed = name.trim();
+    if (trimmed && trimmed !== (person.display_name ?? "")) {
+      correction.mutate({
+        target_type: "person",
+        target_id: person.id,
+        correction: { display_name: trimmed },
+      });
+    }
+    setEditing(false);
+  };
+  return (
+    <div className="group block text-center">
+      <Link to="/people/$id" params={{ id: person.id }} className="block">
+        <FaceAvatar cover={person.cover} />
+      </Link>
+      {editing ? (
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") { setName(person.display_name ?? ""); setEditing(false); }
+          }}
+          placeholder="Name"
+          className="hairline mt-2 w-full rounded border bg-[color:var(--paper)] px-1 py-0.5 text-center text-xs text-[color:var(--ink)] focus:outline-none focus:ring-1 focus:ring-[color:var(--ink)]"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="mt-2 block w-full truncate text-xs font-medium text-[color:var(--ink)] hover:underline"
+          title="Click to name"
+        >
+          {person.display_name ?? <span className="text-[color:var(--umber)]">+ name</span>}
+        </button>
+      )}
+      <div className="text-[10px] text-[color:var(--umber)]">{person.asset_count}</div>
     </div>
   );
 }

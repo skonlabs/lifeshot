@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { AssetCell } from "./AssetCell";
 
-const CELL_SIZE = 128;
+const CELL_SIZE = 96;
 const GRID_GAP = 8;
 
 interface Descriptor {
@@ -87,7 +87,7 @@ export function VirtualGrid({ items, fetchNext, hasNext, isFetching, selectionMo
               {row.map((d) => (
                 <div
                   key={d.asset_id}
-                  className="relative h-32 w-32"
+                  className="relative h-24 w-24"
                   onClick={(e) => {
                     if (!selectionMode) return;
                     e.preventDefault();
