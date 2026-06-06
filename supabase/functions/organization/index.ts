@@ -17,6 +17,104 @@ const ListPage = z.object({
 
 const app = authed(createApi("/organization/v1"));
 
+// ---------- face scan (browser-side detector) ----------
+
+app.get("/face-scan/queue", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  await enforceRateLimit(uid, "general");
+  const { data: privacy } = await supa.from("privacy_settings")
+    .select("face_processing_enabled").eq("user_id", uid).maybeSingle();
+  if (!privacy?.face_processing_enabled) {
+    return c.json({ assets: [], face_processing_disabled: true });
+  }
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? "8"), 1), 25);
+  const { data, error } = await supa.from("assets")
+    .select("id, thumbnail_cache_key, proxy_cache_key, width, height, capture_time")
+    .eq("user_id", uid)
+    .eq("deleted_state", "active")
+    .eq("media_type", "photo")
+    .is("face_scanned_at", null)
+    .order("capture_time", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) throw new ApiError("internal", error.message);
+
+  const assets = await Promise.all((data ?? []).map(async (a: any) => {
+    const url = await resolveThumbUrl(
+      c, supa, uid, a.id,
+      a.proxy_cache_key ?? a.thumbnail_cache_key ?? null,
+      "preview",
+    );
+    return url ? { id: a.id, image_url: url, width: a.width, height: a.height } : null;
+  }));
+  return c.json({ assets: assets.filter(Boolean) });
+});
+
+const FaceSubmitIn = z.object({
+  asset_id: z.string().uuid(),
+  image_width: z.number().positive(),
+  image_height: z.number().positive(),
+  faces: z.array(z.object({
+    descriptor: z.array(z.number()).length(128),
+    score: z.number().min(0).max(1),
+    box: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+    dataUrl: z.string().min(1).max(120_000),
+  })).max(20),
+}).strict();
+
+app.post("/face-scan/submit", async (c) => {
+  const supa = c.get("supabase"); const uid = c.get("userId");
+  const body = await parseBody(c, FaceSubmitIn);
+
+  const { data: asset } = await supa.from("assets")
+    .select("id, user_id")
+    .eq("id", body.asset_id).maybeSingle();
+  if (!asset || asset.user_id !== uid) throw new ApiError("not_found", "asset");
+
+  const W = Math.max(body.image_width, 1);
+  const H = Math.max(body.image_height, 1);
+  const enrichmentFaces = body.faces.map((f) => ({
+    bbox: {
+      x: Math.max(0, Math.min(1, f.box.x / W)),
+      y: Math.max(0, Math.min(1, f.box.y / H)),
+      w: Math.max(0, Math.min(1, f.box.width / W)),
+      h: Math.max(0, Math.min(1, f.box.height / H)),
+    },
+    score: f.score,
+    description: null,
+    embedding: f.descriptor,
+    face_crop: f.dataUrl,
+  }));
+
+  // Merge into asset_ai_enrichment.faces without nuking caption/tags/objects.
+  const { data: existing } = await supa.from("asset_ai_enrichment")
+    .select("asset_id, caption, tags, objects")
+    .eq("asset_id", body.asset_id).maybeSingle();
+
+  await supa.from("asset_ai_enrichment").upsert({
+    asset_id: body.asset_id,
+    user_id: uid,
+    caption: existing?.caption ?? "",
+    tags: existing?.tags ?? [],
+    objects: existing?.objects ?? [],
+    faces: enrichmentFaces,
+    enriched_at: new Date().toISOString(),
+  }, { onConflict: "asset_id" });
+
+  await supa.from("assets")
+    .update({ face_scanned_at: new Date().toISOString() })
+    .eq("id", body.asset_id);
+
+  if (enrichmentFaces.length > 0) {
+    await jobEnqueuer.enqueue(
+      "clusterPeople",
+      { user_id: uid, asset_id: body.asset_id },
+      { userId: uid, idempotencyKey: `cluster:${body.asset_id}:${Date.now()}` },
+    );
+  }
+
+  return c.json({ ok: true, faces: enrichmentFaces.length });
+});
+
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { limit } = parseQuery(c, ListPage);
