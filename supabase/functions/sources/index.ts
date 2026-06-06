@@ -510,7 +510,6 @@ app.get("/v1/:id/status", async (c) => {
     /cancelled by user/i.test(queueJobError ?? "");
   const persistedIndexed = Number(persistedJobStats.indexed ?? 0);
   const persistedDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0);
-  const selectionDiscovered = Math.max(persistedDiscovered, indexed);
   const queueLooksStale = isStaleSyncQueueState({
     queueStatus: queueJob?.status ?? null,
     persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
@@ -524,10 +523,6 @@ app.get("/v1/:id/status", async (c) => {
     hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
-  const processingOnly = !queueLooksStale && !activeJob && lastJob?.status === "running" && (persistedJobStats.stage === "processing");
-  const effectiveJobStatus = cancelled
-    ? "cancelled"
-    : (processingOnly ? "running" : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null)));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
