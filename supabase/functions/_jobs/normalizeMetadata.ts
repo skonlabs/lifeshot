@@ -362,6 +362,22 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               geohash: geohashEncode(lat, lng, 9),
             }, { onConflict: "asset_id" }, "phase2-gps");
             byteExtractionSuccess = true;
+            console.log("normalizeMetadata phase2-gps OK", { asset_id, lat, lng });
+          } else if (ex.exif) {
+            // EXIF parsed but no GPS — log diagnostics so we can see WHY.
+            try {
+              const { extractExifFromBytesRaw } = await import("../_extractors/exif.ts");
+              const raw = await extractExifFromBytesRaw(head.bytes);
+              const gpsKeys = raw ? Object.keys(raw).filter((k) => /gps|latitude|longitude/i.test(k)) : [];
+              const sample: Record<string, unknown> = {};
+              for (const k of gpsKeys) sample[k] = (raw as any)[k];
+              console.warn("normalizeMetadata phase2-gps MISSING", {
+                asset_id, device: `${asset.device_make}/${asset.device_model}`,
+                gpsKeysFound: gpsKeys, sample,
+              });
+            } catch (e) {
+              console.warn("normalizeMetadata phase2-gps diagnostic failed", String((e as Error)?.message ?? e));
+            }
           }
 
           // Upgrade asset_media_metadata with EXIF-precise values.
