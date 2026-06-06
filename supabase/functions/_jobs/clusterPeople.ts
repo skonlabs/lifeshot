@@ -19,10 +19,10 @@ import type { JobContext } from "../_pipeline/runner.ts";
  */
 
 // Identity-signature embeddings (text-embedding-3-small over a deterministic
-// slot string) cluster tightly when the slots match; loosen the threshold so
-// minor slot differences (e.g. eye-color:brown vs hazel) still match the same
-// person across photos.
-const CLUSTER_THRESHOLD = 0.78;
+// slot string) are still too weak to safely merge people at a low threshold.
+// Raise the cutoff so we stop splitting the same photo into duplicate people
+// or cross-linking nearby faces that share coarse attributes.
+const CLUSTER_THRESHOLD = 0.9;
 
 function bboxArea(bbox: { w?: number; h?: number } | null | undefined): number {
   if (!bbox) return 0;
@@ -77,6 +77,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const faceEntries: FaceEntry[] = [];
+  const faceIdentityIndex = new Map<string, FaceEntry>();
 
   for (const row of enrichRows ?? []) {
     const faces = Array.isArray(row.faces) ? row.faces : [];
@@ -85,19 +86,33 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       const emb = Array.isArray(f.embedding) && f.embedding.length > 0 ? f.embedding as number[] : null;
       const bbox = f.bbox ?? null;
       const confidence = f.score ?? f.confidence ?? 0.5;
-      const hasUsableBbox = bbox && bbox.w > 0.08 && bbox.h > 0.08;
-      if (emb && hasUsableBbox && confidence >= 0.6) {
-        faceEntries.push({
+      const hasUsableBbox = bbox && bbox.w > 0.04 && bbox.h > 0.04;
+      if (emb && hasUsableBbox && confidence >= 0.72) {
+        const entry = {
           asset_id: row.asset_id,
           face_index: i,
           bbox,
           description: f.description ?? "",
           confidence,
           embedding: emb,
-        });
+        };
+
+        const identityKey = [
+          row.asset_id,
+          Number(bbox.x ?? 0).toFixed(3),
+          Number(bbox.y ?? 0).toFixed(3),
+          Number(bbox.w ?? 0).toFixed(3),
+          Number(bbox.h ?? 0).toFixed(3),
+        ].join(":");
+        const existing = faceIdentityIndex.get(identityKey);
+        if (!existing || existing.confidence < entry.confidence) {
+          faceIdentityIndex.set(identityKey, entry);
+        }
       }
     }
   }
+
+  faceEntries.push(...faceIdentityIndex.values());
 
   if (faceEntries.length === 0) {
     return { user_id: uid, people: 0, clustered: 0, skipped_faces: true };
@@ -144,10 +159,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ...(existingPeople ?? []).map((p) => Number(String(p.auto_label ?? "").split(":").at(-1) ?? 0)).filter(Number.isFinite),
   );
   let clusteredFaces = 0;
-  const assignedAssetFace = new Set<string>();
+  const assignedFaceKeys = new Set<string>();
 
   for (const entry of faceEntries) {
-    if (assignedAssetFace.has(entry.asset_id)) continue;
+    const faceKey = `${entry.asset_id}:${entry.face_index}`;
+    if (assignedFaceKeys.has(faceKey)) continue;
     let matchedPersonId: string | null = null;
     let bestSim = -1;
 
@@ -189,7 +205,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
     else {
       clusteredFaces++;
-      assignedAssetFace.add(entry.asset_id);
+      assignedFaceKeys.add(faceKey);
     }
   }
 
