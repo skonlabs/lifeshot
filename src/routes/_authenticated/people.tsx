@@ -116,7 +116,8 @@ type Cover = {
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
   const bb = cover?.face_bbox;
-  const hasUsableBbox = !!(bb && bb.w > 0.02 && bb.h > 0.02 && bb.w <= 1 && bb.h <= 1);
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
   // Without a usable bbox we can't isolate the face, so show a neutral
   // placeholder instead of leaking the entire source photo into the avatar.
   if (!cover?.thumbnail_url || !hasUsableBbox) {
@@ -132,9 +133,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const H = Math.max(cover.height ?? 1, 1);
   const faceWpx = bb!.w * W;
   const faceHpx = bb!.h * H;
-  const pad = 0.2;
-  let sidePx = Math.max(faceWpx, faceHpx) * (1 + pad * 2);
-  sidePx = Math.min(sidePx, Math.min(W, H));
+  const longestFaceSide = Math.max(faceWpx, faceHpx);
+  const shortestImageSide = Math.min(W, H);
+  let sidePx = clamp(longestFaceSide * 1.12, shortestImageSide * 0.09, shortestImageSide * 0.68);
   const cxPx = (bb!.x + bb!.w / 2) * W;
   const cyPx = (bb!.y + bb!.h / 2) * H;
   let leftPx = cxPx - sidePx / 2;
@@ -155,7 +156,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       role="img"
       aria-label="Face thumbnail"
     >
-      <img src={cover.thumbnail_url} alt="" loading="lazy" decoding="async" style={imageStyle} />
+      <img src={cover.thumbnail_url} alt="" loading="lazy" decoding="async" className="absolute" style={imageStyle} />
     </div>
   );
 }
