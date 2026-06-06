@@ -54,7 +54,7 @@ app.delete("/derived-data", async (c) => {
   if (body.scope === "all") {
     await svc.rpc("cache_invalidate_user", {});
     // best-effort direct deletes (RLS bypassed)
-    for (const t of ["asset_embeddings", "asset_ocr", "asset_ai_enrichment", "asset_thumbnails", "asset_proxies"]) {
+    for (const t of ["asset_ocr", "asset_ai_enrichment", "asset_thumbnails", "asset_proxies"]) {
       await svc.from(t).delete().in("asset_id",
         (await svc.from("assets").select("id").eq("user_id", uid)).data?.map((r: any) => r.id) ?? []);
     }

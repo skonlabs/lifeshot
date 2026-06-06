@@ -16,35 +16,26 @@ export async function embeddingCacheKey(model: string, text: string): Promise<st
   return await sha256Hex(`${model}::${normalizeText(text)}`);
 }
 
-export async function getEmbeddingCached(model: string, text: string): Promise<number[] | null> {
-  const sb = serviceClient();
-  const key = await embeddingCacheKey(model, text);
-  const { data } = await sb.from("ai_embedding_cache").select("embedding, dim").eq("cache_key", key).maybeSingle();
-  if (!data) return null;
-  return data.embedding as number[];
+// Caches dropped (ai_embedding_cache / ai_vision_cache removed). No-op stubs
+// preserved so callers keep compiling; they simply always miss the cache.
+export async function getEmbeddingCached(_model: string, _text: string): Promise<number[] | null> {
+  return null;
 }
 
-export async function setEmbeddingCached(model: string, dim: number, text: string, vec: number[]): Promise<void> {
-  const sb = serviceClient();
-  const key = await embeddingCacheKey(model, text);
-  await sb.from("ai_embedding_cache").upsert({ cache_key: key, model, dim, embedding: vec });
+export async function setEmbeddingCached(_model: string, _dim: number, _text: string, _vec: number[]): Promise<void> {
+  return;
 }
 
 export async function visionCacheKey(assetId: string, model: string, promptVersion: string): Promise<string> {
   return await sha256Hex(`${assetId}::${model}::${promptVersion}`);
 }
 
-export async function getVisionCached<T>(assetId: string, model: string, promptVersion: string): Promise<T | null> {
-  const sb = serviceClient();
-  const key = await visionCacheKey(assetId, model, promptVersion);
-  const { data } = await sb.from("ai_vision_cache").select("payload").eq("cache_key", key).maybeSingle();
-  return data ? (data.payload as T) : null;
+export async function getVisionCached<T>(_assetId: string, _model: string, _promptVersion: string): Promise<T | null> {
+  return null;
 }
 
-export async function setVisionCached(assetId: string, model: string, promptVersion: string, payload: unknown): Promise<void> {
-  const sb = serviceClient();
-  const key = await visionCacheKey(assetId, model, promptVersion);
-  await sb.from("ai_vision_cache").upsert({ cache_key: key, asset_id: assetId, model, prompt_version: promptVersion, payload });
+export async function setVisionCached(_assetId: string, _model: string, _promptVersion: string, _payload: unknown): Promise<void> {
+  return;
 }
 
 export async function searchCacheKey(userId: string, normalizedQuery: string, filterPlan: unknown): Promise<string> {
