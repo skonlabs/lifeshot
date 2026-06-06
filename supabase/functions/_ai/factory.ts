@@ -13,6 +13,7 @@ import { detectFaces } from "./face-detector.ts";
 import { reverseGeocode } from "./geocoder.ts";
 import { aiConfig } from "./config.ts";
 import { logger } from "../_pipeline/logger.ts";
+import { rekognitionConfigured } from "./rekognition.ts";
 
 let installed = false;
 
@@ -33,6 +34,19 @@ export function installOpenAIProviders(): boolean {
       },
     },
   });
+
+  // AWS Rekognition face detector is independent of OpenAI — install it
+  // whenever AWS credentials are configured, even when OpenAI is disabled.
+  if (rekognitionConfigured()) {
+    setProviders({
+      faceDetector: {
+        detectFaces: async ({ url, userId, assetId }) => {
+          return await detectFaces({ imageUrl: url, userId, assetId });
+        },
+      },
+    });
+    logger.info("ai_providers_installed", { provider: "aws_rekognition", scope: "face_detector" });
+  }
 
   const provider = envFlag("LIFESHOT_AI_PROVIDER");
   const key = envFlag("OPENAI_API_KEY");
@@ -76,11 +90,6 @@ export function installOpenAIProviders(): boolean {
         if (!url) return { text: "" };
         const r = await ocrImage({ imageUrl: url });
         return { text: r.text, lang: r.lang ?? undefined };
-      },
-    },
-    faceDetector: {
-      detectFaces: async ({ url }) => {
-        return await detectFaces({ imageUrl: url });
       },
     },
   });
