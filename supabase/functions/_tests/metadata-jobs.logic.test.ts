@@ -143,18 +143,52 @@ describe("metadata pipeline invariants", () => {
     const cover = { width: 4288, height: 2848 };
     const bb = { x: 0.577, y: 0.267, w: 0.174, h: 0.367 };
     const faceCx = (bb.x + bb.w / 2) * cover.width;
-    const faceCy = (bb.y + bb.h / 2) * cover.height;
+    const faceCy = (bb.y + Math.min(bb.h * 0.44, bb.h / 2)) * cover.height;
     const faceW = bb.w * cover.width;
     const faceH = bb.h * cover.height;
-    const cropSide = clamp(Math.max(faceW, faceH) * 1.12, Math.min(cover.width, cover.height) * 0.09, Math.min(cover.width, cover.height) * 0.68);
+    const cropSide = clamp(Math.max(faceW, faceH) * 1.75, Math.min(cover.width, cover.height) * 0.12, Math.min(cover.width, cover.height) * 0.82);
     const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(cover.width - cropSide, 0));
     const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(cover.height - cropSide, 0));
     const renderedWidthPct = (cover.width / cropSide) * 100;
 
     expect(cropSide).toBeLessThan(Math.min(cover.width, cover.height));
-    expect(renderedWidthPct).toBeGreaterThan(240);
+    expect(renderedWidthPct).toBeGreaterThan(160);
     expect(cropX).toBeGreaterThan(cover.width * 0.35);
     expect(cropY).toBeGreaterThan(cover.height * 0.05);
+  });
+
+  it("normalizes tall person-sized detections down to a head crop", () => {
+    const normalizeTallBox = (box: { x: number; y: number; w: number; h: number }) => {
+      const side = Math.min(Math.max(box.w * 1.1, box.h * 0.52), 0.5);
+      const cx = box.x + box.w / 2;
+      const cy = box.y + Math.min(box.h * 0.34, side * 0.58);
+      return {
+        x: Math.min(Math.max(cx - side / 2, 0), 1 - side),
+        y: Math.min(Math.max(cy - side / 2, 0), 1 - side),
+        w: side,
+        h: side,
+      };
+    };
+
+    expect(normalizeTallBox({ x: 0.18, y: 0.1, w: 0.2, h: 0.62 })).toEqual({
+      x: 0.11900000000000002,
+      y: 0.12480000000000002,
+      w: 0.322,
+      h: 0.322,
+    });
+  });
+
+  it("prefers single-face assets when choosing people cover faces", () => {
+    const faceQualityScore = (area: number, confidence: number, facesInAsset: number) => {
+      const areaFit = 1 - Math.min(Math.abs(area - 0.1) / 0.1, 1);
+      const soloBonus = facesInAsset <= 1 ? 0.25 : facesInAsset === 2 ? 0.1 : -0.05 * Math.min(facesInAsset - 2, 4);
+      return confidence * 2 + areaFit + soloBonus;
+    };
+
+    const solo = faceQualityScore(0.11, 0.88, 1);
+    const crowded = faceQualityScore(0.11, 0.88, 4);
+
+    expect(solo).toBeGreaterThan(crowded);
   });
 
   it("uses object-contain thumbnails so photo tiles do not crop the frame", () => {
