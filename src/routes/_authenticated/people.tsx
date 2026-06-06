@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { usePeople, useCorrection } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ShieldAlert, UserRound } from "lucide-react";
+import { useAutoFaceScan } from "@/lib/face/scanner";
 
 export const Route = createFileRoute("/_authenticated/people")({ component: People });
 
@@ -10,11 +11,20 @@ function People() {
   const { data, isLoading } = usePeople();
   const faceOff = (data as { face_processing_disabled?: boolean } | undefined)?.face_processing_disabled;
   const people = data?.people ?? [];
+  const scan = useAutoFaceScan();
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-8">
       <header className="hairline-b mb-6 pb-4">
         <span className="text-archive-label">people</span>
         <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">The faces in your archive</h1>
+        {!faceOff && (
+          <p className="mt-2 text-xs text-[color:var(--umber)]">
+            {scan.status === "loading-models" && "Loading face recognition models…"}
+            {scan.status === "scanning" && `Scanning photos in your browser — ${scan.scanned} done, ${scan.faces} faces found`}
+            {scan.status === "done" && scan.scanned > 0 && `Scan complete — ${scan.scanned} photos, ${scan.faces} faces`}
+            {scan.status === "error" && <span className="text-red-700">Scan error: {scan.error}</span>}
+          </p>
+        )}
       </header>
       {faceOff && (
         <div className="hairline mb-6 flex items-start gap-3 rounded-md border bg-[color:var(--paper)] p-4">
