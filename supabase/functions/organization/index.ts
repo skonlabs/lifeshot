@@ -119,16 +119,53 @@ app.get("/people", async (c) => {
   const peopleRows = data ?? [];
   const ids = peopleRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
+  const coverMap: Record<string, string> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id").in("person_id", ids);
+      .select("person_id, asset_id, created_at").in("person_id", ids)
+      .order("created_at", { ascending: true });
     const seen: Record<string, Set<string>> = {};
     for (const f of faces ?? []) {
+      if (!coverMap[f.person_id]) coverMap[f.person_id] = f.asset_id;
       (seen[f.person_id] ??= new Set()).add(f.asset_id);
     }
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
   }
-  const people = peopleRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+
+  const coverIds = Array.from(new Set(Object.values(coverMap)));
+  const coverAssets: Record<string, any> = {};
+  const previewMap: Record<string, any> = {};
+  if (coverIds.length) {
+    const { data: assets } = await supa.from("assets")
+      .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type, width, height, capture_time")
+      .in("id", coverIds);
+    for (const asset of assets ?? []) coverAssets[asset.id] = asset;
+
+    const { data: previews } = await supa.from("asset_preview_metadata")
+      .select("asset_id, thumbnail_cache_key, blurhash, dominant_color")
+      .in("asset_id", coverIds);
+    for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
+  }
+
+  const people = await Promise.all(peopleRows.map(async (p: any) => {
+    const coverAssetId = coverMap[p.id] ?? null;
+    const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
+    const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
+    const cover = coverAssetId && asset ? {
+      asset_id: coverAssetId,
+      thumbnail_url: await resolveThumbUrl(c, supa, uid, coverAssetId, preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key ?? null),
+      blurhash: preview?.blurhash ?? asset.blurhash ?? null,
+      dominant_color: preview?.dominant_color ?? asset.dominant_color ?? null,
+      width: asset.width ?? null,
+      height: asset.height ?? null,
+      capture_time: asset.capture_time ?? null,
+      media_type: asset.media_type ?? "photo",
+      source_badge: null,
+      hydration_status: ((preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key) ? "ready" : "pending") as const,
+    } : null;
+
+    return { ...p, asset_count: counts[p.id] ?? 0, cover };
+  }));
   return c.json({ people, face_processing_disabled: false });
 });
 
