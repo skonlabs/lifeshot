@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
-import { useBulkAssetAction, useTimeline, useViewport } from "@/lib/api/hooks";
+import { useActiveAssetCount, useBulkAssetAction, useTimeline, useViewport } from "@/lib/api/hooks";
 import { VirtualGrid } from "@/components/app/VirtualGrid";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckSquare, Trash2, X } from "lucide-react";
@@ -15,6 +15,7 @@ function Library() {
   const [range, setRange] = useState<{ from?: string; to?: string } | null>(null);
   const viewport = useViewport({ viewport_size: 60, timeline_filter: range ?? undefined });
   const timeline = useTimeline(granularity);
+  const assetCount = useActiveAssetCount();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<string | null>(null);
@@ -24,7 +25,7 @@ function Library() {
     () => viewport.data?.pages.flatMap((p) => p.items) ?? [],
     [viewport.data],
   );
-  const totalCount = viewport.data?.pages[0]?.total_count ?? items.length;
+  const totalCount = range ? (viewport.data?.pages[0]?.total_count ?? items.length) : (assetCount.data?.count ?? viewport.data?.pages[0]?.total_count ?? items.length);
 
   function toggle(id: string, shift: boolean) {
     setSelected((prev) => {
