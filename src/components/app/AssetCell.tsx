@@ -46,10 +46,12 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
         <img
           src={d.thumbnail_url}
           alt=""
+          width={128}
+          height={128}
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}
-          className={`absolute inset-0 h-full w-full object-cover object-center transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 h-full w-full object-contain object-center transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
         />
       )}
       {d.source_badge && (
@@ -76,7 +78,7 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
     <Link
       to="/asset/$id"
       params={{ id: d.asset_id }}
-      className="group relative block overflow-hidden rounded-md bg-muted"
+      className="group relative block h-full w-full overflow-hidden rounded-md bg-muted"
       style={{ backgroundColor: d.dominant_color ?? undefined, ...style }}
     >
       {inner}
