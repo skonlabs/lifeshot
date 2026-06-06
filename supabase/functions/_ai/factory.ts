@@ -36,9 +36,15 @@ export function installOpenAIProviders(): boolean {
 
   const provider = envFlag("LIFESHOT_AI_PROVIDER");
   const key = envFlag("OPENAI_API_KEY");
-  if (provider !== "openai" || !key) {
+  // Activate OpenAI providers whenever an API key is present. The
+  // LIFESHOT_AI_PROVIDER toggle is only honored to *force-disable* OpenAI
+  // (set it to "mock" or "none"). Previously requiring it === "openai"
+  // meant every prod deploy silently fell back to the 38-char mock captions
+  // with zero faces / objects.
+  const disabled = provider && provider !== "openai" && provider !== "auto";
+  if (disabled || !key) {
     installed = true;
-    logger.info("ai_providers_installed", { provider: "nominatim_only" });
+    logger.info("ai_providers_installed", { provider: "nominatim_only", reason: disabled ? "disabled" : "no_key" });
     return false;
   }
 

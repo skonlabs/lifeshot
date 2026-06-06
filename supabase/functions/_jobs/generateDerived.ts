@@ -208,6 +208,24 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   );
   if (derivErr) console.error("generateDerived: asset_derivatives upsert failed", { asset_id, error: derivErr.message });
 
+  // Mirror to asset_thumbnails so the gallery (which reads this table) gets
+  // populated. Without this the table stayed at 0 rows even though derivatives
+  // were uploaded successfully — the thumbnails grid showed blanks.
+  const nowIso = new Date().toISOString();
+  const thumbRows = written.map((w) => ({
+    asset_id,
+    size: w.kind === "thumb" ? "thumb" : "preview",
+    cache_key: w.path,
+    ready: true,
+    generated_at: nowIso,
+  }));
+  if (thumbRows.length > 0) {
+    const { error: thumbErr } = await sb.from("asset_thumbnails").upsert(thumbRows, {
+      onConflict: "asset_id,size",
+    });
+    if (thumbErr) console.error("generateDerived: asset_thumbnails upsert failed", { asset_id, error: thumbErr.message });
+  }
+
   const thumb = written.find((w) => w.kind === "thumb");
   const preview = written.find((w) => w.kind === "preview");
 
