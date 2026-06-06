@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { usePeople, useCorrection } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -116,10 +116,8 @@ type Cover = {
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
   const bb = cover?.face_bbox;
-  // Use a more inclusive check for usable bbox - if we have coordinates, let's use them.
-  const hasUsableBbox = !!(bb && bb.w > 0 && bb.h > 0 && bb.w <= 1 && bb.h <= 1);
-  const knownDims = !!(cover?.width && cover?.height && cover.width > 0 && cover.height > 0);
   const [imgFailed, setImgFailed] = useState(false);
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
 
   if (!cover?.thumbnail_url || imgFailed) {
     return (
@@ -129,10 +127,14 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
 
-  // Fallback: when we don't have a usable bbox OR we don't know the source
-  // image's pixel dimensions, render the thumbnail as a centered cover crop.
-  // We use object-position: center 25% because faces are usually in the top third.
-  if (!hasUsableBbox || !knownDims) {
+  const dims = useMemo(() => {
+    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
+    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
+    return width && height ? { width, height } : null;
+  }, [cover?.height, cover?.width, naturalSize]);
+  const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
+
+  if (!hasUsableBbox || !dims) {
     return (
       <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
         <img
@@ -140,6 +142,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
           alt=""
           loading="lazy"
           decoding="async"
+          onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           onError={() => setImgFailed(true)}
           className="absolute inset-0 h-full w-full object-cover object-[center_25%]"
         />
@@ -147,45 +150,27 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
 
-  // Compute a square crop around the bbox, in original pixel space.
-  const W = Math.max(cover.width ?? 1, 1);
-  const H = Math.max(cover.height ?? 1, 1);
+  // Compute a square crop around the face and render with object-position.
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  const W = Math.max(dims.width, 1);
+  const H = Math.max(dims.height, 1);
   const faceWpx = bb!.w * W;
   const faceHpx = bb!.h * H;
   const longestFaceSide = Math.max(faceWpx, faceHpx);
   const shortestImageSide = Math.min(W, H);
-
-  // sidePx is the dimension of the square we want to show in the avatar.
-  // 1.7x the face size provides a nice head-and-shoulders crop.
-  let sidePx = longestFaceSide * 1.7;
-
-  // Ensure sidePx is at least the face itself.
-  sidePx = Math.max(sidePx, longestFaceSide);
-  
-  // Don't zoom in so much that we only see a few pixels if the face is tiny (limit zoom).
-  sidePx = Math.max(sidePx, shortestImageSide * 0.1);
-
-  // Don't zoom out so much that we exceed the image's smallest dimension
-  // (prevents empty space in the square container).
-  sidePx = Math.min(sidePx, shortestImageSide);
+  let sidePx = clamp(longestFaceSide * 1.75, shortestImageSide * 0.12, shortestImageSide * 0.82);
 
   const cxPx = (bb!.x + bb!.w / 2) * W;
-  const cyPx = (bb!.y + bb!.h / 2) * H;
-  
+  const cyPx = (bb!.y + Math.min(bb!.h * 0.44, bb!.h / 2)) * H;
   let leftPx = cxPx - sidePx / 2;
   let topPx = cyPx - sidePx / 2;
-
-  // Keep the crop window within image boundaries.
   leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));
   topPx = Math.min(Math.max(topPx, 0), Math.max(H - sidePx, 0));
-
   const imageStyle: React.CSSProperties = {
-    position: "absolute",
     width: `${(W / sidePx) * 100}%`,
-    height: "auto",
-    left: `${-(leftPx / sidePx) * 100}%`,
-    top: `${-(topPx / sidePx) * 100}%`,
-    maxWidth: "none",
+    height: `${(H / sidePx) * 100}%`,
+    objectFit: "cover",
+    objectPosition: `${(leftPx / Math.max(W - sidePx, 1)) * 100}% ${(topPx / Math.max(H - sidePx, 1)) * 100}%`,
   };
 
   return (
@@ -199,8 +184,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
         alt=""
         loading="lazy"
         decoding="async"
+        onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
         onError={() => setImgFailed(true)}
-        className="absolute"
+        className="absolute inset-0 h-full w-full"
         style={imageStyle}
       />
     </div>
