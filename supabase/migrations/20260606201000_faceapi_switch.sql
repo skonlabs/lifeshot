@@ -1,12 +1,10 @@
 -- Switch face detection pipeline to client-side face-api.js (128-d descriptors).
--- 1. Wipe existing GPT-derived people/face data (incompatible dimensions).
--- 2. Resize person_faces.face_vector from 512 to 128 dims.
--- 3. Add person_faces.face_crop column (data URL of aligned 48x48 face crop).
--- 4. Track per-asset scan state on public.assets via face_scanned_at.
-
+-- Disable triggers to avoid touching legacy tables (e.g. asset_labels) that no
+-- longer exist in this DB but are still referenced by old triggers.
+set session_replication_role = replica;
 delete from public.person_faces;
 delete from public.people;
-update public.asset_ai_enrichment set faces = '[]'::jsonb where faces is not null;
+set session_replication_role = default;
 
 drop index if exists public.idx_person_faces_hnsw;
 alter table public.person_faces alter column face_vector type vector(128) using null;
