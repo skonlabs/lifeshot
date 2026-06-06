@@ -38,10 +38,13 @@ function Places() {
                       <p className="mt-1 text-sm text-[color:var(--umber)]">
                         {p.latest_capture_time ? new Date(p.latest_capture_time).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Undated"}
                       </p>
+                       <p className="mt-1 text-xs text-[color:var(--umber)]">
+                         {[p.city ?? p.name, p.country].filter(Boolean).join(" · ")}
+                       </p>
                     </div>
                     <div className="text-right text-sm text-[color:var(--umber)]">
                       <div>{p.asset_count} photo{p.asset_count === 1 ? "" : "s"}</div>
-                      <div>{p.lat?.toFixed(2)}, {p.lng?.toFixed(2)}</div>
+                       <div>{p.latest_capture_time ? new Date(p.latest_capture_time).getFullYear() : "—"}</div>
                     </div>
                   </div>
                 </Link>
@@ -86,7 +89,7 @@ function Places() {
                     <div className="min-w-0">
                         <div className="truncate font-medium text-[color:var(--ink)]">{p.label ?? p.name}</div>
                         <div className="text-[11px] text-[color:var(--umber)]">
-                          {p.latest_capture_time ? new Date(p.latest_capture_time).getFullYear() : "Undated"} · {p.lat?.toFixed(2) ?? "—"}, {p.lng?.toFixed(2) ?? "—"}
+                          {[p.city ?? p.name, p.country, p.latest_capture_time ? String(new Date(p.latest_capture_time).getFullYear()) : "Undated"].filter(Boolean).join(" · ")}
                         </div>
                     </div>
                   </div>

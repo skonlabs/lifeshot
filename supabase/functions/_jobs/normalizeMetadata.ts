@@ -432,11 +432,10 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
-  await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
   // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
   // as a fallback) after enrichment data is available — see those handlers.
   // clusterPeople / clusterPlaces / detectEvents are coalesced to one run per user
-  // per day (not per asset) — they re-cluster the whole archive each time.
+  // per day instead of one run per asset.
   const today = new Date().toISOString().slice(0, 10);
   await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${today}` });
   if (hasGpsData) {

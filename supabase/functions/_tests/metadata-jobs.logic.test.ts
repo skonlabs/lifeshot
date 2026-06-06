@@ -136,15 +136,30 @@ describe("metadata pipeline invariants", () => {
     const faceCy = (bb.y + bb.h / 2) * cover.height;
     const faceW = bb.w * cover.width;
     const faceH = bb.h * cover.height;
-    const cropSide = clamp(Math.max(faceW, faceH) * 1.22, Math.min(cover.width, cover.height) * 0.12, Math.min(cover.width, cover.height));
+    const cropSide = clamp(Math.max(faceW, faceH) * 1.12, Math.min(cover.width, cover.height) * 0.09, Math.min(cover.width, cover.height) * 0.68);
     const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(cover.width - cropSide, 0));
     const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(cover.height - cropSide, 0));
     const renderedWidthPct = (cover.width / cropSide) * 100;
 
     expect(cropSide).toBeLessThan(Math.min(cover.width, cover.height));
-    expect(renderedWidthPct).toBeGreaterThan(180);
+    expect(renderedWidthPct).toBeGreaterThan(240);
     expect(cropX).toBeGreaterThan(cover.width * 0.35);
     expect(cropY).toBeGreaterThan(cover.height * 0.05);
+  });
+
+  it("uses object-contain thumbnails so square cells do not crop the image bottom edge", () => {
+    const className = "absolute inset-0 h-full w-full object-contain object-center transition-opacity duration-300";
+    expect(className).toContain("object-contain");
+    expect(className).not.toContain("object-cover");
+  });
+
+  it("reduces per-asset downstream jobs to the critical set plus coalesced library jobs", () => {
+    const perAssetJobs = ["hashAsset", "generateDerived", "ocrAsset", "enrichAI"];
+    const coalescedJobs = ["clusterPeople", "clusterPlaces", "detectEvents"];
+
+    expect(perAssetJobs).toEqual(["hashAsset", "generateDerived", "ocrAsset", "enrichAI"]);
+    expect(coalescedJobs).toHaveLength(3);
+    expect(perAssetJobs).not.toContain("embedAsset");
   });
 
   it("counts places from asset_locations instead of event_places", () => {

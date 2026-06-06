@@ -583,7 +583,7 @@ export function usePerson(id: string | undefined) {
 export function usePlaces() {
   return useQuery({
     queryKey: ["places"],
-    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; country?: string | null; label?: string | null; lat: number | null; lng: number | null; asset_count: number; latest_capture_time?: string | null }> }>("/places"),
+    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; city?: string | null; country?: string | null; label?: string | null; lat: number | null; lng: number | null; asset_count: number; latest_capture_time?: string | null }> }>("/places"),
     staleTime: 60_000,
   });
 }

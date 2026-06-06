@@ -49,7 +49,13 @@ function People() {
 }
 
 type Bbox = { x: number; y: number; w: number; h: number } | null;
-type Cover = { thumbnail_url: string | null; face_bbox?: Bbox; width?: number | null; height?: number | null } | null | undefined;
+type Cover = {
+  thumbnail_url: string | null;
+  face_bbox?: Bbox;
+  width?: number | null;
+  height?: number | null;
+  face_count?: number | null;
+} | null | undefined;
 
 /**
  * Renders a circular face crop from the cover asset's thumbnail.
@@ -66,14 +72,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
   const bb = cover.face_bbox;
-  let imageStyle: React.CSSProperties = {
-    position: "absolute",
-    inset: 0,
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    objectPosition: "center center",
-  };
+  let imageStyle: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "center center" };
   if (bb && bb.w > 0 && bb.h > 0) {
     const width = Math.max(cover.width ?? 1, 1);
     const height = Math.max(cover.height ?? 1, 1);
@@ -81,14 +80,15 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     const faceCy = (bb.y + bb.h / 2) * height;
     const faceW = bb.w * width;
     const faceH = bb.h * height;
-    const cropSide = clamp(Math.max(faceW, faceH) * 1.22, Math.min(width, height) * 0.12, Math.min(width, height));
+    const singleFaceBoost = (cover.face_count ?? 1) > 1 ? 1.02 : 1.12;
+    const cropSide = clamp(Math.max(faceW, faceH) * singleFaceBoost, Math.min(width, height) * 0.09, Math.min(width, height) * 0.68);
     const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(width - cropSide, 0));
     const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(height - cropSide, 0));
     imageStyle = {
       position: "absolute",
       width: `${(width / cropSide) * 100}%`,
       maxWidth: "none",
-      height: "auto",
+      height: `${(height / cropSide) * 100}%`,
       left: `${-(cropX / cropSide) * 100}%`,
       top: `${-(cropY / cropSide) * 100}%`,
     };
