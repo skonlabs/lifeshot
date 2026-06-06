@@ -188,9 +188,29 @@ function buildResult(parsed: any): FullExifResult {
   };
   const hasExif = Object.values(exif).some((v) => v != null);
 
+  // exifr normally synthesizes parsed.latitude / parsed.longitude as decimals
+  // when GPS is present. Some JPEGs (or older exifr code paths) leave only
+  // the raw IFD arrays — handle both.
+  const dms = (v: unknown): number | undefined => {
+    if (Array.isArray(v) && v.length >= 3) {
+      const d = Number(v[0]), m = Number(v[1]), s = Number(v[2]);
+      if (Number.isFinite(d) && Number.isFinite(m) && Number.isFinite(s)) return d + m / 60 + s / 3600;
+    }
+    return undefined;
+  };
+  let gpsLat = toNum(parsed.latitude);
+  let gpsLng = toNum(parsed.longitude);
+  if (gpsLat == null) {
+    gpsLat = toNum(parsed.GPSLatitude) ?? dms(parsed.GPSLatitude);
+    if (gpsLat != null && /S/i.test(String(parsed.GPSLatitudeRef ?? ""))) gpsLat = -gpsLat;
+  }
+  if (gpsLng == null) {
+    gpsLng = toNum(parsed.GPSLongitude) ?? dms(parsed.GPSLongitude);
+    if (gpsLng != null && /W/i.test(String(parsed.GPSLongitudeRef ?? ""))) gpsLng = -gpsLng;
+  }
   const gps: ExtractedGps = {
-    latitude: toNum(parsed.latitude ?? parsed.GPSLatitude),
-    longitude: toNum(parsed.longitude ?? parsed.GPSLongitude),
+    latitude: gpsLat,
+    longitude: gpsLng,
     altitude: toNum(parsed.GPSAltitude),
     gpsTimestamp: toIso(parsed.GPSDateStamp ?? parsed.GPSTimeStamp),
     direction: toNum(parsed.GPSImgDirection),
