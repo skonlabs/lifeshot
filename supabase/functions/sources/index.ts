@@ -558,13 +558,14 @@ app.get("/v1/:id/status", async (c) => {
     ? Number(jobStats.indexed ?? 0)
     : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
-  const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
+  const accountRevoked = acc.status === "revoked";
+  const unauthorized = accountRevoked || /unauthorized/i.test(lastErrorMessage ?? "");
   const processingOnlyActive = !unauthorized && processingOnly;
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
   const syncing = processingOnlyActive || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
-  const accountStatus = unauthorized
+  const accountStatus = accountRevoked
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
   return c.json({
@@ -579,7 +580,7 @@ app.get("/v1/:id/status", async (c) => {
       stats: jobStats,
     },
     cursor_age_seconds: cursor ? Math.floor((Date.now() - new Date(cursor.updated_at).getTime()) / 1000) : null,
-    last_error: unauthorized ? "Authorization expired. Please reconnect this source." : lastErrorMessage,
+    last_error: accountRevoked ? "Authorization expired. Please reconnect this source." : lastErrorMessage,
     progress: { discovered, indexed: progressIndexed },
   });
 });
