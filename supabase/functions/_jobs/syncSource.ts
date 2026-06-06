@@ -80,6 +80,10 @@ async function nudgeWorkerDrain() {
   await wakeWorkerDrain({ batch: 1, budgetMs: 50_000 });
 }
 
+async function nudgeIngestDrain() {
+  await wakeWorkerDrain({ batch: 12, budgetMs: 50_000, lanes: ["ingest"], background: false });
+}
+
 function isMissingColumnError(message?: string | null, column?: string) {
   if (!message || !column) return false;
   const normalized = message.toLowerCase();
@@ -711,7 +715,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
+      indexed: effectiveNextCursor ? progressIndexedCount : progressIndexedCount,
+      listed: progressIndexedCount,
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
@@ -736,7 +741,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       throw new Error(`source_errors resolve failed: ${resolveErrorsError.message}`);
     }
     if (awaitingProcessing) {
-      await nudgeWorkerDrain();
+      await nudgeIngestDrain();
     }
   }
 

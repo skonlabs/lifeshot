@@ -475,7 +475,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           ...stats,
           sync_run_id: sync_run_id ?? stats.sync_run_id,
           normalized: normalizedCount,
-          indexed: normalizedCount,
+          indexed: Math.max(Number(stats.indexed ?? 0), normalizedCount),
           stage: complete ? "completed" : "processing",
           ...(currentFolder ? { current_folder: currentFolder } : {}),
           current_file: filename ?? rel ?? asset_id,
