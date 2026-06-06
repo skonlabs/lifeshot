@@ -36,51 +36,18 @@ async function collectRemainingAssetIds(svc: any, assetIds: string[]): Promise<S
   return remaining;
 }
 
-// Wake the worker so the job claims within a couple of seconds instead of
-// waiting for the next pg_cron tick (~15s). The request must go to the
-// Supabase Functions origin, not the public app URL; otherwise it 404s and
-// the job sits in `pending` until cron eventually picks it up.
-async function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
-  // deno-lint-ignore no-explicit-any
-  const globalAny = globalThis as any;
-  const candidates = [requestUrl, ENV.SUPABASE_URL].filter(Boolean) as string[];
-  const base = candidates
-    .map((value) => {
-      try {
-        return new URL(value).origin;
-      } catch {
-        return "";
-      }
-    })
-    .find((origin) => origin.includes(".supabase.co"));
-  if (!base) return;
-  const workerUrl = `${base}/functions/v1/worker/drain`;
-  const nudge = fetch(workerUrl, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(authHeader),
-    body: JSON.stringify({}),
-  }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
-  if (globalAny.EdgeRuntime?.waitUntil) {
-    globalAny.EdgeRuntime.waitUntil(nudge);
-    return;
-  }
-  await nudge;
-}
-
-async function drainWorkerOnce(authHeader?: string | null) {
-  const workerBase = (() => {
-    try {
-      return new URL(ENV.SUPABASE_URL).origin;
-    } catch {
-      return null;
-    }
-  })();
-  if (!workerBase) return;
-  await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(authHeader),
-    body: JSON.stringify({}),
-  }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
+// Wake the worker immediately after queueing a sync job. Use the strict
+// pipeline helper so HTTP wake failures (401/403/5xx/404) do not get silently
+// swallowed; if the cross-function request fails, it falls back to draining in
+// process so the job can still be claimed during this request.
+async function wakeSyncWorker(authHeader?: string | null, requestUrl?: string | null) {
+  await nudgeWorkerDrain({
+    authHeader,
+    requestUrl,
+    supabaseUrl: ENV.SUPABASE_URL,
+    batch: 4,
+    budgetMs: 50_000,
+  });
 }
 
 async function cancelExistingSyncRuns(
@@ -977,8 +944,7 @@ app.post("/v1/:id/sync/force", async (c) => {
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
 
   emitEvent(c, "sources.force_sync_enqueued", { id });
-  await kickWorker(c.req.header("Authorization"), c.req.url);
-  await drainWorkerOnce(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: jobId }, 202);
 });
 
@@ -1034,8 +1000,7 @@ app.post("/v1/:id/sync", async (c) => {
   }, { onConflict: "id" });
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
-  await kickWorker(c.req.header("Authorization"), c.req.url);
-  await drainWorkerOnce(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: jobId }, 202);
 });
 
@@ -1132,7 +1097,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
   }, { onConflict: "id" });
   if (uploadJobError) throw new ApiError("internal", uploadJobError.message);
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
-  await kickWorker(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 
