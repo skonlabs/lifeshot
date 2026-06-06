@@ -135,6 +135,24 @@ export async function extractExifFromBytes(bytes: Uint8Array): Promise<FullExifR
   } catch {
     parsed = null;
   }
+  return buildResult(parsed);
+}
+
+/** Diagnostic: returns the raw merged exifr output. */
+export async function extractExifFromBytesRaw(bytes: Uint8Array): Promise<Record<string, unknown> | null> {
+  try {
+    return await exifr.parse(bytes, {
+      tiff: true, ifd0: true, exif: true, gps: true, interop: true,
+      xmp: true, iptc: true, icc: false, jfif: true,
+      mergeOutput: true, sanitize: true, reviveValues: true,
+      translateKeys: false, translateValues: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function buildResult(parsed: any): FullExifResult {
   if (!parsed || typeof parsed !== "object") {
     return { exif: null, gps: null, media: null, xmpIptc: null };
   }
