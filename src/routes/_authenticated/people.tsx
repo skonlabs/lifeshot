@@ -167,10 +167,12 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));
   topPx = Math.min(Math.max(topPx, 0), Math.max(H - sidePx, 0));
   const imageStyle: React.CSSProperties = {
+    position: "absolute",
     width: `${(W / sidePx) * 100}%`,
     height: `${(H / sidePx) * 100}%`,
-    objectFit: "cover",
-    objectPosition: `${(leftPx / Math.max(W - sidePx, 1)) * 100}% ${(topPx / Math.max(H - sidePx, 1)) * 100}%`,
+    left: `${-(leftPx / sidePx) * 100}%`,
+    top: `${-(topPx / sidePx) * 100}%`,
+    maxWidth: "none",
   };
 
   return (
@@ -186,7 +188,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
         decoding="async"
         onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
         onError={() => setImgFailed(true)}
-        className="absolute inset-0 h-full w-full"
+        className="absolute"
         style={imageStyle}
       />
     </div>
