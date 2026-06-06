@@ -64,47 +64,44 @@ type Cover = {
  * bbox is expected in normalized [0..1] coordinates.
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
-  if (!cover?.thumbnail_url) {
+  const bb = cover?.face_bbox;
+  const hasUsableBbox = !!(bb && bb.w > 0.02 && bb.h > 0.02 && bb.w <= 1 && bb.h <= 1);
+  // Without a usable bbox we can't isolate the face, so show a neutral
+  // placeholder instead of leaking the entire source photo into the avatar.
+  if (!cover?.thumbnail_url || !hasUsableBbox) {
     return (
       <div className="mx-auto grid aspect-square w-full place-items-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
         <UserRound className="h-10 w-10" strokeWidth={1.2} />
       </div>
     );
   }
-  const bb = cover.face_bbox;
-  let imageStyle: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "center center" };
-  if (bb && bb.w > 0 && bb.h > 0) {
-    const width = Math.max(cover.width ?? 1, 1);
-    const height = Math.max(cover.height ?? 1, 1);
-    const faceCx = (bb.x + bb.w / 2) * width;
-    const faceCy = (bb.y + bb.h / 2) * height;
-    const faceW = bb.w * width;
-    const faceH = bb.h * height;
-    const singleFaceBoost = (cover.face_count ?? 1) > 1 ? 1.02 : 1.12;
-    const cropSide = clamp(Math.max(faceW, faceH) * singleFaceBoost, Math.min(width, height) * 0.09, Math.min(width, height) * 0.68);
-    const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(width - cropSide, 0));
-    const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(height - cropSide, 0));
-    imageStyle = {
-      position: "absolute",
-      width: `${(width / cropSide) * 100}%`,
-      maxWidth: "none",
-      height: `${(height / cropSide) * 100}%`,
-      left: `${-(cropX / cropSide) * 100}%`,
-      top: `${-(cropY / cropSide) * 100}%`,
-    };
-  }
+  // Tight square crop around the bbox, with a small padding so hair/chin
+  // aren't sliced. Everything is in normalized [0..1] coords so we don't need
+  // the original pixel dimensions.
+  const pad = 0.18;
+  const side = Math.min(1, Math.max(bb!.w, bb!.h) * (1 + pad * 2));
+  const cx = bb!.x + bb!.w / 2;
+  const cy = bb!.y + bb!.h / 2;
+  let left = cx - side / 2;
+  let top = cy - side / 2;
+  left = Math.min(Math.max(left, 0), 1 - side);
+  top = Math.min(Math.max(top, 0), 1 - side);
+  const scale = 1 / side;
+  const imageStyle: React.CSSProperties = {
+    position: "absolute",
+    width: `${scale * 100}%`,
+    height: "auto",
+    left: `${-left * scale * 100}%`,
+    top: `${-top * scale * 100}%`,
+    maxWidth: "none",
+  };
   return (
     <div
-      className="hairline mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]"
+      className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]"
       role="img"
       aria-label="Face thumbnail"
     >
       <img src={cover.thumbnail_url} alt="" loading="lazy" decoding="async" style={imageStyle} />
     </div>
   );
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  if (!Number.isFinite(n)) return 50;
-  return Math.min(hi, Math.max(lo, n));
 }
