@@ -208,13 +208,19 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   );
   if (derivErr) console.error("generateDerived: asset_derivatives upsert failed", { asset_id, error: derivErr.message });
 
-  // Mirror to asset_thumbnails so the gallery (which reads this table) gets
-  // populated. Without this the table stayed at 0 rows even though derivatives
-  // were uploaded successfully — the thumbnails grid showed blanks.
+  // Mirror storage-backed derivatives into the legacy cache tables with sane
+  // semantics: thumbnails in asset_thumbnails, larger previews in asset_proxies.
   const nowIso = new Date().toISOString();
-  const thumbRows = written.map((w) => ({
+  const thumbRows = written.filter((w) => w.kind === "thumb").map((w) => ({
     asset_id,
-    size: w.kind === "thumb" ? "thumb" : "preview",
+    size: "thumb",
+    cache_key: w.path,
+    ready: true,
+    generated_at: nowIso,
+  }));
+  const proxyRows = written.filter((w) => w.kind === "preview").map((w) => ({
+    asset_id,
+    quality: "preview",
     cache_key: w.path,
     ready: true,
     generated_at: nowIso,
@@ -224,6 +230,12 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
       onConflict: "asset_id,size",
     });
     if (thumbErr) console.error("generateDerived: asset_thumbnails upsert failed", { asset_id, error: thumbErr.message });
+  }
+  if (proxyRows.length > 0) {
+    const { error: proxyErr } = await sb.from("asset_proxies").upsert(proxyRows, {
+      onConflict: "asset_id,quality",
+    });
+    if (proxyErr) console.error("generateDerived: asset_proxies upsert failed", { asset_id, error: proxyErr.message });
   }
 
   const thumb = written.find((w) => w.kind === "thumb");
