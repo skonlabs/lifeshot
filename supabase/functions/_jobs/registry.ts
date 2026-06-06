@@ -3,7 +3,6 @@ import { syncSource } from "./syncSource.ts";
 import { normalizeMetadata } from "./normalizeMetadata.ts";
 import { hashAsset } from "./hashAsset.ts";
 import { generateDerived } from "./generateDerived.ts";
-import { embedAsset } from "./embedAsset.ts";
 import { enrichAI } from "./enrichAI.ts";
 import { ocrAsset } from "./ocrAsset.ts";
 import { indexSearchDocument } from "./indexSearchDocument.ts";
@@ -22,7 +21,6 @@ export const JOB_HANDLERS = {
   normalizeMetadata,
   hashAsset,
   generateDerived,
-  embedAsset,
   enrichAI,
   ocrAsset,
   indexSearchDocument,

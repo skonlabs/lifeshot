@@ -81,15 +81,12 @@ export async function deleteDerivedAI(opts: {
     assetIds = (data ?? []).map((r: any) => r.id);
   }
   if (assetIds.length === 0) {
-    return { captions: 0, labels: 0, ocr: 0, embeddings: 0, ai_enrichment: 0, vision_cache: 0, sensitive: 0 };
+    return { ocr: 0, ai_enrichment: 0 };
   }
   const del = (table: string) => sb.from(table).delete({ count: "exact" }).in("asset_id", assetIds);
-  const [c, l, o, e, a, v, s] = await Promise.all([
-    del("asset_captions"), del("asset_labels"), del("asset_ocr"), del("asset_embeddings"),
-    del("asset_ai_enrichment"), del("ai_vision_cache"), del("asset_sensitive_flags"),
+  const [o, a] = await Promise.all([
+    del("asset_ocr"),
+    del("asset_ai_enrichment"),
   ]);
-  return {
-    captions: c.count ?? 0, labels: l.count ?? 0, ocr: o.count ?? 0, embeddings: e.count ?? 0,
-    ai_enrichment: a.count ?? 0, vision_cache: v.count ?? 0, sensitive: s.count ?? 0,
-  };
+  return { ocr: o.count ?? 0, ai_enrichment: a.count ?? 0 };
 }
