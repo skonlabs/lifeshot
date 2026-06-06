@@ -79,8 +79,8 @@ export function installOpenAIProviders(): boolean {
       },
     },
     faceDetector: {
-      detectFaces: async ({ url }) => {
-        return await detectFaces({ imageUrl: url });
+      detectFaces: async ({ url, userId, assetId }) => {
+        return await detectFaces({ imageUrl: url, userId, assetId });
       },
     },
   });
