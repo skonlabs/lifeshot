@@ -12,6 +12,7 @@ import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { isStaleSyncQueueState } from "../../../src/lib/api/sync-status.logic.ts";
+import { nudgeWorkerDrain } from "../_pipeline/worker-wake.ts";
 
 // Batch helpers — PostgREST `?in.(...)` builds a single URL per query, so
 // passing hundreds of UUIDs at once blows past the proxy URL length limit and
@@ -568,6 +569,18 @@ app.get("/v1/:id/status", async (c) => {
   const accountStatus = accountRevoked
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
+  // Self-healing drain nudge: if there's a pending/running syncSource job for
+  // this account, fire-and-forget a worker drain. The frontend polls this
+  // endpoint every 2s while syncing, so this keeps the queue moving even if
+  // pg_cron's scheduled drain stops firing (which we have seen in practice).
+  if (queueJob && (queueJob.status === "pending" || queueJob.status === "running")) {
+    await nudgeWorkerDrain({
+      authHeader: c.req.header("Authorization"),
+      requestUrl: c.req.url,
+      batch: 4,
+      budgetMs: 50_000,
+    });
+  }
   return c.json({
     account_id: id,
     status: accountStatus,

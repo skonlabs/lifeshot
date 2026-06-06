@@ -44,6 +44,36 @@ app.post("/drain", async (c) => {
   const r = lanes.length
     ? await drainUntilEmptyForLanes(budgetMs, batch, lanes)
     : await drainUntilEmpty(budgetMs, batch);
+  // Self-perpetuating drain: if the budget was exhausted and there are
+  // still pending jobs ready to run, schedule another /drain invocation in
+  // the background. This makes the worker resilient to a dead pg_cron
+  // schedule — once anything kicks the worker, it keeps draining until
+  // the queue is empty.
+  try {
+    const sb = serviceClient();
+    const { count } = await sb
+      .from("job_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending")
+      .lte("next_attempt_at", new Date().toISOString());
+    if ((count ?? 0) > 0) {
+      const selfUrl = new URL(c.req.url);
+      const nextDrain = fetch(selfUrl.toString(), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-worker-secret": Deno.env.get("WORKER_SECRET") ?? "",
+          authorization: c.req.header("authorization") ?? "Bearer internal-worker",
+        },
+        body: "{}",
+      }).catch((err) => console.warn("worker self-drain failed:", String(err)));
+      // deno-lint-ignore no-explicit-any
+      const edge = (globalThis as any).EdgeRuntime;
+      if (edge?.waitUntil) edge.waitUntil(nextDrain);
+    }
+  } catch (err) {
+    console.warn("worker self-drain check failed:", String(err));
+  }
   return c.json(r);
 });
 
