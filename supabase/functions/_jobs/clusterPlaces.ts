@@ -4,20 +4,13 @@ import { providers } from "./mocks.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
 /**
- * clusterPlaces — turns raw GPS coordinates (asset_gps) into named places and
- * per-asset location rows.
+ * clusterPlaces — turns raw GPS coordinates into named places and per-asset
+ * location rows.
  *
- *  1. Reads assets with GPS that have not yet been reverse-geocoded.
- *  2. Reverse-geocodes each via the geocoder provider (mock by default).
- *  3. Back-fills asset_gps reverse_geocoded_* fields so the search indexer can
- *     include location text.
- *  4. Creates/links a `places` row per distinct place name and writes an
- *     `asset_locations` row per asset (used by the /events place anchoring and
- *     the timeline location facet).
- *  5. Re-enqueues indexSearchDocument so newly resolved location names become
- *     searchable.
- *
- * Idempotent: places are deduped on (user_id, name); asset_locations on asset_id.
+ * Sources GPS from BOTH assets.location_lat/lng (source of truth, set by the
+ * connector or phase-1/2 of normalizeMetadata) AND from asset_gps. Processes
+ * any asset that has coords but no asset_locations row yet (or has a row
+ * missing place_id). Idempotent.
  */
 
 // Round coords to ~1km so nearby assets share a single geocode lookup.
@@ -27,9 +20,34 @@ function geoKey(lat: number, lng: number): string {
 
 function isMissingColumnError(message?: string | null, column?: string) {
   if (!message || !column) return false;
-  const normalized = message.toLowerCase();
-  const target = column.toLowerCase();
-  return normalized.includes(target) && (normalized.includes("schema cache") || normalized.includes("does not exist") || normalized.includes("could not find"));
+  const m = message.toLowerCase();
+  const t = column.toLowerCase();
+  return m.includes(t) && (m.includes("schema cache") || m.includes("does not exist") || m.includes("could not find"));
+}
+
+/** Upsert into asset_locations with defensive fallbacks for legacy schemas. */
+async function upsertAssetLocation(
+  sb: ReturnType<typeof serviceClient>,
+  uid: string,
+  row: { asset_id: string; lat: number; lng: number; city: string | null; country: string | null; place_id: string | null },
+): Promise<string | null> {
+  // Try richest payload first.
+  const variants: Array<Record<string, unknown>> = [
+    { asset_id: row.asset_id, user_id: uid, lat: row.lat, lng: row.lng, city: row.city, country: row.country, place_id: row.place_id, geocoded_at: new Date().toISOString() },
+    { asset_id: row.asset_id,                 lat: row.lat, lng: row.lng, city: row.city, country: row.country, place_id: row.place_id, geocoded_at: new Date().toISOString() },
+    { asset_id: row.asset_id,                 lat: row.lat, lng: row.lng, city: row.city, country: row.country,                          geocoded_at: new Date().toISOString() },
+  ];
+  let lastErr: string | null = null;
+  for (const v of variants) {
+    const { error } = await (sb.from("asset_locations") as any).upsert(v, { onConflict: "asset_id" });
+    if (!error) return null;
+    lastErr = error.message;
+    // Only retry with simpler payload if it's a missing-column issue.
+    if (!isMissingColumnError(error.message, "user_id") && !isMissingColumnError(error.message, "place_id")) {
+      return error.message;
+    }
+  }
+  return lastErr;
 }
 
 export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
@@ -40,64 +58,55 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
 
   const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
 
-  // Fetch GPS rows that still need a place name resolved.
-  // Skip rows that are already geocoded unless a specific asset is requested
-  // (e.g. force re-geocode on explicit per-asset call).
-  let q = sb
-    .from("asset_gps")
-    .select("asset_id, gps_latitude, gps_longitude, place_name, reverse_geocoded_city, reverse_geocoded_country")
+  // ── 1. Collect every asset for this user that has GPS coords ──────────────
+  // Source of truth is `assets.location_lat/lng`. We also look at `asset_gps`
+  // in case some rows have GPS there but not on the asset row.
+  const coordsByAsset = new Map<string, { lat: number; lng: number }>();
+
+  const assetsQ = sb.from("assets")
+    .select("id, location_lat, location_lng")
+    .eq("user_id", uid)
+    .not("location_lat", "is", null)
+    .not("location_lng", "is", null);
+  const { data: assetRows, error: aErr } = asset_id ? await assetsQ.eq("id", asset_id) : await assetsQ;
+  if (aErr) throw new Error(`clusterPlaces assets fetch: ${aErr.message}`);
+  for (const r of (assetRows ?? []) as any[]) {
+    const lat = Number(r.location_lat), lng = Number(r.location_lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) coordsByAsset.set(r.id, { lat, lng });
+  }
+
+  const gpsQ = sb.from("asset_gps")
+    .select("asset_id, gps_latitude, gps_longitude")
     .eq("user_id", uid)
     .not("gps_latitude", "is", null)
     .not("gps_longitude", "is", null);
-  if (asset_id) {
-    q = q.eq("asset_id", asset_id); // per-asset: always re-geocode
-  } else {
-    q = q.is("place_name", null); // bulk run: only process not-yet-geocoded rows
+  const { data: gpsRows, error: gErr } = asset_id ? await gpsQ.eq("asset_id", asset_id) : await gpsQ;
+  if (gErr) throw new Error(`clusterPlaces asset_gps fetch: ${gErr.message}`);
+  for (const r of (gpsRows ?? []) as any[]) {
+    if (coordsByAsset.has(r.asset_id)) continue;
+    const lat = Number(r.gps_latitude), lng = Number(r.gps_longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) coordsByAsset.set(r.asset_id, { lat, lng });
   }
 
-  const { data: gpsRows, error } = await q;
-  if (error) throw new Error(`clusterPlaces fetch: ${error.message}`);
-  if (!gpsRows || gpsRows.length === 0) {
-    if (asset_id) {
-      const { data: assetGps } = await sb
-        .from("assets")
-        .select("location_lat, location_lng")
-        .eq("id", asset_id)
-        .maybeSingle();
-      if (assetGps?.location_lat != null && assetGps?.location_lng != null) {
-        await sb.from("asset_gps").upsert({
-          asset_id,
-          user_id: uid,
-          gps_latitude: assetGps.location_lat,
-          gps_longitude: assetGps.location_lng,
-          location_source: "asset_row",
-          location_confidence: 0.85,
-        }, { onConflict: "asset_id" });
-        await sb.from("asset_locations").upsert({
-          asset_id,
-          lat: Number(assetGps.location_lat),
-          lng: Number(assetGps.location_lng),
-          confidence: 0.85,
-          geocoded_at: new Date().toISOString(),
-        }, { onConflict: "asset_id" });
-      } else {
-        return { user_id: uid, places: 0, located: 0, skipped: "no_gps" };
-      }
+  if (coordsByAsset.size === 0) {
+    console.log("clusterPlaces: no assets with GPS for user", uid);
+    return { user_id: uid, places: 0, located: 0, reason: "no_gps" };
+  }
 
-      const retry = await sb
-        .from("asset_gps")
-        .select("asset_id, gps_latitude, gps_longitude, place_name, reverse_geocoded_city, reverse_geocoded_country")
-        .eq("user_id", uid)
-        .eq("asset_id", asset_id)
-        .not("gps_latitude", "is", null)
-        .not("gps_longitude", "is", null);
-      if (retry.error) throw new Error(`clusterPlaces retry fetch: ${retry.error.message}`);
-      if (!retry.data || retry.data.length === 0) return { user_id: uid, places: 0, located: 0, skipped: "no_gps" };
-      gpsRows.splice(0, gpsRows.length, ...retry.data);
-    } else {
-      return { user_id: uid, places: 0, located: 0 };
+  // ── 2. Skip assets that are already geocoded with a place_id ──────────────
+  const allIds = Array.from(coordsByAsset.keys());
+  const { data: existingLoc } = await sb.from("asset_locations")
+    .select("asset_id, place_id")
+    .in("asset_id", allIds);
+  const alreadyDone = new Set<string>();
+  if (!asset_id) {
+    for (const r of (existingLoc ?? []) as any[]) {
+      if (r.place_id) alreadyDone.add(r.asset_id);
     }
   }
+  const todo = allIds.filter((id) => !alreadyDone.has(id));
+  console.log("clusterPlaces: scan", { user_id: uid, total_with_gps: coordsByAsset.size, already_done: alreadyDone.size, to_process: todo.length });
+  if (!todo.length) return { user_id: uid, places: 0, located: 0, reason: "all_done" };
 
   // Cache geocode results per coarse cell to limit provider calls.
   const geocodeCache = new Map<string, { name: string; country?: string; admin?: string }>();
@@ -105,17 +114,22 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   const placeIdByName = new Map<string, string>();
   const affectedAssets: string[] = [];
   let located = 0;
+  let firstError: string | null = null;
 
-  for (const row of gpsRows) {
-    const lat = Number(row.gps_latitude);
-    const lng = Number(row.gps_longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+  for (const assetId of todo) {
+    const c = coordsByAsset.get(assetId)!;
+    const lat = c.lat, lng = c.lng;
 
     const key = geoKey(lat, lng);
     let geo = geocodeCache.get(key);
     if (!geo) {
-      const r = await providers.geocoder.reverse(lat, lng);
-      geo = { name: r.name ?? "Unknown Place", country: r.country, admin: r.admin };
+      try {
+        const r = await providers.geocoder.reverse(lat, lng);
+        geo = { name: r.name ?? "Unknown Place", country: r.country, admin: r.admin };
+      } catch (e) {
+        console.warn("clusterPlaces: geocode failed", { assetId, lat, lng, err: String((e as Error)?.message ?? e) });
+        geo = { name: "Unknown Place", country: undefined, admin: undefined };
+      }
       geocodeCache.set(key, geo);
     }
 
@@ -132,44 +146,33 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
         )
         .select("id")
         .single();
-      if (pErr || !place) throw new Error(`clusterPlaces place upsert: ${pErr?.message ?? "no row"}`);
+      if (pErr || !place) {
+        console.error("clusterPlaces place upsert failed", { placeName, err: pErr?.message });
+        if (!firstError) firstError = `place upsert: ${pErr?.message ?? "no row"}`;
+        continue;
+      }
       placeId = place.id;
       placeIdByName.set(placeName, placeId);
     }
 
-    // Back-fill reverse-geocode fields on asset_gps (feeds search indexer).
+    // Back-fill reverse-geocode fields on asset_gps if a row exists.
     await sb.from("asset_gps").update({
       place_name: placeName,
-      reverse_geocoded_city: geo.admin ?? row.reverse_geocoded_city ?? null,
-      reverse_geocoded_country: geo.country ?? row.reverse_geocoded_country ?? null,
-    }).eq("asset_id", row.asset_id);
+      reverse_geocoded_city: geo.admin ?? null,
+      reverse_geocoded_country: geo.country ?? null,
+    }).eq("asset_id", assetId);
 
-    // Write the per-asset location row.
-    const locationRow = {
-      asset_id: row.asset_id,
-      user_id: uid,
-      lat,
-      lng,
-      city: geo.admin ?? null,
-      country: geo.country ?? null,
-      place_id: placeId,
-      geocoded_at: new Date().toISOString(),
-    };
-    let { error: lErr } = await sb.from("asset_locations").upsert(locationRow, { onConflict: "asset_id" });
-    if (lErr && isMissingColumnError(lErr.message, "user_id")) {
-      lErr = (await sb.from("asset_locations").upsert({
-        asset_id: row.asset_id,
-        lat,
-        lng,
-        city: geo.admin ?? null,
-        country: geo.country ?? null,
-        place_id: placeId,
-        geocoded_at: new Date().toISOString(),
-      }, { onConflict: "asset_id" })).error;
+    const lErr = await upsertAssetLocation(sb, uid, {
+      asset_id: assetId, lat, lng,
+      city: geo.admin ?? null, country: geo.country ?? null, place_id: placeId,
+    });
+    if (lErr) {
+      console.error("clusterPlaces asset_locations upsert failed", { assetId, err: lErr });
+      if (!firstError) firstError = `asset_locations upsert: ${lErr}`;
+      continue;
     }
-    if (lErr) throw new Error(`clusterPlaces asset_locations upsert: ${lErr.message}`);
 
-    affectedAssets.push(row.asset_id);
+    affectedAssets.push(assetId);
     located++;
   }
 
@@ -179,12 +182,11 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       await enqueueJob("indexSearchDocument", {
         userId: uid,
         payload: { asset_id: aid },
-        // Share the canonical per-asset index key. If a previous index job
-        // already ran for this asset, the ledger dedupes — at-most-once.
         idempotencyKey: `index:${aid}`,
       });
     }
   }
 
-  return { user_id: uid, places: placeIdByName.size, located };
+  console.log("clusterPlaces: done", { user_id: uid, places: placeIdByName.size, located, errors: firstError });
+  return { user_id: uid, places: placeIdByName.size, located, ...(firstError ? { firstError } : {}) };
 }
