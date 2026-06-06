@@ -72,55 +72,30 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const faceEntries: FaceEntry[] = [];
-  const facesWithoutEmbedding: Array<{ asset_id: string; face: any }> = [];
 
   for (const row of enrichRows ?? []) {
     const faces = Array.isArray(row.faces) ? row.faces : [];
     for (let i = 0; i < faces.length; i++) {
       const f = faces[i];
       const emb = Array.isArray(f.embedding) && f.embedding.length > 0 ? f.embedding as number[] : null;
-      if (emb) {
+      const bbox = f.bbox ?? null;
+      const confidence = f.score ?? f.confidence ?? 0.5;
+      const hasUsableBbox = bbox && bbox.w > 0.08 && bbox.h > 0.08;
+      if (emb && hasUsableBbox && confidence >= 0.6) {
         faceEntries.push({
           asset_id: row.asset_id,
           face_index: i,
-          bbox: f.bbox ?? null,
+          bbox,
           description: f.description ?? "",
-          confidence: f.score ?? f.confidence ?? 0.5,
+          confidence,
           embedding: emb,
         });
-      } else if (f.score != null || f.confidence != null) {
-        // Face detected but no embedding — link to generic group.
-        facesWithoutEmbedding.push({ asset_id: row.asset_id, face: f });
-      }
-    }
-  }
-
-  // For faces without embeddings, upsert into a generic "unclustered" person.
-  let unclusteredLinked = 0;
-  if (facesWithoutEmbedding.length > 0) {
-    const { data: genericPerson, error: gpErr } = await sb
-      .from("people")
-      .upsert(
-        { user_id: uid, auto_label: "auto:unclustered-faces", display_name: "People in your photos", consent_required: true },
-        { onConflict: "user_id,auto_label" },
-      )
-      .select("id").single();
-    if (!gpErr && genericPerson) {
-      const rows = facesWithoutEmbedding.map(({ asset_id: aid, face }) => ({
-        person_id: genericPerson.id,
-        asset_id: aid,
-        bbox: face.bbox ?? null,
-        confidence: face.score ?? face.confidence ?? null,
-      }));
-      for (let i = 0; i < rows.length; i += 500) {
-        await sb.from("person_faces").upsert(rows.slice(i, i + 500), { onConflict: "person_id,asset_id" });
-        unclusteredLinked += Math.min(500, rows.length - i);
       }
     }
   }
 
   if (faceEntries.length === 0) {
-    return { user_id: uid, people: 0, clustered: unclusteredLinked, no_embeddings: facesWithoutEmbedding.length };
+    return { user_id: uid, people: 0, clustered: 0, skipped_faces: true };
   }
 
   // Load existing people with representative face vectors to match against.
@@ -153,7 +128,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  let personCounter = existingPeople?.length ?? 0;
+  let personCounter = Math.max(
+    0,
+    ...(existingPeople ?? []).map((p) => Number(String(p.auto_label ?? "").split(":").at(-1) ?? 0)).filter(Number.isFinite),
+  );
   let clusteredFaces = 0;
 
   for (const entry of faceEntries) {
@@ -202,8 +180,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   return {
     user_id: uid,
     people: personVectors.size,
-    clustered: clusteredFaces + unclusteredLinked,
+    clustered: clusteredFaces,
     faces_with_embedding: faceEntries.length,
-    faces_without_embedding: facesWithoutEmbedding.length,
+    faces_without_embedding: 0,
   };
 }
