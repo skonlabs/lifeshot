@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { usePeople, useCorrection } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -116,10 +116,9 @@ type Cover = {
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
   const bb = cover?.face_bbox;
-  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-  const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
-  const knownDims = !!(cover?.width && cover?.height && cover.width > 0 && cover.height > 0);
   const [imgFailed, setImgFailed] = useState(false);
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+
   if (!cover?.thumbnail_url || imgFailed) {
     return (
       <div className="mx-auto grid aspect-square w-full place-items-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
@@ -127,35 +126,42 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       </div>
     );
   }
-  // Fallback: when we don't have a usable bbox OR we don't know the source
-  // image's pixel dimensions, render the thumbnail as a centered cover crop
-  // inside the circle instead of trying to compute a broken zoom transform
-  // (which would push the image off-screen and leave an empty placeholder).
-  if (!hasUsableBbox || !knownDims) {
+
+  const dims = useMemo(() => {
+    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
+    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
+    return width && height ? { width, height } : null;
+  }, [cover?.height, cover?.width, naturalSize]);
+  const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
+
+  if (!hasUsableBbox || !dims) {
     return (
       <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
         <img
           src={cover.thumbnail_url}
           alt=""
-          loading="eager"
+          loading="lazy"
           decoding="async"
+          onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           onError={() => setImgFailed(true)}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover object-[center_25%]"
         />
       </div>
     );
   }
-  // Compute a tight square crop around the bbox, in original pixel space, so
-  // the aspect ratio of the source image is preserved when we render.
-  const W = Math.max(cover.width ?? 1, 1);
-  const H = Math.max(cover.height ?? 1, 1);
+
+  // Compute a square crop around the face and render with object-position.
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  const W = Math.max(dims.width, 1);
+  const H = Math.max(dims.height, 1);
   const faceWpx = bb!.w * W;
   const faceHpx = bb!.h * H;
   const longestFaceSide = Math.max(faceWpx, faceHpx);
   const shortestImageSide = Math.min(W, H);
-  let sidePx = clamp(longestFaceSide * 1.12, shortestImageSide * 0.09, shortestImageSide * 0.68);
+  let sidePx = clamp(longestFaceSide * 1.75, shortestImageSide * 0.12, shortestImageSide * 0.82);
+
   const cxPx = (bb!.x + bb!.w / 2) * W;
-  const cyPx = (bb!.y + bb!.h / 2) * H;
+  const cyPx = (bb!.y + Math.min(bb!.h * 0.44, bb!.h / 2)) * H;
   let leftPx = cxPx - sidePx / 2;
   let topPx = cyPx - sidePx / 2;
   leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));
@@ -163,11 +169,12 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const imageStyle: React.CSSProperties = {
     position: "absolute",
     width: `${(W / sidePx) * 100}%`,
-    height: "auto",
+    height: `${(H / sidePx) * 100}%`,
     left: `${-(leftPx / sidePx) * 100}%`,
     top: `${-(topPx / sidePx) * 100}%`,
     maxWidth: "none",
   };
+
   return (
     <div
       className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]"
@@ -177,8 +184,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       <img
         src={cover.thumbnail_url}
         alt=""
-        loading="eager"
+        loading="lazy"
         decoding="async"
+        onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
         onError={() => setImgFailed(true)}
         className="absolute"
         style={imageStyle}

@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
+import { faceVisualSignature, sanitizeFaceBox } from "../_shared/face-box.ts";
 
 /**
  * clusterPeople — groups detected faces into people using cosine similarity
@@ -22,7 +23,7 @@ import type { JobContext } from "../_pipeline/runner.ts";
 // slot string) are still too weak to safely merge people at a low threshold.
 // Raise the cutoff so we stop splitting the same photo into duplicate people
 // or cross-linking nearby faces that share coarse attributes.
-const CLUSTER_THRESHOLD = 0.9;
+const CLUSTER_THRESHOLD = 0.94;
 
 function bboxArea(bbox: { w?: number; h?: number } | null | undefined): number {
   if (!bbox) return 0;
@@ -84,7 +85,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     for (let i = 0; i < faces.length; i++) {
       const f = faces[i];
       const emb = Array.isArray(f.embedding) && f.embedding.length > 0 ? f.embedding as number[] : null;
-      const bbox = f.bbox ?? null;
+      const bbox = sanitizeFaceBox(f.bbox ?? null);
       const confidence = f.score ?? f.confidence ?? 0.5;
       const hasUsableBbox = bbox && bbox.w > 0.04 && bbox.h > 0.04;
       if (emb && hasUsableBbox && confidence >= 0.72) {
@@ -97,13 +98,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           embedding: emb,
         };
 
-        const identityKey = [
-          row.asset_id,
-          Number(bbox.x ?? 0).toFixed(3),
-          Number(bbox.y ?? 0).toFixed(3),
-          Number(bbox.w ?? 0).toFixed(3),
-          Number(bbox.h ?? 0).toFixed(3),
-        ].join(":");
+        const identityKey = faceVisualSignature(row.asset_id, bbox);
         const existing = faceIdentityIndex.get(identityKey);
         if (!existing || existing.confidence < entry.confidence) {
           faceIdentityIndex.set(identityKey, entry);

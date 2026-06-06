@@ -31,11 +31,12 @@ export const SUMMARY_SYSTEM = `You write a short, neutral summary of a personal-
 
 export const FACE_DETECT_PROMPT = `Detect all human faces visible in this image.
 For each face return:
-- bbox: bounding box as fractions of image dimensions (x, y = top-left corner; w, h = width and height). All values in [0, 1].
+- bbox: bounding box as fractions of image dimensions (x, y = top-left corner; w, h = width and height). All values in [0, 1]. The box MUST cover only the face/head region (forehead, eyes, nose, mouth, chin, a little hair), not shoulders, torso, hands, clothing, or background. If you cannot isolate a face-only box, omit that face.
 - description: a STRUCTURED identity signature using EXACTLY these slots, joined by '; ', in this order, in lowercase:
   "gender:<male|female|unknown>; age:<child|teen|young-adult|adult|middle-aged|senior>; skin:<very-light|light|medium|tan|brown|dark>; hair-color:<black|brown|blonde|red|gray|white|other|bald>; hair-length:<bald|short|medium|long>; hair-style:<straight|wavy|curly|coily|unknown>; facial-hair:<none|stubble|mustache|beard|goatee>; eye-color:<brown|blue|green|hazel|gray|unknown>; eyewear:<none|glasses|sunglasses>; build:<slim|average|heavy|unknown>; distinctive:<short comma-separated marks like 'mole-left-cheek, scar-brow' or 'none'>"
   Use ONLY these slot keys and these enum values. The signature MUST be deterministic — different photos of the same person must produce the same slots. Do NOT name or identify the person. Max 240 chars.
 - confidence: how confident you are that this is a real face (0 = uncertain, 1 = certain).
+Reject partial people, backs of heads, profile fragments with no full face, bodies, clothing regions, and any crop larger than the head. When multiple candidate boxes overlap the same face, return only the tightest valid face box.
 If there are no faces, return faces: [].`;
 
 export const RERANK_SYSTEM = `Given a user query and a small candidate set, rerank by semantic + factual relevance. Only return asset_ids from the candidates with scores in [0,1]; do NOT add or remove ids.`;
