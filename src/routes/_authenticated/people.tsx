@@ -49,7 +49,7 @@ function People() {
 }
 
 type Bbox = { x: number; y: number; w: number; h: number } | null;
-type Cover = { thumbnail_url: string | null; face_bbox?: Bbox } | null | undefined;
+type Cover = { thumbnail_url: string | null; face_bbox?: Bbox; width?: number | null; height?: number | null } | null | undefined;
 
 /**
  * Renders a circular face crop from the cover asset's thumbnail.
@@ -66,25 +66,28 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
   const bb = cover.face_bbox;
+  const imgAspect = cover.width && cover.height ? cover.width / cover.height : 1;
   let style: React.CSSProperties = {
     backgroundImage: `url(${cover.thumbnail_url})`,
     backgroundSize: "cover",
-    backgroundPosition: "center top",
+    backgroundPosition: "center center",
   };
   if (bb && bb.w > 0 && bb.h > 0) {
-    // Pad the bbox a bit so the crop includes hair/chin, then convert to
-    // CSS background-size/position so the bbox fills the round avatar.
-    const pad = 0.35;
-    const cx = bb.x + bb.w / 2;
-    const cy = bb.y + bb.h / 2;
-    const size = Math.min(1, Math.max(bb.w, bb.h) * (1 + pad));
-    const scale = 1 / size; // how much to zoom the image so the crop fills 100%
-    const bgPctX = ((cx - size / 2) / (1 - size || 1)) * 100;
-    const bgPctY = ((cy - size / 2) / (1 - size || 1)) * 100;
+    const pad = 0.18;
+    const faceCx = bb.x + bb.w / 2;
+    const faceCy = bb.y + bb.h / 2;
+    const cropW = Math.min(1, bb.w * (1 + pad * 2));
+    const cropH = Math.min(1, bb.h * (1 + pad * 2));
+    const effectiveCrop = Math.max(cropW, cropH * imgAspect);
+    const scale = 1 / Math.max(effectiveCrop, 0.12);
+    const denomX = Math.max(1 - 1 / scale, 0.001);
+    const denomY = Math.max(1 - 1 / scale, 0.001);
+    const posX = ((faceCx - 0.5 / scale) / denomX) * 100;
+    const posY = ((faceCy - 0.5 / scale) / denomY) * 100;
     style = {
       backgroundImage: `url(${cover.thumbnail_url})`,
       backgroundSize: `${scale * 100}% ${scale * 100}%`,
-      backgroundPosition: `${clamp(bgPctX, 0, 100)}% ${clamp(bgPctY, 0, 100)}%`,
+      backgroundPosition: `${clamp(posX, 0, 100)}% ${clamp(posY, 0, 100)}%`,
       backgroundRepeat: "no-repeat",
     };
   }
