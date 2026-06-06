@@ -46,6 +46,7 @@ async function wakeSyncWorker(authHeader?: string | null, requestUrl?: string | 
     supabaseUrl: ENV.SUPABASE_URL,
     batch: 4,
     budgetMs: 50_000,
+    background: false,
   });
 }
 
