@@ -39,7 +39,7 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
           ref={canvasRef}
           width={32}
           height={32}
-          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${loaded ? "opacity-0" : "opacity-100"}`}
+          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${loaded ? "opacity-0" : "opacity-100"}`}
         />
       )}
       {d.thumbnail_url && (
