@@ -30,9 +30,12 @@ const TimelineIn = z.object({
 const app = authed(createApi("/catalog/v1"));
 
 async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
+  const preferredImageKey = row.media_type === "photo"
+    ? (row.preview_cache_key ?? row.thumbnail_cache_key ?? null)
+    : (row.thumbnail_cache_key ?? row.preview_cache_key ?? null);
   return {
     asset_id: row.asset_id ?? row.id,
-    thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id ?? row.id, row.thumbnail_cache_key ?? null),
+    thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id ?? row.id, preferredImageKey),
     blurhash: row.blurhash ?? null,
     dominant_color: row.dominant_color ?? null,
     width: row.width ?? null,
@@ -40,7 +43,7 @@ async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
     capture_time: row.capture_time ?? null,
     media_type: row.media_type ?? "photo",
     source_badge: row.source_badge ?? null,
-    hydration_status: (row.thumbnail_cache_key ? "ready" : "pending") as "ready" | "pending",
+    hydration_status: (preferredImageKey ? "ready" : "pending") as "ready" | "pending",
     next_quality_url: null,
     original_fetch_policy: "on_demand" as const,
     cache_status: "warm" as const,
@@ -198,7 +201,7 @@ app.post("/memory/viewport", async (c) => {
   const previewIds = (data ?? []).map((row: any) => row.id);
   const previewRows = previewIds.length
     ? await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key, preview_cache_key")
       .in("asset_id", previewIds)
     : { data: [] as any[] };
   const previewMap: Record<string, any> = {};
