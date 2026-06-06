@@ -704,7 +704,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
-  const progressIndexedCount = force ? seenTotal : indexedCount;
+  // For force sync, `indexed` must reflect files actually re-processed
+  // (normalizeMetadata completions), NOT files listed during paging.
+  // Otherwise the progress bar jumps to the size of the first listing page
+  // (e.g. 0 → 136 instantly) instead of counting file-by-file.
+  const progressIndexedCount = force ? prevNormalized : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const processingTotal = Math.max(prevProcessingTotal, prevNormalized) + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
