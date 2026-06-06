@@ -37,8 +37,16 @@ function People() {
           {people.map((p) => (
             <Link key={p.id} to="/people/$id" params={{ id: p.id }}
               className="hairline group block overflow-hidden rounded-md border bg-[color:var(--paper)] transition-colors hover:bg-[color:var(--paper-2)]">
-              <div className="grid aspect-[4/5] place-items-center bg-[color:var(--paper-2)] text-[color:var(--umber)]">
-                <UserRound className="h-12 w-12" strokeWidth={1.2} />
+              <div className="aspect-[4/5] bg-[color:var(--paper-2)]">
+                {p.cover ? (
+                  <div className="h-full w-full">
+                    <img src={p.cover.thumbnail_url ?? undefined} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                  </div>
+                ) : (
+                  <div className="grid h-full place-items-center text-[color:var(--umber)]">
+                    <UserRound className="h-12 w-12" strokeWidth={1.2} />
+                  </div>
+                )}
               </div>
               <div className="p-3">
                 <div className="truncate font-medium text-[color:var(--ink)]">{p.display_name ?? "Unknown"}</div>
