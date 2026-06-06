@@ -122,14 +122,35 @@ app.get("/people", async (c) => {
   const coverMap: Record<string, string> = {};
   const coverBboxMap: Record<string, any> = {};
   const faceCountMap: Record<string, number> = {};
+  const signatureMap: Record<string, string> = {};
   if (ids.length) {
     const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id, bbox, confidence, created_at").in("person_id", ids)
+      .select("person_id, asset_id, bbox, confidence, created_at, face_vector").in("person_id", ids)
       .order("confidence", { ascending: false, nullsFirst: false });
     const seen: Record<string, Set<string>> = {};
     const perAssetFaceCount = new Map<string, number>();
+    const signatureOwner = new Map<string, { person_id: string; confidence: number }>();
+
+    const signatureFor = (bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
+      const bboxPart = bbox
+        ? [bbox.x, bbox.y, bbox.w, bbox.h].map((n) => Number(n ?? 0).toFixed(3)).join(":")
+        : "no-bbox";
+      const vectorPart = Array.isArray(vector) && vector.length
+        ? vector.slice(0, 12).map((n) => Number(n).toFixed(4)).join(":")
+        : "no-vector";
+      return `${bboxPart}:${vectorPart}`;
+    };
+
     for (const f of faces ?? []) perAssetFaceCount.set(f.asset_id, (perAssetFaceCount.get(f.asset_id) ?? 0) + 1);
     for (const f of faces ?? []) {
+      const signature = signatureFor(f.bbox ?? null, Array.isArray(f.face_vector) ? f.face_vector as number[] : null);
+      const owner = signatureOwner.get(signature);
+      if (owner && owner.person_id !== f.person_id) continue;
+      signatureOwner.set(signature, {
+        person_id: f.person_id,
+        confidence: Math.max(Number(f.confidence ?? 0), owner?.confidence ?? 0),
+      });
+      signatureMap[f.person_id] = signature;
       if (!coverMap[f.person_id] && perAssetFaceCount.get(f.asset_id) === 1) {
         coverMap[f.person_id] = f.asset_id;
         coverBboxMap[f.person_id] = f.bbox ?? null;
@@ -152,12 +173,12 @@ app.get("/people", async (c) => {
   const previewMap: Record<string, any> = {};
   if (coverIds.length) {
     const { data: assets } = await supa.from("assets")
-      .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type, width, height, capture_time")
+      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height, capture_time")
       .in("id", coverIds);
     for (const asset of assets ?? []) coverAssets[asset.id] = asset;
 
     const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, thumbnail_cache_key, blurhash, dominant_color")
+      .select("asset_id, thumbnail_cache_key, preview_cache_key, blurhash, dominant_color")
       .in("asset_id", coverIds);
     for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
   }
@@ -168,7 +189,14 @@ app.get("/people", async (c) => {
     const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
     const cover = coverAssetId && asset ? {
       asset_id: coverAssetId,
-      thumbnail_url: await resolveThumbUrl(c, supa, uid, coverAssetId, preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key ?? null),
+      thumbnail_url: await resolveThumbUrl(
+        c,
+        supa,
+        uid,
+        coverAssetId,
+        preview?.preview_cache_key ?? preview?.thumbnail_cache_key ?? asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null,
+        "preview",
+      ),
       blurhash: preview?.blurhash ?? asset.blurhash ?? null,
       dominant_color: preview?.dominant_color ?? asset.dominant_color ?? null,
       width: asset.width ?? null,
@@ -186,7 +214,11 @@ app.get("/people", async (c) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
     if (!(person.asset_count > 0)) return false;
     const bb = person.cover?.face_bbox;
-    return !!(bb && bb.w > 0.02 && bb.h > 0.02 && bb.w <= 1 && bb.h <= 1);
+    return !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
+  }).filter((person: any, index: number, arr: any[]) => {
+    const signature = signatureMap[person.id] ?? null;
+    if (!signature) return true;
+    return arr.findIndex((candidate: any) => signatureMap[candidate.id] === signature) === index;
   });
   return c.json({ people, face_processing_disabled: false });
 });
