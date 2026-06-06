@@ -132,24 +132,19 @@ describe("metadata pipeline invariants", () => {
     const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
     const cover = { width: 4288, height: 2848 };
     const bb = { x: 0.577, y: 0.267, w: 0.174, h: 0.367 };
-    const imgAspect = cover.width / cover.height;
-    const pad = 0.18;
-    const faceCx = bb.x + bb.w / 2;
-    const faceCy = bb.y + bb.h / 2;
-    const cropW = Math.min(1, bb.w * (1 + pad * 2));
-    const cropH = Math.min(1, bb.h * (1 + pad * 2));
-    const effectiveCrop = Math.max(cropW, cropH * imgAspect);
-    const scale = 1 / Math.max(effectiveCrop, 0.12);
-    const denomX = Math.max(1 - 1 / scale, 0.001);
-    const denomY = Math.max(1 - 1 / scale, 0.001);
-    const posX = clamp(((faceCx - 0.5 / scale) / denomX) * 100, 0, 100);
-    const posY = clamp(((faceCy - 0.5 / scale) / denomY) * 100, 0, 100);
+    const faceCx = (bb.x + bb.w / 2) * cover.width;
+    const faceCy = (bb.y + bb.h / 2) * cover.height;
+    const faceW = bb.w * cover.width;
+    const faceH = bb.h * cover.height;
+    const cropSide = clamp(Math.max(faceW, faceH) * 1.22, Math.min(cover.width, cover.height) * 0.12, Math.min(cover.width, cover.height));
+    const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(cover.width - cropSide, 0));
+    const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(cover.height - cropSide, 0));
+    const renderedWidthPct = (cover.width / cropSide) * 100;
 
-    expect(scale).toBeGreaterThan(1.8);
-    expect(posX).toBeGreaterThan(40);
-    expect(posX).toBeLessThan(90);
-    expect(posY).toBeGreaterThan(10);
-    expect(posY).toBeLessThan(80);
+    expect(cropSide).toBeLessThan(Math.min(cover.width, cover.height));
+    expect(renderedWidthPct).toBeGreaterThan(180);
+    expect(cropX).toBeGreaterThan(cover.width * 0.35);
+    expect(cropY).toBeGreaterThan(cover.height * 0.05);
   });
 
   it("counts places from asset_locations instead of event_places", () => {
