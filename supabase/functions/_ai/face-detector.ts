@@ -7,6 +7,7 @@
 import { visionStructured, embedBatch, type CallContext } from "./client.ts";
 import { FACE_DETECT_PROMPT } from "./prompts.ts";
 import { FaceDetectResultZ, FACE_DETECT_JSON_SCHEMA, type FaceDetectResult } from "./schemas.ts";
+import { intersectionOverUnion, sanitizeFaceBox } from "../_shared/face-box.ts";
 
 export type { FaceDetectResult };
 
@@ -43,18 +44,42 @@ export async function detectFaces(opts: {
 
   if (!result.faces.length) return [];
 
-  // Embed descriptions as 512-dim vectors to use as face identity proxies.
-  const descriptions = result.faces.map((f) => f.description || "person face");
+  const cleanedFaces = result.faces
+    .map((face) => ({
+      bbox: sanitizeFaceBox(face.bbox),
+      description: face.description,
+      confidence: face.confidence,
+    }))
+    .filter((face) => face.bbox && face.confidence >= 0.78)
+    .sort((a, b) => {
+      const confDelta = (b.confidence ?? 0) - (a.confidence ?? 0);
+      if (confDelta !== 0) return confDelta;
+      const areaA = (a.bbox?.w ?? 0) * (a.bbox?.h ?? 0);
+      const areaB = (b.bbox?.w ?? 0) * (b.bbox?.h ?? 0);
+      return areaB - areaA;
+    })
+    .filter((face, index, arr) => arr.findIndex((candidate, candidateIndex) => {
+      if (candidateIndex >= index) return false;
+      return intersectionOverUnion(candidate.bbox, face.bbox) >= 0.55;
+    }) === -1)
+    .slice(0, 8);
+
+  if (!cleanedFaces.length) return [];
+
+  // Embed descriptions as 512-dim vectors to use as coarse identity proxies.
+  // This is not true face recognition, so downstream code must treat it as a
+  // weak signal and rely on sanitized bboxes + conservative matching.
+  const descriptions = cleanedFaces.map((f) => f.description || "person face");
   let embeddings: number[][] = [];
   try {
     embeddings = await embedBatch(descriptions, { dimensions: 512, ctx: opts.ctx });
   } catch (e: any) {
     console.warn("face-detector: embedding failed", String(e?.message ?? e));
     // Continue without embeddings rather than failing the whole detection.
-    embeddings = result.faces.map(() => []);
+    embeddings = cleanedFaces.map(() => []);
   }
 
-  return result.faces.map((face, i) => ({
+  return cleanedFaces.map((face, i) => ({
     bbox: face.bbox,
     description: face.description,
     confidence: face.confidence,
