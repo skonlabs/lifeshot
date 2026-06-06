@@ -26,6 +26,17 @@ import { ApiError, api } from "./client";
 import { supabase } from "@/lib/supabase";
 
 
+async function resolveBrowserStorageUrl(cacheKey: string | null): Promise<string | null> {
+  if (!cacheKey) return null;
+  if (/^https?:\/\//.test(cacheKey)) return cacheKey;
+  for (const bucket of ["thumbnails", "lifeshot-derived"] as const) {
+    const { data } = await supabase.storage.from(bucket).createSignedUrl(cacheKey, 60 * 60);
+    if (data?.signedUrl) return data.signedUrl;
+  }
+  return null;
+}
+
+
 type SourceAccountsResponse = {
   accounts: Array<{
     id: string;
@@ -586,11 +597,13 @@ export function usePeople() {
           .eq("asset_id", face.asset_id)
           .maybeSingle();
 
+        const thumbnailUrl = await resolveBrowserStorageUrl(asset?.thumbnail_cache_key ?? null);
+
         return {
           ...person,
           cover: asset ? {
             asset_id: asset.asset_id,
-            thumbnail_url: asset.thumbnail_cache_key ?? null,
+            thumbnail_url: thumbnailUrl,
             blurhash: asset.blurhash ?? null,
             dominant_color: asset.dominant_color ?? null,
             width: null,
