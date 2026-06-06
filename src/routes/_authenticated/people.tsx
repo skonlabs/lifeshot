@@ -49,7 +49,7 @@ function People() {
 }
 
 type Bbox = { x: number; y: number; w: number; h: number } | null;
-type Cover = { thumbnail_url: string | null; face_bbox?: Bbox } | null;
+type Cover = { thumbnail_url: string | null; face_bbox?: Bbox } | null | undefined;
 
 /**
  * Renders a circular face crop from the cover asset's thumbnail.
