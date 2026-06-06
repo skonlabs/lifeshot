@@ -75,24 +75,27 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       </div>
     );
   }
-  // Tight square crop around the bbox, with a small padding so hair/chin
-  // aren't sliced. Everything is in normalized [0..1] coords so we don't need
-  // the original pixel dimensions.
-  const pad = 0.18;
-  const side = Math.min(1, Math.max(bb!.w, bb!.h) * (1 + pad * 2));
-  const cx = bb!.x + bb!.w / 2;
-  const cy = bb!.y + bb!.h / 2;
-  let left = cx - side / 2;
-  let top = cy - side / 2;
-  left = Math.min(Math.max(left, 0), 1 - side);
-  top = Math.min(Math.max(top, 0), 1 - side);
-  const scale = 1 / side;
+  // Compute a tight square crop around the bbox, in original pixel space, so
+  // the aspect ratio of the source image is preserved when we render.
+  const W = Math.max(cover.width ?? 1, 1);
+  const H = Math.max(cover.height ?? 1, 1);
+  const faceWpx = bb!.w * W;
+  const faceHpx = bb!.h * H;
+  const pad = 0.2;
+  let sidePx = Math.max(faceWpx, faceHpx) * (1 + pad * 2);
+  sidePx = Math.min(sidePx, Math.min(W, H));
+  const cxPx = (bb!.x + bb!.w / 2) * W;
+  const cyPx = (bb!.y + bb!.h / 2) * H;
+  let leftPx = cxPx - sidePx / 2;
+  let topPx = cyPx - sidePx / 2;
+  leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));
+  topPx = Math.min(Math.max(topPx, 0), Math.max(H - sidePx, 0));
   const imageStyle: React.CSSProperties = {
     position: "absolute",
-    width: `${scale * 100}%`,
+    width: `${(W / sidePx) * 100}%`,
     height: "auto",
-    left: `${-left * scale * 100}%`,
-    top: `${-top * scale * 100}%`,
+    left: `${-(leftPx / sidePx) * 100}%`,
+    top: `${-(topPx / sidePx) * 100}%`,
     maxWidth: "none",
   };
   return (
