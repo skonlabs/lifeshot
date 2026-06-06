@@ -244,7 +244,7 @@ export const FACE_DETECT_JSON_SCHEMA = {
           type: "object", additionalProperties: false, required: ["bbox", "description", "confidence"],
           properties: {
             bbox: {
-              oneOf: [
+              anyOf: [
                 { type: "object", additionalProperties: false, required: ["x","y","w","h"],
                   properties: { x:{type:"number",minimum:0,maximum:1}, y:{type:"number",minimum:0,maximum:1}, w:{type:"number",minimum:0,maximum:1}, h:{type:"number",minimum:0,maximum:1} } },
                 { type: "null" },
