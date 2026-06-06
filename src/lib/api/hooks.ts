@@ -567,7 +567,8 @@ export function useConfirmDuplicate() {
 export function usePeople() {
   return useQuery({
     queryKey: ["people"],
-    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people"),
+    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people"),
+    staleTime: 30_000,
   });
 }
 
@@ -582,7 +583,8 @@ export function usePerson(id: string | undefined) {
 export function usePlaces() {
   return useQuery({
     queryKey: ["places"],
-    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; lat: number | null; lng: number | null; asset_count: number }> }>("/places"),
+    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; country?: string | null; label?: string | null; lat: number | null; lng: number | null; asset_count: number; latest_capture_time?: string | null }> }>("/places"),
+    staleTime: 60_000,
   });
 }
 

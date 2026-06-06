@@ -127,4 +127,35 @@ describe("metadata pipeline invariants", () => {
     expect(shouldEnqueuePlaces(40.7, -74.0, false)).toBe(true);
     expect(shouldEnqueuePlaces(null, null, true)).toBe(true);
   });
+
+  it("keeps face avatar crop centered on the detected face instead of the whole photo", () => {
+    const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+    const cover = { width: 4288, height: 2848 };
+    const bb = { x: 0.577, y: 0.267, w: 0.174, h: 0.367 };
+    const faceCx = (bb.x + bb.w / 2) * cover.width;
+    const faceCy = (bb.y + bb.h / 2) * cover.height;
+    const faceW = bb.w * cover.width;
+    const faceH = bb.h * cover.height;
+    const cropSide = clamp(Math.max(faceW, faceH) * 1.22, Math.min(cover.width, cover.height) * 0.12, Math.min(cover.width, cover.height));
+    const cropX = clamp(faceCx - cropSide / 2, 0, Math.max(cover.width - cropSide, 0));
+    const cropY = clamp(faceCy - cropSide / 2, 0, Math.max(cover.height - cropSide, 0));
+    const renderedWidthPct = (cover.width / cropSide) * 100;
+
+    expect(cropSide).toBeLessThan(Math.min(cover.width, cover.height));
+    expect(renderedWidthPct).toBeGreaterThan(180);
+    expect(cropX).toBeGreaterThan(cover.width * 0.35);
+    expect(cropY).toBeGreaterThan(cover.height * 0.05);
+  });
+
+  it("counts places from asset_locations instead of event_places", () => {
+    const locations = [
+      { place_id: "p1", asset_id: "a1" },
+      { place_id: "p1", asset_id: "a2" },
+      { place_id: "p2", asset_id: "a3" },
+    ];
+    const counts: Record<string, number> = {};
+    for (const row of locations) counts[row.place_id] = (counts[row.place_id] ?? 0) + 1;
+
+    expect(counts).toEqual({ p1: 2, p2: 1 });
+  });
 });

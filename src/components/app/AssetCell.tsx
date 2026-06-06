@@ -17,6 +17,7 @@ interface Descriptor {
 export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: React.CSSProperties; disableLink?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const isLikelyLandscapeThumb = !!d.width && !!d.height && d.width > d.height;
 
   useEffect(() => {
     if (!d.blurhash || !canvasRef.current) return;
@@ -49,7 +50,7 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}
-          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 h-full w-full transition-opacity duration-300 ${isLikelyLandscapeThumb ? "object-cover object-center" : "object-contain object-center"} ${loaded ? "opacity-100" : "opacity-0"}`}
         />
       )}
       {d.source_badge && (
