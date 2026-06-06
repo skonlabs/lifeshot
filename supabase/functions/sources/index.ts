@@ -40,13 +40,14 @@ async function collectRemainingAssetIds(svc: any, assetIds: string[]): Promise<S
 // swallowed; if the cross-function request fails, it falls back to draining in
 // process so the job can still be claimed during this request.
 async function wakeSyncWorker(authHeader?: string | null, requestUrl?: string | null) {
+  const syncLane = LANES[laneFor("syncSource")].name;
   await nudgeWorkerDrain({
     authHeader,
     requestUrl,
     supabaseUrl: ENV.SUPABASE_URL,
     batch: 4,
     budgetMs: 50_000,
-    background: false,
+    lanes: [syncLane],
   });
 }
 
@@ -541,11 +542,13 @@ app.get("/v1/:id/status", async (c) => {
   // endpoint every 2s while syncing, so this keeps the queue moving even if
   // pg_cron's scheduled drain stops firing (which we have seen in practice).
   if (queueJob && (queueJob.status === "pending" || queueJob.status === "running")) {
+    const syncLane = LANES[laneFor("syncSource")].name;
     await nudgeWorkerDrain({
       authHeader: c.req.header("Authorization"),
       requestUrl: c.req.url,
       batch: 4,
       budgetMs: 50_000,
+      lanes: [syncLane],
     });
   }
   return c.json({
