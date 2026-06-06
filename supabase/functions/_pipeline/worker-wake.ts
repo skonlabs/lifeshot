@@ -12,6 +12,7 @@ export interface WorkerDrainOptions {
   batch?: number;
   budgetMs?: number;
   lanes?: string[];
+  background?: boolean;
 }
 
 export function getWorkerWakeHeaders(authHeader?: string | null): HeadersInit {
@@ -103,7 +104,7 @@ export async function nudgeWorkerDrain(opts: WorkerDrainOptions = {}): Promise<v
   })();
 
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
-  if (edgeRuntime?.waitUntil) {
+  if (opts.background !== false && edgeRuntime?.waitUntil) {
     edgeRuntime.waitUntil(task);
     return;
   }
