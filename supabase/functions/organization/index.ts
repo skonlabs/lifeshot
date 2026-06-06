@@ -213,6 +213,7 @@ app.get("/people", async (c) => {
   }))).filter((person: any) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
     if (!(person.asset_count > 0)) return false;
+    if (!person.cover?.thumbnail_url) return false;
     const bb = person.cover?.face_bbox;
     return !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
   }).filter((person: any, index: number, arr: any[]) => {
