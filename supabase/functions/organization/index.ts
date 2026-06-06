@@ -235,6 +235,8 @@ app.get("/places", async (c) => {
       asset_count: counts[p.id] ?? 0,
       latest_asset_id: latestAssetByPlace[p.id]?.asset_id ?? null,
       latest_capture_time: latestAssetByPlace[p.id]?.capture_time ?? null,
+      city: p.name ?? null,
+      country: p.country ?? null,
       label: [p.name, p.country].filter(Boolean).join(", "),
     }))
     .filter((p: any) => p.asset_count > 0)
