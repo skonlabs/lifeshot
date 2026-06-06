@@ -43,24 +43,14 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
         />
       )}
       {d.thumbnail_url && (
-        <>
-          <img
-            src={d.thumbnail_url}
-            alt=""
-            aria-hidden="true"
-            loading="lazy"
-            decoding="async"
-            className={`absolute inset-0 h-full w-full scale-110 object-cover object-center blur-xl transition-opacity duration-300 ${loaded ? "opacity-45" : "opacity-0"}`}
-          />
-          <img
-            src={d.thumbnail_url}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setLoaded(true)}
-            className={`absolute inset-0 h-full w-full object-contain object-center transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
-          />
-        </>
+        <img
+          src={d.thumbnail_url}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          className={`absolute inset-0 h-full w-full object-cover object-center transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+        />
       )}
       {d.source_badge && (
         <span className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
