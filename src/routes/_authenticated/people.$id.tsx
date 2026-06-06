@@ -29,7 +29,7 @@ function Person() {
         <header className="hairline-b mb-6 pb-4">
           <span className="text-archive-label">a person in your archive</span>
           <h1 className="mt-1 font-serif-display text-4xl text-[color:var(--ink)]">{displayName}</h1>
-          <p className="mt-1 text-sm text-[color:var(--umber)]">{totalCount} memories indexed</p>
+          <p className="mt-1 text-sm text-[color:var(--umber)]">{totalCount} photo{totalCount === 1 ? "" : "s"}</p>
         </header>
       )}
       <section className="hairline mb-8 rounded-md border bg-[color:var(--paper)] p-4">
@@ -52,7 +52,7 @@ function Person() {
         </form>
       </section>
       <section>
-        <div className="text-archive-label mb-3">Memories of {displayName}</div>
+        <div className="text-archive-label mb-3">Photos of {displayName}</div>
         {viewport.isLoading ? (
           <div className="grid grid-cols-4 gap-2 md:grid-cols-6">
             {Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="aspect-square rounded-md" />)}
@@ -64,7 +64,7 @@ function Person() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-[color:var(--umber)]">No memories yet for this person.</p>
+          <p className="text-sm text-[color:var(--umber)]">No photos yet for this person.</p>
         )}
       </section>
     </div>
