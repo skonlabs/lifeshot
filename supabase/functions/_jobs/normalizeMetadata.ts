@@ -436,12 +436,12 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // as a fallback) after enrichment data is available — see those handlers.
   // clusterPeople / clusterPlaces / detectEvents are coalesced to one run per user
   // per day instead of one run per asset.
-  const today = new Date().toISOString().slice(0, 10);
-  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${today}` });
+  const clusteringKey = sync_run_id ?? force_sync_run_id ?? new Date().toISOString().slice(0, 13);
+  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${clusteringKey}` });
   if (hasGpsData) {
-    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `places:${asset.user_id}:${today}` });
+    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `places:${asset.user_id}:${clusteringKey}` });
   }
-  await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${today}` });
+  await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${clusteringKey}` });
 
   if (source_account_id) {
     try {

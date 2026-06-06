@@ -480,11 +480,25 @@ app.get("/v1/:id/status", async (c) => {
   // Keep queue state and persisted sync-job state aligned to the same job when
   // possible. Previously we mixed the latest queued job status with a different
   // source_sync_jobs row, which could leave the UI stuck on stale stats.
+  const queuePayload = queueJob?.payload && typeof queueJob.payload === "object"
+    ? queueJob.payload as Record<string, unknown>
+    : {};
+  const queueSyncRunId = typeof queuePayload.sync_run_id === "string" ? queuePayload.sync_run_id : null;
   const queueMatchedPersistedJob = queueJob?.id
     ? await svc.from("source_sync_jobs").select("*").eq("id", queueJob.id).maybeSingle()
     : null;
   if (queueMatchedPersistedJob?.error) throw new ApiError("internal", queueMatchedPersistedJob.error.message);
-  const matchingPersistedJob = queueMatchedPersistedJob?.data ?? null;
+  const queueMatchedBySyncRun = !queueMatchedPersistedJob?.data && queueSyncRunId
+    ? await svc.from("source_sync_jobs")
+      .select("*")
+      .eq("source_account_id", id)
+      .contains("stats", { sync_run_id: queueSyncRunId })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    : null;
+  if (queueMatchedBySyncRun?.error) throw new ApiError("internal", queueMatchedBySyncRun.error.message);
+  const matchingPersistedJob = queueMatchedPersistedJob?.data ?? queueMatchedBySyncRun?.data ?? null;
   const statsSource = matchingPersistedJob ?? lastJob;
   const persistedJobStats = (statsSource?.stats && typeof statsSource.stats === "object")
     ? (statsSource.stats as Record<string, unknown>)
@@ -496,7 +510,6 @@ app.get("/v1/:id/status", async (c) => {
     /cancelled by user/i.test(queueJobError ?? "");
   const persistedIndexed = Number(persistedJobStats.indexed ?? 0);
   const persistedDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0);
-  const selectionDiscovered = Math.max(persistedDiscovered, indexed);
   const queueLooksStale = isStaleSyncQueueState({
     queueStatus: queueJob?.status ?? null,
     persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
@@ -510,10 +523,6 @@ app.get("/v1/:id/status", async (c) => {
     hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
-  const processingOnly = !queueLooksStale && !activeJob && lastJob?.status === "running" && (persistedJobStats.stage === "processing");
-  const effectiveJobStatus = cancelled
-    ? "cancelled"
-    : (processingOnly ? "running" : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null)));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
@@ -522,8 +531,19 @@ app.get("/v1/:id/status", async (c) => {
     queue_attempts: Number(queueJob.attempts ?? 0),
     queue_error: cancelled ? null : (queueJob.last_error ?? null),
   } : {};
-  const jobStats = { ...persistedJobStats, ...queueJobStats };
-  const persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
+  let jobStats = { ...persistedJobStats, ...queueJobStats };
+  let persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
+  const syncRunId = typeof jobStats.sync_run_id === "string" ? jobStats.sync_run_id : queueSyncRunId;
+  const activeNormalizeRes = await svc.from("job_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("job_name", "normalizeMetadata")
+    .in("status", ["pending", "running"])
+    .contains("payload", {
+      source_account_id: id,
+      ...(syncRunId ? { sync_run_id: syncRunId } : {}),
+    });
+  if (activeNormalizeRes.error) throw new ApiError("internal", activeNormalizeRes.error.message);
+  const activeNormalizeCount = activeNormalizeRes.count ?? 0;
   const hasLiveQueueProgress = !!queueJob && !queueLooksStale;
   const discovered = hasLiveQueueProgress
     ? Math.max(Number(jobStats.discovered ?? 0), 1)
@@ -534,14 +554,39 @@ app.get("/v1/:id/status", async (c) => {
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
   const accountRevoked = acc.status === "revoked";
   const unauthorized = accountRevoked || /unauthorized/i.test(lastErrorMessage ?? "");
-  const processingOnlyActive = !unauthorized && processingOnly;
+  const processingExhausted =
+    persistedStage === "processing" &&
+    !activeJob &&
+    activeNormalizeCount === 0 &&
+    lastJob?.status === "running";
+  if (processingExhausted && lastJob?.id) {
+    const now = new Date().toISOString();
+    jobStats = { ...jobStats, stage: "completed", normalized: Math.max(Number(jobStats.normalized ?? 0), Number(jobStats.processing_total ?? 0)) };
+    persistedStage = "completed";
+    await svc.from("source_sync_jobs").update({
+      status: "completed",
+      finished_at: lastJob.finished_at ?? now,
+      stats: jobStats,
+    }).eq("id", lastJob.id).eq("status", "running");
+    await svc.from("source_accounts").update({
+      status: "active",
+      last_synced_at: acc.last_synced_at ?? now,
+    }).eq("id", id).eq("status", "pending");
+  }
   const awaitingMetadataProcessing =
     persistedStage === "processing" &&
-    Number(jobStats.processing_total ?? 0) > Number(jobStats.normalized ?? 0);
+    activeNormalizeCount > 0;
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = processingOnlyActive || awaitingMetadataProcessing || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
+  const syncing = !unauthorized && (!!activeJob || awaitingMetadataProcessing);
+  const effectiveJobStatus = cancelled
+    ? "cancelled"
+    : (syncing
+      ? (activeJob?.status ?? "running")
+      : (processingExhausted
+        ? "completed"
+        : (queueLooksStale ? (lastJob?.status ?? "completed") : (latestQueueJob?.status ?? lastJob?.status ?? null))));
   const accountStatus = accountRevoked
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));

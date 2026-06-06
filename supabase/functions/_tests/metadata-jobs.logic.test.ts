@@ -210,6 +210,24 @@ describe("metadata pipeline invariants", () => {
     expect(perAssetJobs).not.toContain("embedAsset");
   });
 
+  it("rekeys coalesced library jobs by sync run so same-day force syncs are not deduped away", () => {
+    const buildKey = (userId: string, syncRunId?: string | null, forceSyncRunId?: string | null) => {
+      const clusteringKey = syncRunId ?? forceSyncRunId ?? "2026-06-06T16";
+      return {
+        people: `people:${userId}:${clusteringKey}`,
+        places: `places:${userId}:${clusteringKey}`,
+        events: `events:${userId}:${clusteringKey}`,
+      };
+    };
+
+    expect(buildKey("u1", "run-a", null)).toEqual({
+      people: "people:u1:run-a",
+      places: "places:u1:run-a",
+      events: "events:u1:run-a",
+    });
+    expect(buildKey("u1", "run-b", null).people).not.toBe(buildKey("u1", "run-a", null).people);
+  });
+
   it("counts places from asset_locations instead of event_places", () => {
     const locations = [
       { place_id: "p1", asset_id: "a1" },
