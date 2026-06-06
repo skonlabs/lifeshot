@@ -26,6 +26,15 @@ describe("getWorkerWakeHeaders", () => {
     expect(url).toBe("https://vohevknnbvpaooletyts.supabase.co/functions/v1/worker/drain?batch=12&budget_ms=50000&lanes=ingest");
   });
 
+  it("supports nudging multiple lanes without dropping the ingest lane", () => {
+    const url = getWorkerDrainUrl({
+      supabaseUrl: "https://vohevknnbvpaooletyts.supabase.co",
+      lanes: ["user", "ingest"],
+    });
+
+    expect(url).toBe("https://vohevknnbvpaooletyts.supabase.co/functions/v1/worker/drain?batch=4&budget_ms=50000&lanes=user&lanes=ingest");
+  });
+
   it("ignores non-Supabase project URLs when building drain URLs", () => {
     const url = getWorkerDrainUrl({
       requestUrl: "https://lifeshot.lovable.app/sources",
