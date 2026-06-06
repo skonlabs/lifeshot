@@ -34,7 +34,7 @@ function Dashboard() {
         <div className="col-span-12 md:col-span-7">
           <span className="text-archive-label">no. 001 — today's atlas</span>
           <h1 className="mt-3 font-serif-display text-5xl leading-[1.05] text-[color:var(--ink)] md:text-6xl">
-            Your memories,<br/>
+            Your photos,<br/>
             <span className="italic text-[color:var(--umber)]">made navigable.</span>
           </h1>
           <p className="mt-4 max-w-lg text-[15px] leading-relaxed text-[color:var(--umber)]">
@@ -43,7 +43,7 @@ function Dashboard() {
           </p>
           <div className="mt-6 flex flex-wrap gap-2">
             <Link to="/search" className="inline-flex items-center gap-1 rounded-full bg-[color:var(--ink)] px-4 py-2 text-[13px] font-medium text-[color:var(--paper)] hover:bg-[color:var(--umber)]">
-              <Sparkles className="h-3.5 w-3.5" /> Recall a memory
+              <Sparkles className="h-3.5 w-3.5" /> Search your photos
             </Link>
             <Link to="/sources" className="inline-flex items-center gap-1 rounded-full border border-[color:var(--ink)] px-4 py-2 text-[13px] font-medium text-[color:var(--ink)] hover:bg-[color:var(--paper-2)]">
               <Plug className="h-3.5 w-3.5" /> Connect a source
@@ -61,7 +61,7 @@ function Dashboard() {
                 <AssetCell d={featured} style={{ position: "absolute", inset: 0, borderRadius: 0 }} />
               ) : (
                 <div className="absolute inset-0 grid place-items-center text-center text-xs text-[color:var(--umber)]">
-                  Connect a source to surface a featured memory.
+                  Connect a source to surface a featured photo.
                 </div>
               )}
               <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-[color:var(--ink)]/70 to-transparent p-4">
@@ -77,7 +77,7 @@ function Dashboard() {
 
       {/* Bento: stats + lenses */}
       <section className="grid grid-cols-12 gap-3 py-8">
-        <Stat title="Indexed memories" value={assetCount.data?.count ?? d?.total_assets} accent />
+        <Stat title="Photos indexed" value={assetCount.data?.count ?? d?.total_assets} accent />
         <Stat title="At risk" value={d?.at_risk} href="/sources" />
         <Stat title="Duplicate groups" value={d?.duplicate_groups} href="/duplicates" />
         <Stat title="People" value={people.data?.people?.length} href="/people" icon={Users} />
@@ -137,7 +137,7 @@ function Dashboard() {
               })}
             </ul>
           ) : (
-            <p className="text-sm text-[color:var(--umber)]">No memories indexed yet.</p>
+            <p className="text-sm text-[color:var(--umber)]">No photos indexed yet.</p>
           )}
         </aside>
       </section>
@@ -146,7 +146,7 @@ function Dashboard() {
       <section className="hairline-t grid grid-cols-12 gap-6 py-8">
         <div className="col-span-12 lg:col-span-5">
           <span className="text-archive-label">connected sources</span>
-          <h2 className="mt-1 font-display text-2xl text-[color:var(--ink)]">Where memories live</h2>
+          <h2 className="mt-1 font-display text-2xl text-[color:var(--ink)]">Where photos live</h2>
           <p className="mt-2 text-sm text-[color:var(--umber)]">
             Each source remains the source of truth. We keep only a reference and a thumbnail.
           </p>
