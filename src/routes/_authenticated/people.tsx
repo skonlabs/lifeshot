@@ -25,38 +25,80 @@ function People() {
         </div>
       )}
       {isLoading ? (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-          {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="aspect-[4/5] rounded-md" />)}
+        <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
+          {Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="aspect-square rounded-full" />)}
         </div>
       ) : people.length === 0 && !faceOff ? (
         <div className="hairline rounded-md border border-dashed bg-[color:var(--paper)] py-16 text-center text-sm text-[color:var(--umber)]">
           No people clustered yet — sync a source to begin.
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="grid grid-cols-3 gap-4 md:grid-cols-6">
           {people.map((p) => (
             <Link key={p.id} to="/people/$id" params={{ id: p.id }}
-              className="hairline group block overflow-hidden rounded-md border bg-[color:var(--paper)] transition-colors hover:bg-[color:var(--paper-2)]">
-              <div className="aspect-[4/5] bg-[color:var(--paper-2)]">
-                {p.cover ? (
-                  <div className="h-full w-full">
-                    <img src={p.cover.thumbnail_url ?? undefined} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
-                  </div>
-                ) : (
-                  <div className="grid h-full place-items-center text-[color:var(--umber)]">
-                    <UserRound className="h-12 w-12" strokeWidth={1.2} />
-                  </div>
-                )}
-              </div>
-              <div className="p-3">
-                <div className="truncate font-medium text-[color:var(--ink)]">{p.display_name ?? "Unknown"}</div>
-                <div className="text-xs text-[color:var(--umber)]">{p.asset_count} memories</div>
-                {p.consent_required && <div className="mt-1 text-[10px] uppercase tracking-wider text-amber-700">Consent required</div>}
-              </div>
+              className="group block text-center">
+              <FaceAvatar cover={p.cover} />
+              <div className="mt-2 truncate text-sm font-medium text-[color:var(--ink)]">{p.display_name ?? "Unknown"}</div>
+              <div className="text-xs text-[color:var(--umber)]">{p.asset_count} photo{p.asset_count === 1 ? "" : "s"}</div>
             </Link>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+type Bbox = { x: number; y: number; w: number; h: number } | null;
+type Cover = { thumbnail_url: string | null; face_bbox?: Bbox } | null;
+
+/**
+ * Renders a circular face crop from the cover asset's thumbnail.
+ * Uses CSS background-position+size to crop the face_bbox region into a
+ * round avatar without needing a server-side face thumbnail.
+ * bbox is expected in normalized [0..1] coordinates.
+ */
+function FaceAvatar({ cover }: { cover: Cover }) {
+  if (!cover?.thumbnail_url) {
+    return (
+      <div className="mx-auto grid aspect-square w-full place-items-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
+        <UserRound className="h-10 w-10" strokeWidth={1.2} />
+      </div>
+    );
+  }
+  const bb = cover.face_bbox;
+  let style: React.CSSProperties = {
+    backgroundImage: `url(${cover.thumbnail_url})`,
+    backgroundSize: "cover",
+    backgroundPosition: "center top",
+  };
+  if (bb && bb.w > 0 && bb.h > 0) {
+    // Pad the bbox a bit so the crop includes hair/chin, then convert to
+    // CSS background-size/position so the bbox fills the round avatar.
+    const pad = 0.35;
+    const cx = bb.x + bb.w / 2;
+    const cy = bb.y + bb.h / 2;
+    const size = Math.min(1, Math.max(bb.w, bb.h) * (1 + pad));
+    const scale = 1 / size; // how much to zoom the image so the crop fills 100%
+    const bgPctX = ((cx - size / 2) / (1 - size || 1)) * 100;
+    const bgPctY = ((cy - size / 2) / (1 - size || 1)) * 100;
+    style = {
+      backgroundImage: `url(${cover.thumbnail_url})`,
+      backgroundSize: `${scale * 100}% ${scale * 100}%`,
+      backgroundPosition: `${clamp(bgPctX, 0, 100)}% ${clamp(bgPctY, 0, 100)}%`,
+      backgroundRepeat: "no-repeat",
+    };
+  }
+  return (
+    <div
+      className="hairline mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]"
+      style={style}
+      role="img"
+      aria-label="Face thumbnail"
+    />
+  );
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  if (!Number.isFinite(n)) return 50;
+  return Math.min(hi, Math.max(lo, n));
 }
