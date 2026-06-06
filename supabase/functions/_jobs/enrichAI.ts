@@ -108,16 +108,37 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // Record the failure but do not throw — enrichment is best-effort.
   }
 
-  // Face detection now runs in the browser via face-api.js (see src/lib/face).
-  // Browser calls organization /face-scan/submit which writes faces into this
-  // table. We must not overwrite that field here — read existing faces and
-  // pass them through unchanged.
-  const { data: existingEnrich } = await sb
-    .from("asset_ai_enrichment")
-    .select("faces")
-    .eq("asset_id", asset_id)
-    .maybeSingle();
-  const faces = Array.isArray(existingEnrich?.faces) ? existingEnrich!.faces : [];
+  // Face detection — runs server-side via AWS Rekognition when:
+  //  (a) the user has opted in to biometric processing, and
+  //  (b) the faceDetector provider is installed (AWS keys configured).
+  // Gracefully skipped (faces=[]) when either condition is false.
+  let faces: Array<Record<string, unknown>> = [];
+  let faceScanned = false;
+  try {
+    const { data: privacy } = await sb
+      .from("privacy_settings")
+      .select("face_processing_enabled")
+      .eq("user_id", asset.user_id)
+      .maybeSingle();
+    if (privacy?.face_processing_enabled) {
+      const detected = await providers.faceDetector.detectFaces({
+        url,
+        userId: asset.user_id,
+        assetId: asset_id,
+      });
+      faceScanned = true;
+      faces = detected.map((f) => ({
+        bbox: f.bbox,
+        score: f.confidence,
+        description: f.description,
+        embedding: f.embedding,
+        face_id: f.face_id,
+        face_crop: null,
+      }));
+    }
+  } catch (e: any) {
+    console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
+  }
 
   await sb.from("asset_ai_enrichment").upsert({
     asset_id,
@@ -128,6 +149,21 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     faces,
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
+
+  // Mark the asset as face-scanned so it isn't reprocessed.
+  if (faceScanned) {
+    await sb.from("assets")
+      .update({ face_scanned_at: new Date().toISOString() })
+      .eq("id", asset_id);
+
+    if (faces.length > 0) {
+      await enqueueJob("clusterPeople", {
+        userId: ctx.userId,
+        payload: { user_id: asset.user_id, asset_id },
+        idempotencyKey: `cluster:${asset_id}:${Date.now()}`,
+      });
+    }
+  }
 
   if (error) {
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${error}`);
