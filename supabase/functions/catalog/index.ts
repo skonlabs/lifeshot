@@ -223,10 +223,52 @@ app.get("/dashboard", async (c) => {
   await enforceRateLimit(uid, "general");
   const hit = await cache.get<any>(c, keys.dashboard(uid));
   if (hit) return c.json({ ...hit, cache: { hit: true } });
-  const { data, error } = await supa.rpc("get_dashboard_counts");
-  if (error) throw new ApiError("internal", error.message);
+
+  const [assetsRes, dupesRes, sourceRefsRes] = await Promise.all([
+    supa.from("assets")
+      .select("id, capture_time, source_count")
+      .eq("deleted_state", "active"),
+    supa.from("duplicate_groups")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "open"),
+    supa.from("asset_source_refs")
+      .select("asset_id, account:source_accounts(provider:source_providers(kind))"),
+  ]);
+  if (assetsRes.error) throw new ApiError("internal", assetsRes.error.message);
+  if (dupesRes.error) throw new ApiError("internal", dupesRes.error.message);
+  if (sourceRefsRes.error) throw new ApiError("internal", sourceRefsRes.error.message);
+
+  const assets = assetsRes.data ?? [];
+  const total_assets = assets.length;
+  const at_risk = assets.filter((asset: any) => (asset.source_count ?? 0) <= 1).length;
+
+  const per_year: Record<string, number> = {};
+  for (const asset of assets) {
+    if (!asset.capture_time) continue;
+    const year = new Date(asset.capture_time).getUTCFullYear();
+    if (!Number.isFinite(year)) continue;
+    per_year[String(year)] = (per_year[String(year)] ?? 0) + 1;
+  }
+
+  const activeIds = new Set(assets.map((asset: any) => asset.id));
+  const perSourceSets = new Map<string, Set<string>>();
+  for (const row of sourceRefsRes.data ?? []) {
+    if (!activeIds.has(row.asset_id)) continue;
+    const kind = row.account?.provider?.kind ?? "unknown";
+    if (!perSourceSets.has(kind)) perSourceSets.set(kind, new Set());
+    perSourceSets.get(kind)!.add(row.asset_id);
+  }
+  const per_source = Object.fromEntries(Array.from(perSourceSets.entries()).map(([kind, ids]) => [kind, ids.size]));
+
+  const data = {
+    total_assets,
+    at_risk,
+    duplicate_groups: dupesRes.count ?? 0,
+    per_year,
+    per_source,
+  };
   await cache.set(c, keys.dashboard(uid), data, 60, uid);
-  return c.json({ ...(data as any), cache: { hit: false } });
+  return c.json({ ...data, cache: { hit: false } });
 });
 
 Deno.serve(app.fetch);
