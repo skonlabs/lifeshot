@@ -1,13 +1,10 @@
 -- Switch face detection pipeline to client-side face-api.js (128-d descriptors).
+-- Disable triggers to avoid touching legacy tables (e.g. asset_labels) that no
+-- longer exist in this DB but are still referenced by old triggers.
+set session_replication_role = replica;
 delete from public.person_faces;
 delete from public.people;
-
-do $$
-begin
-  if exists (select 1 from information_schema.tables where table_schema='public' and table_name='asset_ai_enrichment') then
-    execute 'update public.asset_ai_enrichment set faces = ''[]''::jsonb where faces is not null';
-  end if;
-end$$;
+set session_replication_role = default;
 
 drop index if exists public.idx_person_faces_hnsw;
 alter table public.person_faces alter column face_vector type vector(128) using null;
