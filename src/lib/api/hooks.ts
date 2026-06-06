@@ -552,7 +552,7 @@ export function useConfirmDuplicate() {
 export function usePeople() {
   return useQuery({
     queryKey: ["people"],
-    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean }> }>("/people"),
+    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; hydration_status: "pending" | "ready" } | null }> }>("/people"),
   });
 }
 
