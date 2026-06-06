@@ -86,7 +86,7 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
   function mapItem(it: any): AssetRecord {
     const meta = it.mediaMetadata ?? {};
     const isVideo = !!meta.video;
-    const baseUrl = it.baseUrl ? `${it.baseUrl}=w1024-h1024-c` : undefined;
+    const baseUrl = it.baseUrl ? `${it.baseUrl}=w1024-h1024` : undefined;
     return {
       provider_asset_id: it.id,
       media_type: isVideo ? "video" : "image",
@@ -162,7 +162,7 @@ export const googlePhotosFactory = (ctx: ConnectorContext, supabase: any): Sourc
     getThumbnail: async (id) => {
       const r = await call(`/mediaItems/${id}`);
       const it = await r.json();
-      return { url: `${it.baseUrl}=w1024-h1024-c` };
+      return { url: `${it.baseUrl}=w1024-h1024` };
     },
     getPreview: async (id) => {
       const r = await call(`/mediaItems/${id}`);
