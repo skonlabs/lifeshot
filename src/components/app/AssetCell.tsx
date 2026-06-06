@@ -49,7 +49,7 @@ export function AssetCell({ d, style, disableLink }: { d: Descriptor; style?: Re
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}
-          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
         />
       )}
       {d.source_badge && (
