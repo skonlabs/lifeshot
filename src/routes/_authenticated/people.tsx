@@ -118,12 +118,30 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const bb = cover?.face_bbox;
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
   const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
-  // Without a usable bbox we can't isolate the face, so show a neutral
-  // placeholder instead of leaking the entire source photo into the avatar.
-  if (!cover?.thumbnail_url || !hasUsableBbox) {
+  const knownDims = !!(cover?.width && cover?.height && cover.width > 0 && cover.height > 0);
+  const [imgFailed, setImgFailed] = useState(false);
+  if (!cover?.thumbnail_url || imgFailed) {
     return (
       <div className="mx-auto grid aspect-square w-full place-items-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
         <UserRound className="h-10 w-10" strokeWidth={1.2} />
+      </div>
+    );
+  }
+  // Fallback: when we don't have a usable bbox OR we don't know the source
+  // image's pixel dimensions, render the thumbnail as a centered cover crop
+  // inside the circle instead of trying to compute a broken zoom transform
+  // (which would push the image off-screen and leave an empty placeholder).
+  if (!hasUsableBbox || !knownDims) {
+    return (
+      <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
+        <img
+          src={cover.thumbnail_url}
+          alt=""
+          loading="eager"
+          decoding="async"
+          onError={() => setImgFailed(true)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
       </div>
     );
   }
@@ -156,7 +174,15 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       role="img"
       aria-label="Face thumbnail"
     >
-      <img src={cover.thumbnail_url} alt="" loading="lazy" decoding="async" className="absolute" style={imageStyle} />
+      <img
+        src={cover.thumbnail_url}
+        alt=""
+        loading="eager"
+        decoding="async"
+        onError={() => setImgFailed(true)}
+        className="absolute"
+        style={imageStyle}
+      />
     </div>
   );
 }

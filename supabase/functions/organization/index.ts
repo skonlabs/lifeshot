@@ -194,8 +194,8 @@ app.get("/people", async (c) => {
         supa,
         uid,
         coverAssetId,
-        preview?.preview_cache_key ?? preview?.thumbnail_cache_key ?? asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null,
-        "preview",
+        preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key ?? preview?.preview_cache_key ?? asset.proxy_cache_key ?? null,
+        "thumb",
       ),
       blurhash: preview?.blurhash ?? asset.blurhash ?? null,
       dominant_color: preview?.dominant_color ?? asset.dominant_color ?? null,
@@ -214,8 +214,7 @@ app.get("/people", async (c) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
     if (!(person.asset_count > 0)) return false;
     if (!person.cover?.thumbnail_url) return false;
-    const bb = person.cover?.face_bbox;
-    return !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
+    return true;
   }).filter((person: any, index: number, arr: any[]) => {
     const signature = signatureMap[person.id] ?? null;
     if (!signature) return true;
