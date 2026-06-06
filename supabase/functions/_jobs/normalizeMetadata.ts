@@ -433,14 +433,15 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
   await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
-  await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}${forceSuffix}` });
-  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `people:${asset_id}${forceSuffix}` });
-  if (hasGpsData) {
-    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
-  }
-  // Trigger event detection so moments/stories update as assets are normalized.
-  // Daily bucket prevents duplicate runs while still re-clustering once per day.
+  // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
+  // as a fallback) after enrichment data is available — see those handlers.
+  // clusterPeople / clusterPlaces / detectEvents are coalesced to one run per user
+  // per day (not per asset) — they re-cluster the whole archive each time.
   const today = new Date().toISOString().slice(0, 10);
+  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${today}` });
+  if (hasGpsData) {
+    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `places:${asset.user_id}:${today}` });
+  }
   await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${today}` });
 
   if (source_account_id) {
