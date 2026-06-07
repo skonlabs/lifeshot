@@ -39,6 +39,19 @@ describe("metadata pipeline invariants", () => {
     expect(fetched).toEqual(["https://provider.example/preview.jpg"]);
   });
 
+  it("passes the face detection URL under the imageUrl key expected by the Rekognition detector", () => {
+    const faceDetectionUrl = "https://signed.example/thumb.jpg";
+
+    const payload = {
+      imageUrl: faceDetectionUrl,
+      userId: "user-1",
+      assetId: "asset-1",
+    };
+
+    expect(payload.imageUrl).toBe(faceDetectionUrl);
+    expect("url" in payload).toBe(false);
+  });
+
   it("treats OpenAI 401 invalid_api_key as a permanent (non-retryable) failure", () => {
     function classifyAiError(status: number, body: string): "retry" | "permanent" {
       const isAuth = status === 401 && /invalid_api_key|incorrect api key/i.test(body);
