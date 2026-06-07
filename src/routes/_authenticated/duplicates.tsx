@@ -33,10 +33,10 @@ function Duplicates() {
                 </div>
                 <div className="flex gap-2">
                   <button
-                    disabled={!g.recommended_primary_asset_id}
-                    title={g.recommended_primary_asset_id ? "Keep the recommended primary" : "No primary recommendation yet"}
+                    disabled={!g.canonical_asset_id}
+                    title={g.canonical_asset_id ? "Keep the recommended primary" : "No primary recommendation yet"}
                     onClick={() => confirm.mutate(
-                      { id: g.id, body: { action: "keep_primary", primary_asset_id: g.recommended_primary_asset_id ?? undefined } },
+                      { id: g.id, body: { action: "keep_primary", primary_asset_id: g.canonical_asset_id ?? undefined } },
                       { onSuccess: () => toast.success("Primary kept"), onError: (e) => toast.error((e as Error).message) },
                     )}
                     className="rounded-full bg-[color:var(--ink)] px-3 py-1.5 text-xs text-[color:var(--paper)] disabled:opacity-40"
