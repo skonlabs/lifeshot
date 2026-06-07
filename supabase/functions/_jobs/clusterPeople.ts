@@ -125,6 +125,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         bbox: entry.bbox,
         confidence: entry.confidence,
         rekognition_face_id: entry.face_id,
+        rekognition_response: entry.attributes,
       }, { onConflict: "person_id,asset_id" });
       if (!upErr) clusteredFaces++;
       continue;
@@ -173,6 +174,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       bbox: entry.bbox,
       confidence: entry.confidence,
       rekognition_face_id: entry.face_id,
+      rekognition_response: entry.attributes,
     }, { onConflict: "person_id,asset_id" });
     if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
     else {
