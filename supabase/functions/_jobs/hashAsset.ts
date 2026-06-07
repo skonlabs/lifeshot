@@ -99,19 +99,12 @@ export async function hashAsset(ctx: JobContext): Promise<unknown> {
     hashError = "unknown file size";
   }
 
+  // asset_hashes was dropped in B-NUKE; sha256 + phash now live directly on
+  // public.assets. quick_hash is no longer persisted (only used internally
+  // for dedup ordering, which uses checksum_hash now).
   if (fullHash) {
     await sb.from("assets").update({ checksum_hash: fullHash }).eq("id", asset_id);
   }
-
-  await sb.from("asset_hashes").upsert({
-    asset_id, user_id: asset.user_id,
-    file_hash_sha256: fullHash,
-    quick_hash: quickHash,
-    hash_algorithm: "sha-256",
-    hash_status: hashStatus,
-    hash_error: hashError,
-    hash_created_at: new Date().toISOString(),
-  }, { onConflict: "asset_id" });
 
   // Trigger dedup only when we have a real content hash to compare on.
   if (fullHash) {

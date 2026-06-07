@@ -107,7 +107,8 @@ app.post("/cron/incremental-sync", async (c) => {
 /** Cron: sweep dead-letter and stuck jobs reports. */
 app.post("/cron/dead-letter-sweep", async (c) => {
   const sb = serviceClient();
-  const { count } = await sb.from("dead_letter_jobs").select("id", { count: "exact", head: true });
+  // dead_letter_jobs was dropped in B-NUKE; failed jobs now stay in job_queue.
+  const { count } = await sb.from("job_queue").select("id", { count: "exact", head: true }).eq("status", "failed");
   await sb.rpc("sweep_stuck_jobs", { _stale_seconds: 600 });
   logger.info("dead_letter_summary", { count });
   return c.json({ dead_letter: count ?? 0 });
