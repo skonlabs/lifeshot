@@ -386,7 +386,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   } catch (e) {
     if (e instanceof ConnectorAuthError) {
       await failSyncJob(sb, source_account_id, progressJobId, "source_connector_auth_failed", e.message, { stage: "list", provider_kind: providerKind, mode });
-      await sb.from("source_accounts").update({ status: "revoked" }).eq("id", source_account_id);
+      // Do NOT flip to 'revoked' on a single auth failure — that hides the
+      // source from the Connected list. failSyncJob already records the
+      // error and sets status='error' so the UI can prompt the user to
+      // re-authorize while keeping the source visible.
       throw new Error(e.message);
     }
     if (e instanceof ConnectorRateLimitError) {
