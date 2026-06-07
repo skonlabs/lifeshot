@@ -1,7 +1,6 @@
 -- Reset face_scanned_at for assets that were marked scanned while
--- Rekognition was not configured (their asset_ai_enrichment.faces is empty
--- and no person_faces row exists). They will be retried by enrichAI now
--- that the gate also checks rekognitionConfigured() before marking scanned.
+-- Rekognition was not configured. Their faces array is empty and they
+-- will never be retried unless we clear the marker.
 update public.assets a
 set face_scanned_at = null
 where a.face_scanned_at is not null
@@ -12,12 +11,12 @@ where a.face_scanned_at is not null
       and jsonb_array_length(e.faces) > 0
   );
 
--- Re-enqueue enrichAI for those assets via the job_queue (best-effort).
-insert into public.job_queue (id, user_id, job_name, payload, status, priority, idempotency_key, scheduled_at, lane, max_attempts)
-select gen_random_uuid(), a.user_id, 'enrichAI',
+-- Re-enqueue enrichAI for those assets. Unique on (user_id, job_name, idempotency_key).
+insert into public.job_queue (user_id, job_name, payload, status, priority, idempotency_key, scheduled_at, lane, max_attempts)
+select a.user_id, 'enrichAI',
        jsonb_build_object('asset_id', a.id), 'pending', 5,
        'ai:rescan:' || a.id, now(), 'default', 3
 from public.assets a
 where a.face_scanned_at is null
-  and a.media_type in ('photo','video','image')
-on conflict (idempotency_key) do nothing;
+  and a.media_type in ('photo','live_photo','animation')
+on conflict (user_id, job_name, idempotency_key) do nothing;
