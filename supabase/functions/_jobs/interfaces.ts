@@ -22,7 +22,7 @@ export interface Geocoder {
 }
 
 export interface FaceDetector {
-  detectFaces(input: { url: string; userId: string; assetId: string }): Promise<Array<{
+  detectFaces(input: { url?: string; imageUrl?: string; userId: string; assetId: string }): Promise<Array<{
     bbox: { x: number; y: number; w: number; h: number } | null;
     description: string;
     confidence: number;
