@@ -17,7 +17,11 @@ import { getConnector } from "../_sources/registry.ts";
 import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
 import { extractExifFromBytes, extractExifFromBytesRaw } from "../_extractors/exif.ts";
 
-const HEAD_BYTES = 384 * 1024;
+// Many JPEGs (esp. iPhone) place an embedded thumbnail BEFORE the GPS IFD,
+// pushing GPS past the first 384 KB. Bump to 2 MB so the first pass catches
+// GPS in the vast majority of files; if still missing we retry up to 8 MB.
+const HEAD_BYTES = 2 * 1024 * 1024;
+const HEAD_BYTES_RETRY = 8 * 1024 * 1024;
 
 async function nudgeWorkerDrain() {
   await wakeWorkerDrain({ batch: 4, budgetMs: 50_000 });
@@ -300,10 +304,26 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           source_account_id: ref.source_account_id, user_id: asset.user_id, provider_kind: providerKind,
         }, sb);
 
-        const head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
+        let head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
         console.log("normalizeMetadata phase2 head fetched", { asset_id, bytes: head?.bytes?.byteLength ?? 0 });
         if (head?.bytes?.byteLength) {
-          const ex = await extractExifFromBytes(head.bytes);
+          let ex = await extractExifFromBytes(head.bytes);
+          // GPS fallback: if no GPS yet and the file is larger than our first
+          // window, fetch up to HEAD_BYTES_RETRY and re-parse. This unblocks
+          // GPS extraction for Dropbox-hosted iPhone JPEGs where GPS sits
+          // beyond the embedded thumbnail.
+          if ((!ex.gps?.latitude || !ex.gps?.longitude) &&
+              (head.totalSize == null || head.totalSize > head.bytes.byteLength) &&
+              head.bytes.byteLength < HEAD_BYTES_RETRY) {
+            const bigger = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES_RETRY);
+            if (bigger?.bytes?.byteLength && bigger.bytes.byteLength > head.bytes.byteLength) {
+              console.log("normalizeMetadata phase2 GPS retry with larger range", {
+                asset_id, first: head.bytes.byteLength, retry: bigger.bytes.byteLength,
+              });
+              head = bigger;
+              ex = await extractExifFromBytes(head.bytes);
+            }
+          }
           console.log("normalizeMetadata phase2 exif parsed", {
             asset_id,
             hasExif: !!ex.exif, hasGps: !!ex.gps, hasMedia: !!ex.media,
