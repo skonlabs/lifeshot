@@ -129,6 +129,19 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       place_name: placeName,
     }).eq("id", assetId);
 
+    // Mirror compact place blob onto asset_media_metadata.places so the
+    // library/asset detail view can read everything from one row.
+    await sb.from("asset_media_metadata").upsert({
+      asset_id: assetId, user_id: uid,
+      places: {
+        place_id: placeId,
+        place_name: placeName,
+        city: geo.admin ?? null,
+        country: geo.country ?? null,
+        lat, lng,
+      },
+    }, { onConflict: "asset_id" });
+
     affectedAssets.push(assetId);
     located++;
   }
