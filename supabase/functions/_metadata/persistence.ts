@@ -35,14 +35,11 @@ async function findOrCreateAsset(
       .eq("source_asset_id", rec.source.sourceAssetId)
       .maybeSingle();
     if (ref?.asset_id) return { assetId: ref.asset_id as string, created: false };
-  } else if (rec.fileSystem?.normalizedAbsolutePathHash) {
-    const { data: existing } = await svc.from("asset_file_metadata")
-      .select("asset_id")
-      .eq("user_id", userId)
-      .eq("normalized_absolute_path_hash", rec.fileSystem.normalizedAbsolutePathHash)
-      .maybeSingle();
-    if (existing?.asset_id) return { assetId: existing.asset_id as string, created: false };
   }
+  // asset_file_metadata path-hash lookup was removed when that table was
+  // dropped in the B-NUKE consolidation. Local/browser scans without a
+  // source_account_id now always create a new asset (idempotency handled by
+  // checksum_hash dedup downstream).
 
   const { data: created, error } = await svc.from("assets").insert({
     user_id: userId,
@@ -54,8 +51,12 @@ async function findOrCreateAsset(
     height: rec.media?.height ?? null,
     duration_ms: rec.media?.durationMs ?? null,
     file_size_bytes: rec.fileSystem?.fileSizeBytes ?? null,
+    filename: rec.fileSystem?.filename ?? null,
+    relative_path: rec.fileSystem?.relativePath ?? null,
+    parent_folder_path: rec.fileSystem?.parentFolderPath ?? null,
     checksum_hash: rec.hashes?.fileHashSha256 ?? null,
     perceptual_hash: rec.hashes?.perceptualHashImage ?? null,
+    video_fingerprint: rec.hashes?.videoFingerprint ?? null,
     device_make: rec.exif?.cameraMake ?? rec.exif?.exifMake ?? null,
     device_model: rec.exif?.cameraModel ?? rec.exif?.exifModel ?? null,
     status: "ingested",
@@ -112,27 +113,13 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
 
   if (rec.fileSystem) {
     const f = rec.fileSystem;
-    await upsertOne(svc, "asset_file_metadata", {
-      ...base,
-      absolute_path_redacted: f.absolutePathRedacted,
-      normalized_absolute_path_hash: f.normalizedAbsolutePathHash,
-      relative_path: f.relativePath,
-      parent_folder_path: f.parentFolderPath,
-      root_path_hash: f.rootPathHash,
-      folder_depth: f.folderDepth,
-      filename: f.filename,
-      filename_without_extension: f.filenameWithoutExtension,
-      extension: f.extension,
-      normalized_extension: f.normalizedExtension,
-      detected_file_type: f.detectedFileType,
-      file_size_bytes: f.fileSizeBytes,
-      created_at_filesystem: f.createdAtFilesystem,
-      modified_at_filesystem: f.modifiedAtFilesystem,
-      accessed_at_filesystem: f.accessedAtFilesystem,
-      is_hidden: f.isHidden,
-      is_symlink: f.isSymlink,
-      scan_discovered_at: f.scanDiscoveredAt,
-    });
+    // asset_file_metadata dropped → filename / paths now on `assets` directly.
+    await svc.from("assets").update({
+      filename: f.filename ?? null,
+      relative_path: f.relativePath ?? null,
+      parent_folder_path: f.parentFolderPath ?? null,
+      file_size_bytes: f.fileSizeBytes ?? null,
+    }).eq("id", assetId);
   }
   if (rec.media) {
     const m = rec.media;
@@ -194,21 +181,7 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
       timezone_from_location: g.timezoneFromLocation,
     });
   }
-  if (rec.xmpIptc) {
-    const x = rec.xmpIptc;
-    await upsertOne(svc, "asset_xmp_iptc", {
-      ...base,
-      xmp_title: x.xmpTitle, xmp_description: x.xmpDescription,
-      xmp_creator: x.xmpCreator, xmp_rights: x.xmpRights,
-      xmp_keywords: x.xmpKeywords, xmp_rating: x.xmpRating,
-      iptc_caption: x.iptcCaption, iptc_headline: x.iptcHeadline,
-      iptc_keywords: x.iptcKeywords, iptc_byline: x.iptcByline,
-      iptc_credit: x.iptcCredit, iptc_source: x.iptcSource,
-      iptc_city: x.iptcCity, iptc_state: x.iptcState, iptc_country: x.iptcCountry,
-      iptc_subject_codes: x.iptcSubjectCodes,
-      raw: x.raw ?? {},
-    });
-  }
+  // asset_xmp_iptc was dropped in B-NUKE; XMP/IPTC fields are no longer persisted.
   if (rec.video) {
     const v = rec.video;
     await upsertOne(svc, "asset_video_metadata", {
@@ -245,59 +218,44 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
   }
   if (rec.hashes) {
     const h = rec.hashes;
-    await upsertOne(svc, "asset_hashes", {
-      ...base,
-      file_hash_sha256: h.fileHashSha256, quick_hash: h.quickHash, partial_hash: h.partialHash,
-      perceptual_hash_image: h.perceptualHashImage, video_fingerprint: h.videoFingerprint,
-      audio_fingerprint: h.audioFingerprint, text_hash: h.textHash,
-      hash_algorithm: h.hashAlgorithm, hash_status: h.hashStatus,
-      hash_error: h.hashError, hash_created_at: h.hashCreatedAt,
-    });
+    // asset_hashes dropped → sha256 / phash / video_fingerprint live on assets.
+    const patch: Record<string, unknown> = {};
+    if (h.fileHashSha256) patch.checksum_hash = h.fileHashSha256;
+    if (h.perceptualHashImage) patch.perceptual_hash = h.perceptualHashImage;
+    if (h.videoFingerprint) patch.video_fingerprint = h.videoFingerprint;
+    if (Object.keys(patch).length) await svc.from("assets").update(patch).eq("id", assetId);
   }
   if (rec.preview) {
     const p = rec.preview;
-    await upsertOne(svc, "asset_preview_metadata", {
+    // asset_preview_metadata dropped → blurhash/thumbnail cache key live on
+    // assets + asset_media_metadata.
+    const tk = p.thumbnailCacheKey ?? null;
+    const pk = p.previewCacheKey ?? null;
+    await upsertOne(svc, "asset_media_metadata", {
       ...base,
-      blurhash: p.blurhash, dominant_color: p.dominantColor, palette: p.palette,
-      thumbnail_generated: p.thumbnailGenerated, preview_generated: p.previewGenerated,
-      thumbnail_cache_key: p.thumbnailCacheKey, preview_cache_key: p.previewCacheKey,
+      blurhash: p.blurhash ?? null,
+      dominant_color: p.dominantColor ?? null,
+      palette: p.palette ?? null,
+      thumbnail_url: tk && /^https?:\/\//.test(tk) ? tk : null,
+      thumbnail_storage_path: tk && !/^https?:\/\//.test(tk) ? tk : null,
+      preview_url: pk && /^https?:\/\//.test(pk) ? pk : null,
+      preview_storage_path: pk && !/^https?:\/\//.test(pk) ? pk : null,
     });
   }
-  if (rec.aiReady) {
-    const ai = rec.aiReady;
-    await upsertOne(svc, "asset_ai_ready_metadata", {
-      ...base,
-      ai_processing_possible: ai.aiProcessingPossible,
-      ai_processing_consent: ai.aiProcessingConsent,
-      ocr_possible: ai.ocrPossible, ocr_status: ai.ocrStatus,
-      caption_status: ai.captionStatus, labels_status: ai.labelsStatus,
-      embedding_status: ai.embeddingStatus,
-      face_processing_possible: ai.faceProcessingPossible,
-      face_processing_consent: ai.faceProcessingConsent,
-    });
-  }
+  // asset_ai_ready_metadata was dropped → status is derived live from privacy_settings.
   if (rec.organization) {
     const o = rec.organization;
-    await upsertOne(svc, "asset_organization_signals", {
-      ...base,
-      folder_tokens: o.folderTokens, filename_tokens: o.filenameTokens,
-      date_hint: o.dateHint, year_hint: o.yearHint, month_hint: o.monthHint,
-      event_hint: o.eventHint, album_hint: o.albumHint, trip_hint: o.tripHint,
-      people_hint: o.peopleHint,
-      duplicate_status: o.duplicateStatus, duplicate_group_id: o.duplicateGroupId,
-    });
+    // asset_organization_signals dropped → tokens live on assets.
+    const patch: Record<string, unknown> = {};
+    if (o.folderTokens) patch.folder_tokens = o.folderTokens;
+    if (o.filenameTokens) patch.filename_tokens = o.filenameTokens;
+    if (o.duplicateGroupId) patch.duplicate_group_id = o.duplicateGroupId;
+    if (Object.keys(patch).length) await svc.from("assets").update(patch).eq("id", assetId);
   }
 
-  // Search document: prefer server-generated narrative.
+  // Search document: write directly to assets.search_content (trigger refreshes tsv).
   const doc = generateSearchDocument(rec);
-  try {
-    await svc.from("asset_search_documents").upsert({
-      asset_id: assetId,
-      user_id: userId,
-      content: doc,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" });
-  } catch (_e) { /* table may not exist in some envs */ }
+  await svc.from("assets").update({ search_content: doc }).eq("id", assetId);
 }
 
 export async function ingestBatch(
@@ -309,24 +267,9 @@ export async function ingestBatch(
 ): Promise<BatchSummary> {
   const start = Date.now();
 
-  // Idempotency: skip if already recorded.
-  const { data: existing } = await svc.from("scan_batches")
-    .select("id, status, asset_count").eq("scan_id", scanId)
-    .eq("idempotency_key", batch.idempotencyKey).maybeSingle();
-  if (existing && existing.status === "completed") {
-    return {
-      scanId, batchSequence: batch.batchSequence,
-      assetsUpserted: existing.asset_count ?? 0,
-      assetsSkipped: 0, errorsRecorded: 0,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  const { data: batchRow } = await svc.from("scan_batches").upsert({
-    scan_id: scanId, user_id: userId, batch_sequence: batch.batchSequence,
-    asset_count: batch.records.length, status: "processing",
-    idempotency_key: batch.idempotencyKey,
-  }, { onConflict: "scan_id,batch_sequence" }).select("id").single();
+  // scan_batches/scan_sessions/scan_errors were dropped in B-NUKE. The scans
+  // edge function now only routes batches into ingest; per-batch dedup is
+  // delegated to job_ledger via job idempotency keys upstream.
 
   let upserted = 0;
   let skipped = 0;
@@ -337,67 +280,15 @@ export async function ingestBatch(
       await writeSourceRef(svc, userId, assetId, rec, sourceAccountId);
       await writeMetadataRows(svc, userId, assetId, rec);
       upserted++;
-      for (const extErr of rec.extractionErrors ?? []) {
-        await svc.from("scan_errors").insert({
-          scan_id: scanId, user_id: userId,
-          source_account_id: sourceAccountId,
-          source_asset_id: rec.source.sourceAssetId,
-          file_path_redacted: rec.fileSystem?.absolutePathRedacted ?? null,
-          error_code: extErr.code, error_message: extErr.message,
-          error_stage: extErr.stage, is_fatal: false,
-        });
-        errors++;
-      }
+      errors += (rec.extractionErrors ?? []).length;
     } catch (e) {
       skipped++;
       errors++;
-      await svc.from("scan_errors").insert({
-        scan_id: scanId, user_id: userId,
-        source_account_id: sourceAccountId,
-        source_asset_id: rec.source.sourceAssetId,
-        file_path_redacted: rec.fileSystem?.absolutePathRedacted ?? null,
-        error_code: "persistence",
-        error_message: e instanceof Error ? e.message : String(e),
-        error_stage: "persistence", is_fatal: false,
-      });
+      console.warn("persistence error", { source_asset_id: rec.source.sourceAssetId, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
-  // Record additional pre-extraction errors from the batch envelope.
-  for (const err of batch.errors ?? []) {
-    await svc.from("scan_errors").insert({
-      scan_id: scanId, user_id: userId,
-      source_account_id: err.sourceAccountId ?? sourceAccountId,
-      source_asset_id: err.sourceAssetId ?? null,
-      file_path_redacted: err.filePathRedacted ?? null,
-      error_code: err.errorCode, error_message: err.errorMessage,
-      error_stage: err.errorStage, is_fatal: err.isFatal ?? false,
-      raw_error: err.rawError ?? null,
-    });
-    errors++;
-  }
-
-  await svc.from("scan_batches").update({
-    status: "completed", completed_at: new Date().toISOString(),
-  }).eq("id", batchRow!.id);
-
-  // Bump session counters and current path.
-  const { data: sess } = await svc.from("scan_sessions")
-    .select("processed_files, error_files, skipped_files, discovered_files, supported_files")
-    .eq("id", scanId).maybeSingle();
-  if (sess) {
-    await svc.from("scan_sessions").update({
-      processed_files: (sess.processed_files ?? 0) + upserted,
-      error_files: (sess.error_files ?? 0) + errors,
-      skipped_files: (sess.skipped_files ?? 0) + skipped,
-      discovered_files: Math.max(sess.discovered_files ?? 0, batch.progress?.discoveredFiles ?? 0),
-      supported_files: Math.max(sess.supported_files ?? 0, batch.progress?.supportedFiles ?? 0),
-      current_path_redacted: batch.progress?.currentPathRedacted ?? null,
-      phase: batch.progress?.phase ?? "extracting",
-      status: "running",
-      updated_at: new Date().toISOString(),
-    }).eq("id", scanId);
-  }
+  errors += (batch.errors ?? []).length;
 
   return {
     scanId, batchSequence: batch.batchSequence,
