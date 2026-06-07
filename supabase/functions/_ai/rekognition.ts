@@ -94,7 +94,7 @@ export async function indexFaces(opts: {
   qualityFilter?: "NONE" | "AUTO" | "LOW" | "MEDIUM" | "HIGH";
 }): Promise<RekFaceRecord[]> {
   // Rekognition accepts up to 5 MiB of Image.Bytes (base64 expands ~33%).
-  const b64 = btoa(String.fromCharCode(...opts.imageBytes));
+  const b64 = bytesToBase64(opts.imageBytes);
   const body: Record<string, unknown> = {
     CollectionId: opts.collectionId,
     Image: { Bytes: b64 },
@@ -123,6 +123,23 @@ export async function indexFaces(opts: {
       attributes: (rec.FaceDetail ?? null) as Record<string, unknown> | null,
     };
   }).filter((r) => r.faceId.length > 0);
+}
+
+/**
+ * Base64-encode a Uint8Array in fixed-size chunks. We cannot use
+ * `btoa(String.fromCharCode(...bytes))` because spreading a multi-MB array
+ * into a function call overflows the JS call stack (this silently broke
+ * face indexing — every IndexFaces call threw "Maximum call stack size
+ * exceeded" which the caller swallowed, leaving `person_faces` empty).
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000; // 32KB — well under any engine's argument limit
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
 }
 
 /** SearchFaces — find faces matching the given FaceId within the collection. */
