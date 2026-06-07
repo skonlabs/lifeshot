@@ -208,6 +208,7 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     thumbnail_storage_path: thumb?.path ?? null,
     preview_storage_path: preview?.path ?? null,
     derivatives,
+    thumbnails: derivatives,
   }, { onConflict: "asset_id" });
   if (mmErr) console.error("generateDerived: asset_media_metadata upsert failed", { asset_id, error: mmErr.message });
 

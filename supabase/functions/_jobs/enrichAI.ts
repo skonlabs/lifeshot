@@ -178,6 +178,16 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
 
+  // Mirror the raw Rekognition face payload onto asset_media_metadata.recognition
+  // so the UI can read everything off one row per asset.
+  if (faceScanned) {
+    const recognition = faces.map((f: any) => f.attributes).filter(Boolean);
+    await sb.from("asset_media_metadata").upsert({
+      asset_id, user_id: asset.user_id,
+      recognition: recognition.length ? recognition : [],
+    }, { onConflict: "asset_id" });
+  }
+
   // Mark the asset as face-scanned so it isn't reprocessed.
   if (faceDetectionAttempted && faceScanned) {
     await sb.from("assets")
