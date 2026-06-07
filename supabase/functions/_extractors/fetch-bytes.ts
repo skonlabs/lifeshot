@@ -59,6 +59,26 @@ export async function fetchRange(url: string, byteLength: number): Promise<Fetch
   }
 }
 
+export async function fetchAllBytes(url: string, sizeCapBytes = 32 * 1024 * 1024): Promise<FetchedBytes | null> {
+  try {
+    const res = await fetchWithTimeout(url, {}, STREAM_FETCH_TIMEOUT_MS);
+    if (!res.ok) return null;
+    const cl = res.headers.get("content-length");
+    const totalSize = cl ? Number(cl) : null;
+    if (totalSize != null && Number.isFinite(totalSize) && totalSize > sizeCapBytes) return null;
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > sizeCapBytes) return null;
+    return {
+      bytes: buf,
+      contentType: res.headers.get("content-type"),
+      totalSize: Number.isFinite(totalSize ?? NaN) ? totalSize : buf.byteLength,
+      url,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Streaming SHA-256 over the full file. Size cap stops the read early. */
 export async function streamSha256(
   url: string,
