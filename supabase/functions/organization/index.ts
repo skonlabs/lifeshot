@@ -39,29 +39,32 @@ app.get("/events", async (c) => {
   }
   const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
   const covers: Record<string, any> = {};
-  const previewMap: Record<string, any> = {};
+  const mediaMap: Record<string, any> = {};
   if (coverAssetIds.length) {
     const { data: cs } = await supa.from("assets")
       .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type")
       .in("id", coverAssetIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+    // asset_preview_metadata dropped → blurhash/dominant_color/thumbnail come
+    // from asset_media_metadata.
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
       .in("asset_id", coverAssetIds);
-    for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
   const enriched = await Promise.all(events.map(async (e: any) => {
     const cid = coverMap[e.id];
     const cov = cid && covers[cid] ? covers[cid] : null;
-    const preview = cid ? previewMap[cid] ?? null : null;
+    const mm = cid ? mediaMap[cid] ?? null : null;
     return {
       ...e,
       asset_count: countMap[e.id] ?? 0,
       cover: cov ? {
         asset_id: cid,
-        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid, preview?.thumbnail_cache_key ?? cov.thumbnail_cache_key ?? null),
-        blurhash: preview?.blurhash ?? cov.blurhash ?? null,
-        dominant_color: preview?.dominant_color ?? cov.dominant_color ?? null,
+        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid,
+          mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? cov.thumbnail_cache_key ?? null),
+        blurhash: mm?.blurhash ?? cov.blurhash ?? null,
+        dominant_color: mm?.dominant_color ?? cov.dominant_color ?? null,
         media_type: cov.media_type ?? "photo",
       } : null,
     };
@@ -79,17 +82,23 @@ app.get("/events/:id", async (c) => {
     supa.from("event_places").select("place_id, places(*)").eq("event_id", id),
   ]);
   if (!event) throw new ApiError("not_found", "Event not found");
+  const assetIds = (eAssets ?? []).map((r: any) => r.asset_id);
+  const mediaMap: Record<string, any> = {};
+  if (assetIds.length) {
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
+      .in("asset_id", assetIds);
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+  }
   const assets = await Promise.all((eAssets ?? []).map(async (row: any) => {
     const a = row.assets ?? {};
-    const { data: preview } = await supa.from("asset_preview_metadata")
-      .select("blurhash, dominant_color, thumbnail_cache_key")
-      .eq("asset_id", row.asset_id)
-      .maybeSingle();
+    const mm = mediaMap[row.asset_id] ?? null;
     return {
       asset_id: row.asset_id,
-      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id, preview?.thumbnail_cache_key ?? a.thumbnail_cache_key ?? null),
-      blurhash: preview?.blurhash ?? a.blurhash ?? null,
-      dominant_color: preview?.dominant_color ?? a.dominant_color ?? null,
+      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id,
+        mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? a.thumbnail_cache_key ?? null),
+      blurhash: mm?.blurhash ?? a.blurhash ?? null,
+      dominant_color: mm?.dominant_color ?? a.dominant_color ?? null,
       width: a.width ?? null,
       height: a.height ?? null,
       media_type: a.media_type ?? "photo",
@@ -114,144 +123,82 @@ app.get("/people", async (c) => {
   if (!privacy?.face_processing_enabled) {
     return c.json({ people: [], face_processing_disabled: true });
   }
+  // person_faces was merged onto people in B-NUKE: faces jsonb[],
+  // face_count int, cover_asset_id uuid, cover_bbox jsonb.
   const { data, error } = await supa.from("people")
-    .select("id, display_name, is_child, is_elder, consent_required, auto_label");
+    .select("id, display_name, is_child, is_elder, consent_required, auto_label, " +
+            "face_count, cover_asset_id, cover_bbox, faces");
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
-  const ids = peopleRows.map((p: any) => p.id);
-  const counts: Record<string, number> = {};
-  const coverMap: Record<string, string> = {};
-  const coverBboxMap: Record<string, any> = {};
-  const faceCountMap: Record<string, number> = {};
-  const signatureMap: Record<string, string> = {};
-  if (ids.length) {
-    const { data: faces } = await supa.from("person_faces")
-      .select("person_id, asset_id, bbox, confidence, created_at, face_vector, face_crop").in("person_id", ids)
-      .order("confidence", { ascending: false, nullsFirst: false });
-    const seen: Record<string, Set<string>> = {};
-    const perAssetFaceCount = new Map<string, number>();
-    const signatureOwner = new Map<string, { person_id: string; confidence: number }>();
-    const bestCoverScore = new Map<string, number>();
-    const coverFaceCropMap: Record<string, string | null> = {};
 
-    const signatureFor = (assetId: string, bbox: { x?: number; y?: number; w?: number; h?: number } | null | undefined, vector: number[] | null | undefined) => {
-      const safeBox = sanitizeFaceBox(bbox);
-      const bboxPart = safeBox
-        ? faceVisualSignature(assetId, safeBox)
-        : "no-bbox";
-      const vectorPart = Array.isArray(vector) && vector.length
-        ? vector.slice(0, 12).map((n) => Number(n).toFixed(4)).join(":")
-        : "no-vector";
-      return `${bboxPart}:${vectorPart}`;
-    };
-
-    for (const f of faces ?? []) perAssetFaceCount.set(f.asset_id, (perAssetFaceCount.get(f.asset_id) ?? 0) + 1);
-    for (const f of faces ?? []) {
-      const safeBox = sanitizeFaceBox(f.bbox ?? null);
-      if (!safeBox) continue;
-      const signature = signatureFor(f.asset_id, safeBox, Array.isArray(f.face_vector) ? f.face_vector as number[] : null);
-      const owner = signatureOwner.get(signature);
-      if (owner && owner.person_id !== f.person_id) continue;
-      signatureOwner.set(signature, {
-        person_id: f.person_id,
-        confidence: Math.max(Number(f.confidence ?? 0), owner?.confidence ?? 0),
-      });
-      signatureMap[f.person_id] = signature;
-      const score = faceQualityScore(safeBox, Number(f.confidence ?? 0), perAssetFaceCount.get(f.asset_id) ?? 1);
-      const previousScore = bestCoverScore.get(f.person_id) ?? Number.NEGATIVE_INFINITY;
-      if (score > previousScore) {
-        coverMap[f.person_id] = f.asset_id;
-        coverBboxMap[f.person_id] = safeBox;
-        faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
-        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
-        bestCoverScore.set(f.person_id, score);
-      }
-      (seen[f.person_id] ??= new Set()).add(f.asset_id);
-    }
-    for (const f of faces ?? []) {
-      const safeBox = sanitizeFaceBox(f.bbox ?? null);
-      if (!safeBox) continue;
-      if (!coverMap[f.person_id]) {
-        coverMap[f.person_id] = f.asset_id;
-        coverBboxMap[f.person_id] = safeBox;
-        faceCountMap[f.person_id] = perAssetFaceCount.get(f.asset_id) ?? 1;
-        coverFaceCropMap[f.person_id] = typeof f.face_crop === "string" ? f.face_crop : null;
-      }
-    }
-    for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
-    // Stash cover crop map in outer closure scope via Object so it's readable below.
-    (peopleRows as any).__coverFaceCropMap = coverFaceCropMap;
-  }
-
-  const coverIds = Array.from(new Set(Object.values(coverMap)));
+  const coverIds = Array.from(new Set(peopleRows.map((p: any) => p.cover_asset_id).filter(Boolean)));
   const coverAssets: Record<string, any> = {};
-  const previewMap: Record<string, any> = {};
+  const mediaMap: Record<string, any> = {};
   if (coverIds.length) {
     const { data: assets } = await supa.from("assets")
       .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height, capture_time")
       .in("id", coverIds);
     for (const asset of assets ?? []) coverAssets[asset.id] = asset;
-
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, thumbnail_cache_key, preview_cache_key, blurhash, dominant_color")
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path, blurhash, dominant_color")
       .in("asset_id", coverIds);
-    for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
 
   const people = (await Promise.all(peopleRows.map(async (p: any) => {
-    const coverAssetId = coverMap[p.id] ?? null;
+    const coverAssetId = p.cover_asset_id as string | null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
-    const preview = coverAssetId ? previewMap[coverAssetId] ?? null : null;
-    const faceCropDataUrl = (peopleRows as any).__coverFaceCropMap?.[p.id] ?? null;
+    const media = coverAssetId ? mediaMap[coverAssetId] ?? null : null;
+    // The best face's face_crop (if any) is the highest-confidence entry.
+    const topFace = Array.isArray(p.faces) && p.faces.length ? p.faces[0] : null;
+    const faceCropDataUrl = typeof topFace?.face_crop === "string" ? topFace.face_crop : null;
+    const coverBbox = sanitizeFaceBox(p.cover_bbox ?? topFace?.bbox ?? null);
     const cover = coverAssetId && asset ? {
       asset_id: coverAssetId,
-      // Prefer the pre-aligned 48x48 face_crop produced by face-api.js in the browser.
-      // Fall back to the asset thumbnail if for some reason a crop wasn't stored.
-      thumbnail_url: faceCropDataUrl ?? await resolveThumbUrl(
-        c,
-        supa,
-        uid,
-        coverAssetId,
-        preview?.thumbnail_cache_key ?? asset.thumbnail_cache_key ?? preview?.preview_cache_key ?? asset.proxy_cache_key ?? null,
-        "thumb",
-      ),
-      blurhash: preview?.blurhash ?? asset.blurhash ?? null,
-      dominant_color: preview?.dominant_color ?? asset.dominant_color ?? null,
+      thumbnail_url: faceCropDataUrl ?? await resolveThumbUrl(c, supa, uid, coverAssetId,
+        media?.thumbnail_url ?? media?.thumbnail_storage_path ??
+        asset.thumbnail_cache_key ?? media?.preview_url ?? media?.preview_storage_path ??
+        asset.proxy_cache_key ?? null, "thumb"),
+      blurhash: media?.blurhash ?? asset.blurhash ?? null,
+      dominant_color: media?.dominant_color ?? asset.dominant_color ?? null,
       width: asset.width ?? null,
       height: asset.height ?? null,
       capture_time: asset.capture_time ?? null,
       media_type: asset.media_type ?? "photo",
       source_badge: null,
-      // When face_crop is used, the image IS the face — no further cropping needed.
-      face_bbox: faceCropDataUrl ? null : (coverBboxMap[p.id] ?? null),
-      face_count: faceCountMap[p.id] ?? 1,
-      hydration_status: (faceCropDataUrl || preview?.thumbnail_cache_key || asset.thumbnail_cache_key ? "ready" : "pending") as const,
+      face_bbox: faceCropDataUrl ? null : coverBbox,
+      face_count: p.face_count ?? 1,
+      hydration_status: (faceCropDataUrl || media?.thumbnail_url || asset.thumbnail_cache_key ? "ready" : "pending") as const,
     } : null;
-
-    return { ...p, asset_count: counts[p.id] ?? 0, cover };
+    return {
+      id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
+      consent_required: p.consent_required, auto_label: p.auto_label,
+      asset_count: p.face_count ?? 0, cover,
+    };
   }))).filter((person: any) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
     if (!(person.asset_count > 0)) return false;
     if (!person.cover?.thumbnail_url) return false;
     return true;
-  }).filter((person: any, index: number, arr: any[]) => {
-    const signature = signatureMap[person.id] ?? null;
-    if (!signature) return true;
-    return arr.findIndex((candidate: any) => signatureMap[candidate.id] === signature) === index;
   });
+  // Suppress quality scoring helper warnings (no longer used in this code path).
+  void faceQualityScore; void faceVisualSignature;
   return c.json({ people, face_processing_disabled: false });
 });
 
 app.get("/people/:id", async (c) => {
   const supa = c.get("supabase");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
-  const [{ data: person }, { data: faces }] = await Promise.all([
-    supa.from("people").select("*").eq("id", id).maybeSingle(),
-    supa.from("person_faces").select("asset_id, confidence").eq("person_id", id).limit(50),
-  ]);
+  const { data: person } = await supa.from("people").select("*").eq("id", id).maybeSingle();
   if (!person) throw new ApiError("not_found", "Person not found");
-  const asset_count = new Set((faces ?? []).map((f: any) => f.asset_id)).size;
-  return c.json({ ...person, person, asset_count, faces });
+  const facesArr = Array.isArray(person.faces) ? person.faces : [];
+  const compactFaces = facesArr.slice(0, 50).map((f: any) => ({
+    asset_id: f.asset_id, confidence: f.confidence,
+  }));
+  return c.json({
+    ...person, person, faces: compactFaces,
+    asset_count: person.face_count ?? new Set(facesArr.map((f: any) => f.asset_id)).size,
+  });
 });
 
 app.get("/places", async (c) => {
@@ -297,19 +244,43 @@ app.get("/places", async (c) => {
 app.get("/duplicates", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
-  const { data: groups, error } = await supa.from("duplicate_groups")
-    .select("*").eq("status", "open").order("storage_risk", { ascending: false }).limit(100);
+  // duplicate_groups/_members dropped → groups are derived from assets stamped
+  // with the same duplicate_group_id (which dedupGroup writes deterministically
+  // from sha256/phash).
+  const { data: rows, error } = await supa.from("assets")
+    .select("id, duplicate_group_id, file_size_bytes, capture_time, checksum_hash, perceptual_hash")
+    .eq("user_id", uid).not("duplicate_group_id", "is", null).limit(2000);
   if (error) throw new ApiError("internal", error.message);
-  const ids = (groups ?? []).map(g => g.id);
-  const members: Record<string, any[]> = {};
-  if (ids.length) {
-    const { data: ms } = await supa.from("duplicate_group_members")
-      .select("group_id, asset_id, match_type, score").in("group_id", ids);
-    for (const m of ms ?? []) (members[m.group_id] ??= []).push(m);
+  const groupsMap = new Map<string, any[]>();
+  for (const r of rows ?? []) {
+    const k = r.duplicate_group_id as string;
+    const list = groupsMap.get(k) ?? [];
+    list.push(r);
+    groupsMap.set(k, list);
   }
-  return c.json({
-    groups: (groups ?? []).map(g => ({ ...g, members: members[g.id] ?? [] })),
-  });
+  const groups = Array.from(groupsMap.entries())
+    .filter(([, members]) => members.length >= 2)
+    .map(([id, members]) => {
+      const totalBytes = members.reduce((acc, m) => acc + (m.file_size_bytes ?? 0), 0);
+      const wastedBytes = totalBytes - (members[0].file_size_bytes ?? 0);
+      return {
+        id,
+        signal: members[0].checksum_hash ? "sha256" : "phash",
+        confidence: members[0].checksum_hash ? 1.0 : 0.92,
+        status: "open",
+        canonical_asset_id: members[0].id,
+        storage_risk: wastedBytes,
+        members: members.map((m) => ({
+          group_id: id, asset_id: m.id,
+          match_type: members[0].checksum_hash ? "checksum" : "perceptual",
+          score: members[0].checksum_hash ? 1.0 : 0.92,
+          is_canonical: m.id === members[0].id,
+        })),
+      };
+    })
+    .sort((a, b) => (b.storage_risk ?? 0) - (a.storage_risk ?? 0))
+    .slice(0, 100);
+  return c.json({ groups });
 });
 
 const ConfirmIn = z.object({
@@ -326,12 +297,21 @@ app.post("/duplicates/:id/confirm", async (c) => {
   if (idem && "conflict" in idem) throw new ApiError("conflict", "Idempotency-Key reused");
   if (idem?.response) return c.json(idem.response, idem.status as 200);
 
-  const update: Record<string, unknown> = { status: "reviewed" };
+  // duplicate_groups dropped. "keep_primary" untags non-primary members from the
+  // synthetic group so they no longer surface in /duplicates. "keep_all" /
+  // "mark_reviewed" clears the group_id off every member (UI hide).
   if (body.action === "keep_primary" && body.primary_asset_id) {
-    update.canonical_asset_id = body.primary_asset_id;
+    const { error } = await supa.from("assets")
+      .update({ duplicate_group_id: null })
+      .eq("duplicate_group_id", id)
+      .neq("id", body.primary_asset_id);
+    if (error) throw new ApiError("internal", error.message);
+  } else {
+    const { error } = await supa.from("assets")
+      .update({ duplicate_group_id: null })
+      .eq("duplicate_group_id", id);
+    if (error) throw new ApiError("internal", error.message);
   }
-  const { error } = await supa.from("duplicate_groups").update(update).eq("id", id);
-  if (error) throw new ApiError("internal", error.message);
   await supa.from("audit_logs").insert({
     user_id: uid, action: "duplicate.confirm", target_type: "duplicate_group",
     target_id: id, meta: body,
@@ -349,17 +329,21 @@ const CorrectionIn = z.object({
 }).strict();
 
 app.post("/corrections", async (c) => {
-  const supa = c.get("supabase"); const uid = c.get("userId");
+  const uid = c.get("userId");
   const body = await parseBody(c, CorrectionIn);
   const reqHash = await hashJson(body);
   const idem = await findIdempotent(c, "corrections", reqHash);
   if (idem && "conflict" in idem) throw new ApiError("conflict", "Idempotency-Key reused");
   if (idem?.response) return c.json(idem.response, idem.status as 200);
 
-  const { data, error } = await supa.from("user_corrections").insert({
-    user_id: uid, target_type: body.target_type, target_id: body.target_id, correction: body.correction,
-  }).select("id").single();
-  if (error) throw new ApiError("internal", error.message);
+  // user_corrections was dropped in B-NUKE. We still emit an audit log row and
+  // trigger the same downstream re-index job for person corrections.
+  const id = crypto.randomUUID();
+  const supa = c.get("supabase");
+  await supa.from("audit_logs").insert({
+    user_id: uid, action: "correction.submit", target_type: body.target_type,
+    target_id: body.target_id, meta: body.correction,
+  });
   // Translate the correction into a downstream re-index job. For people we
   // re-run face clustering; for other entities we just record the correction
   // (search reindex picks up the changes on next pipeline pass).
@@ -370,7 +354,7 @@ app.post("/corrections", async (c) => {
       { userId: uid });
     job_id = job.id;
   }
-  const out = { id: data!.id, job_id };
+  const out = { id, job_id };
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
@@ -399,13 +383,14 @@ app.post("/assets/bulk", async (c) => {
     if (error) throw new ApiError("internal", error.message);
     affected = data?.length ?? 0;
   } else if (body.action === "tag") {
-    const rows = body.asset_ids.map((asset_id) => ({
-      user_id: uid, target_type: "asset", target_id: asset_id,
-      correction: { add_tag: body.tag },
-    }));
-    const { error } = await supa.from("user_corrections").insert(rows);
-    if (error) throw new ApiError("internal", error.message);
-    affected = rows.length;
+    // user_corrections was dropped → tag actions logged via audit_logs only.
+    await supa.from("audit_logs").insert(
+      body.asset_ids.map((asset_id) => ({
+        user_id: uid, action: "asset.tag", target_type: "asset",
+        target_id: asset_id, meta: { add_tag: body.tag },
+      })),
+    );
+    affected = body.asset_ids.length;
   }
   await supa.from("audit_logs").insert({
     user_id: uid, action: `asset.bulk_${body.action}`, target_type: "asset",

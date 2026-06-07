@@ -43,18 +43,18 @@ export async function ocrAsset(ctx: JobContext): Promise<unknown> {
   }
 
   if (!url) {
-    for (const kind of ["preview", "thumb"]) {
-      const { data: deriv } = await sb
-        .from("asset_derivatives")
-        .select("storage_path, storage_bucket")
-        .eq("asset_id", asset_id)
-        .eq("kind", kind)
-        .maybeSingle();
-      if (deriv?.storage_path) {
-        const { data: signed } = await sb.storage
-          .from(deriv.storage_bucket)
-          .createSignedUrl(deriv.storage_path, 600);
-        if (signed?.signedUrl) { url = signed.signedUrl; break; }
+    // asset_derivatives was dropped in B-NUKE; lookup paths/URLs from
+    // asset_media_metadata instead.
+    const { data: mm } = await sb.from("asset_media_metadata")
+      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
+      .eq("asset_id", asset_id).maybeSingle();
+    if (mm?.preview_url) url = mm.preview_url;
+    else if (mm?.thumbnail_url) url = mm.thumbnail_url;
+    else {
+      const path = mm?.preview_storage_path ?? mm?.thumbnail_storage_path ?? null;
+      if (path) {
+        const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
+        if (signed?.signedUrl) url = signed.signedUrl;
       }
     }
   }
@@ -82,8 +82,10 @@ export async function ocrAsset(ctx: JobContext): Promise<unknown> {
   }
 
   if (!error) {
-    await sb.from("asset_ocr").upsert(
-      { asset_id, user_id: asset.user_id, text, lang, ocr_at: new Date().toISOString() },
+    // asset_ocr was merged into asset_ai_enrichment.
+    await sb.from("asset_ai_enrichment").upsert(
+      { asset_id, user_id: asset.user_id,
+        ocr_text: text, ocr_lang: lang, ocr_at: new Date().toISOString() },
       { onConflict: "asset_id" },
     );
 

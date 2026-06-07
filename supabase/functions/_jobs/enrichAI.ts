@@ -60,38 +60,30 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   }
 
   if (!url) {
-    // Try stored derivatives (preview first, then thumb).
-    for (const kind of ["preview", "thumb"]) {
-      const { data: deriv } = await sb
-        .from("asset_derivatives")
-        .select("storage_path, storage_bucket")
-        .eq("asset_id", asset_id)
-        .eq("kind", kind)
-        .maybeSingle();
-      if (deriv?.storage_path) {
-        const { data: signed } = await sb.storage
-          .from(deriv.storage_bucket)
-          .createSignedUrl(deriv.storage_path, 600);
-        if (signed?.signedUrl) { url = signed.signedUrl; break; }
+    // Pull URLs/paths from asset_media_metadata (asset_derivatives dropped).
+    const { data: mm } = await sb.from("asset_media_metadata")
+      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
+      .eq("asset_id", asset_id).maybeSingle();
+    url = mm?.preview_url ?? mm?.thumbnail_url ?? null;
+    if (!url) {
+      const path = mm?.preview_storage_path ?? mm?.thumbnail_storage_path ?? null;
+      if (path) {
+        const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
+        url = signed?.signedUrl ?? null;
       }
     }
   }
 
   if (!faceDetectionUrl) {
-    // Prefer smaller thumbnail bytes for Rekognition so scans do not fail on
-    // large preview/original payloads that exceed the 5 MiB bytes limit.
-    for (const kind of ["thumb", "preview"]) {
-      const { data: deriv } = await sb
-        .from("asset_derivatives")
-        .select("storage_path, storage_bucket")
-        .eq("asset_id", asset_id)
-        .eq("kind", kind)
-        .maybeSingle();
-      if (deriv?.storage_path) {
-        const { data: signed } = await sb.storage
-          .from(deriv.storage_bucket)
-          .createSignedUrl(deriv.storage_path, 600);
-        if (signed?.signedUrl) { faceDetectionUrl = signed.signedUrl; break; }
+    const { data: mm } = await sb.from("asset_media_metadata")
+      .select("thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+      .eq("asset_id", asset_id).maybeSingle();
+    faceDetectionUrl = mm?.thumbnail_url ?? mm?.preview_url ?? null;
+    if (!faceDetectionUrl) {
+      const path = mm?.thumbnail_storage_path ?? mm?.preview_storage_path ?? null;
+      if (path) {
+        const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
+        faceDetectionUrl = signed?.signedUrl ?? null;
       }
     }
   }

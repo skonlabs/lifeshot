@@ -83,10 +83,11 @@ export async function deleteDerivedAI(opts: {
   if (assetIds.length === 0) {
     return { ocr: 0, ai_enrichment: 0 };
   }
-  const del = (table: string) => sb.from(table).delete({ count: "exact" }).in("asset_id", assetIds);
-  const [o, a] = await Promise.all([
-    del("asset_ocr"),
-    del("asset_ai_enrichment"),
-  ]);
-  return { ocr: o.count ?? 0, ai_enrichment: a.count ?? 0 };
+  // asset_ocr was merged into asset_ai_enrichment in the B-NUKE consolidation.
+  // Clearing the OCR columns and deleting enrichment rows covers both data sets.
+  const clearOcr = await sb.from("asset_ai_enrichment").update({
+    ocr_text: null, ocr_lang: null, ocr_confidence: null, ocr_boxes: null, ocr_at: null,
+  }).in("asset_id", assetIds);
+  const delEnrich = await sb.from("asset_ai_enrichment").delete({ count: "exact" }).in("asset_id", assetIds);
+  return { ocr: clearOcr.count ?? assetIds.length, ai_enrichment: delEnrich.count ?? 0 };
 }

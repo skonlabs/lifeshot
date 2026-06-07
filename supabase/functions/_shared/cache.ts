@@ -1,33 +1,34 @@
-import { getServiceClient } from "./clients.ts";
 import type { Context } from "./deps.ts";
 
-// Cache backed by api_cache_entries via service role (so anonymous keys work
-// uniformly). Keys MUST include userId for per-user data to prevent leaks.
+// In-process cache (per worker instance). api_cache_entries was dropped in
+// the B-NUKE consolidation; cache lifetime is now bound to the worker's
+// process. Acceptable because every entry has a short TTL (30–300s) and is
+// always safe to miss.
+interface Entry { payload: unknown; expiresAt: number; userId: string | null }
+const STORE = new Map<string, Entry>();
+
+function gc() {
+  if (STORE.size < 2048) return;
+  const now = Date.now();
+  for (const [k, v] of STORE.entries()) if (v.expiresAt < now) STORE.delete(k);
+}
+
 export const cache = {
   async get<T>(_c: Context, key: string): Promise<T | null> {
-    const s = getServiceClient();
-    const { data } = await s.from("api_cache_entries").select("payload, expires_at")
-      .eq("cache_key", key).maybeSingle();
-    if (!data) return null;
-    if (new Date(data.expires_at).getTime() < Date.now()) return null;
-    return data.payload as T;
+    const e = STORE.get(key);
+    if (!e) return null;
+    if (e.expiresAt < Date.now()) { STORE.delete(key); return null; }
+    return e.payload as T;
   },
   async set(_c: Context, key: string, payload: unknown, ttlSeconds = 60, userId?: string) {
-    const s = getServiceClient();
-    await s.from("api_cache_entries").upsert({
-      cache_key: key, user_id: userId ?? null, payload,
-      expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
-    }, { onConflict: "cache_key" });
+    STORE.set(key, { payload, expiresAt: Date.now() + ttlSeconds * 1000, userId: userId ?? null });
+    gc();
   },
-  async del(_c: Context, key: string) {
-    const s = getServiceClient();
-    await s.from("api_cache_entries").delete().eq("cache_key", key);
-  },
+  async del(_c: Context, key: string) { STORE.delete(key); },
   async invalidateUser(userId: string, prefix = "") {
-    const s = getServiceClient();
-    let q = s.from("api_cache_entries").delete().eq("user_id", userId);
-    if (prefix) q = q.like("cache_key", `${prefix}%`);
-    await q;
+    for (const [k, v] of STORE.entries()) {
+      if (v.userId === userId && (!prefix || k.startsWith(prefix))) STORE.delete(k);
+    }
   },
 };
 

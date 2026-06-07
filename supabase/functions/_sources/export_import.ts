@@ -19,25 +19,11 @@ const CAPS: SourceCapabilities = {
  * has been pre-parsed by ingestExportZip (or contains an `assets` array of
  * AssetRecord items for tests).
  */
-export const exportImportFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
-  async function readZips(cursor: string | null) {
-    let q = supabase.from("ingest_uploads")
-      .select("id, payload, storage_path, status, created_at")
-      .eq("user_id", ctx.user_id).eq("kind", "export_zip")
-      .in("status", ["pending", "parsed"])
-      .order("created_at", { ascending: true }).limit(20);
-    if (cursor) q = q.gt("created_at", cursor);
-    const { data, error } = await q;
-    if (error) throw new ConnectorPermanentError(error.message);
-    const items: AssetRecord[] = [];
-    let last: string | null = cursor;
-    for (const row of (data ?? [])) {
-      const assets = (row.payload?.assets ?? []) as AssetRecord[];
-      items.push(...assets);
-      last = row.created_at;
-      await supabase.from("ingest_uploads").update({ status: "processed" }).eq("id", row.id);
-    }
-    return { items, nextCursor: data && data.length ? last : null };
+export const exportImportFactory = (_ctx: ConnectorContext, _supabase: any): SourceConnector => {
+  // ingest_uploads was dropped in B-NUKE. Takeout zip ingestion is offline
+  // until a replacement (e.g. direct storage-bucket scan) is built.
+  async function readZips(_cursor: string | null) {
+    return { items: [] as AssetRecord[], nextCursor: null as string | null };
   }
   return {
     capabilities: CAPS, getCapabilities: () => CAPS,

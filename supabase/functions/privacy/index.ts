@@ -53,11 +53,9 @@ app.delete("/derived-data", async (c) => {
   // Inline immediate delete for derived artifacts when scope=all.
   if (body.scope === "all") {
     await svc.rpc("cache_invalidate_user", {});
-    // best-effort direct deletes (RLS bypassed)
-    for (const t of ["asset_ocr", "asset_ai_enrichment"]) {
-      await svc.from(t).delete().in("asset_id",
-        (await svc.from("assets").select("id").eq("user_id", uid)).data?.map((r: any) => r.id) ?? []);
-    }
+    // asset_ocr merged into asset_ai_enrichment; one delete clears both.
+    const ids = (await svc.from("assets").select("id").eq("user_id", uid)).data?.map((r: any) => r.id) ?? [];
+    if (ids.length) await svc.from("asset_ai_enrichment").delete().in("asset_id", ids);
   }
   await cache.invalidateUser(uid);
   emitEvent(c, "privacy.derived_delete", body);

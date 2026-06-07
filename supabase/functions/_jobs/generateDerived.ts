@@ -171,16 +171,16 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   }
 
   if (written.length === 0) {
-    // No storage derivatives generated. Still write asset_preview_metadata so
-    // enrichAI / ocrAsset can find the provider-served URL via this table.
-    // Preserve existing thumbnail_cache_key on the asset row unchanged.
-    await sb.from("asset_preview_metadata").upsert({
-      asset_id,
-      user_id: asset.user_id,
-      thumbnail_generated: Boolean(asset.thumbnail_cache_key ?? asset.proxy_cache_key),
-      preview_generated: Boolean(asset.proxy_cache_key),
-      thumbnail_cache_key: asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null,
-      preview_cache_key: asset.proxy_cache_key ?? null,
+    // No storage derivatives generated. Persist provider-served URLs on
+    // asset_media_metadata so enrichAI / ocrAsset can still resolve them.
+    const thumbKey = asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null;
+    const previewKey = asset.proxy_cache_key ?? null;
+    await sb.from("asset_media_metadata").upsert({
+      asset_id, user_id: asset.user_id,
+      thumbnail_url: thumbKey && /^https?:\/\//.test(thumbKey) ? thumbKey : null,
+      thumbnail_storage_path: thumbKey && !/^https?:\/\//.test(thumbKey) ? thumbKey : null,
+      preview_url: previewKey && /^https?:\/\//.test(previewKey) ? previewKey : null,
+      preview_storage_path: previewKey && !/^https?:\/\//.test(previewKey) ? previewKey : null,
     }, { onConflict: "asset_id" });
     if (asset.thumbnail_cache_key || asset.proxy_cache_key) {
       return {
@@ -194,38 +194,22 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     throw new Error("retryable: no thumbnail or preview bytes available");
   }
 
-  // Persist derivative records.
-  const { error: derivErr } = await sb.from("asset_derivatives").upsert(
-    written.map((w) => ({
-      asset_id,
-      kind: w.kind,
-      storage_bucket: STORAGE_BUCKETS.derived,
-      storage_path: w.path,
-      mime_type: w.mime,
-      blurhash: w.blurhash ?? null,
-    })),
-    { onConflict: "asset_id,kind" },
-  );
-  if (derivErr) console.error("generateDerived: asset_derivatives upsert failed", { asset_id, error: derivErr.message });
-
-  // Legacy asset_thumbnails / asset_proxies cache tables removed — live read path
-  // is asset_derivatives + asset_preview_metadata.
-
   const thumb = written.find((w) => w.kind === "thumb");
   const preview = written.find((w) => w.kind === "preview");
 
-  const fallbackThumbKey = thumb?.path ?? asset.thumbnail_cache_key ?? preview?.path ?? asset.proxy_cache_key ?? null;
-  const fallbackPreviewKey = preview?.path ?? asset.proxy_cache_key ?? null;
-  const { error: prevErr } = await sb.from("asset_preview_metadata").upsert({
-    asset_id,
-    user_id: asset.user_id,
+  // Persist thumbnail/preview paths + jsonb derivatives on asset_media_metadata.
+  const derivatives = written.map((w) => ({
+    kind: w.kind, storage_bucket: STORAGE_BUCKETS.derived,
+    storage_path: w.path, mime_type: w.mime, blurhash: w.blurhash ?? null,
+  }));
+  const { error: mmErr } = await sb.from("asset_media_metadata").upsert({
+    asset_id, user_id: asset.user_id,
     blurhash: thumb?.blurhash ?? preview?.blurhash ?? null,
-    thumbnail_generated: Boolean(fallbackThumbKey),
-    preview_generated: Boolean(fallbackPreviewKey),
-    thumbnail_cache_key: fallbackThumbKey,
-    preview_cache_key: fallbackPreviewKey,
+    thumbnail_storage_path: thumb?.path ?? null,
+    preview_storage_path: preview?.path ?? null,
+    derivatives,
   }, { onConflict: "asset_id" });
-  if (prevErr) console.error("generateDerived: asset_preview_metadata upsert failed", { asset_id, error: prevErr.message });
+  if (mmErr) console.error("generateDerived: asset_media_metadata upsert failed", { asset_id, error: mmErr.message });
 
   // Update asset row — only overwrite if we have storage-backed paths now.
   const assetUpdate: Record<string, unknown> = {};
