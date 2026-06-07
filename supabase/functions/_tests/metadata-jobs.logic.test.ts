@@ -138,6 +138,21 @@ describe("metadata pipeline invariants", () => {
     expect(shouldEnqueuePlaces(null, null, true)).toBe(true);
   });
 
+  it("allows a Dropbox full-file EXIF fallback when range reads still miss GPS", () => {
+    const shouldFetchFullFile = (opts: {
+      providerKind: string | null;
+      hasGps: boolean;
+      headBytes: number;
+      fullBytes: number | null;
+    }) => opts.providerKind === "dropbox"
+      && !opts.hasGps
+      && (opts.fullBytes ?? 0) > opts.headBytes;
+
+    expect(shouldFetchFullFile({ providerKind: "dropbox", hasGps: false, headBytes: 8, fullBytes: 12 })).toBe(true);
+    expect(shouldFetchFullFile({ providerKind: "dropbox", hasGps: true, headBytes: 8, fullBytes: 12 })).toBe(false);
+    expect(shouldFetchFullFile({ providerKind: "google_photos", hasGps: false, headBytes: 8, fullBytes: 12 })).toBe(false);
+  });
+
   it("keeps face avatar crop centered on the detected face instead of the whole photo", () => {
     const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
     const cover = { width: 4288, height: 2848 };
