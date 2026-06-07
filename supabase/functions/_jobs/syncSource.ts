@@ -449,7 +449,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       sb.from("asset_media_metadata").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_preview_metadata").select("asset_id, thumbnail_generated, preview_generated, thumbnail_cache_key, preview_cache_key").in("asset_id", existingAssetIds),
       sb.from("asset_ai_enrichment").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_locations").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_gps").select("asset_id").in("asset_id", existingAssetIds),
     ]);
     if (fileMetadataError) throw new Error(`load file metadata completeness: ${fileMetadataError.message}`);
     if (mediaMetadataError) throw new Error(`load media metadata completeness: ${mediaMetadataError.message}`);

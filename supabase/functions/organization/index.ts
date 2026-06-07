@@ -328,7 +328,7 @@ app.post("/duplicates/:id/confirm", async (c) => {
 
   const update: Record<string, unknown> = { status: "reviewed" };
   if (body.action === "keep_primary" && body.primary_asset_id) {
-    update.recommended_primary_asset_id = body.primary_asset_id;
+    update.canonical_asset_id = body.primary_asset_id;
   }
   const { error } = await supa.from("duplicate_groups").update(update).eq("id", id);
   if (error) throw new ApiError("internal", error.message);

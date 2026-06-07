@@ -551,7 +551,7 @@ export function useSourceStatus(accountId: string | undefined) {
 export function useDuplicates() {
   return useQuery({
     queryKey: ["duplicates"],
-    queryFn: () => api.organization<{ groups: Array<{ id: string; confidence: number | null; recommended_primary_asset_id: string | null; storage_risk: string | null; status: string; members: Array<{ asset_id: string; match_type: string; score: number | null }> }> }>("/duplicates"),
+    queryFn: () => api.organization<{ groups: Array<{ id: string; confidence: number | null; canonical_asset_id: string | null; storage_risk: string | null; status: string; members: Array<{ asset_id: string; match_type: string; score: number | null }> }> }>("/duplicates"),
   });
 }
 
