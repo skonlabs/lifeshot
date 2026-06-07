@@ -243,28 +243,5 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     if (upErr) console.error("clusterPeople: people update failed", pid, upErr.message);
   }
 
-  // Mirror per-asset people list onto asset_media_metadata.people so the
-  // asset detail view can read everything off one row.
-  const peopleByAsset = new Map<string, Array<Record<string, unknown>>>();
-  for (const row of people.values()) {
-    for (const f of row.faces as Array<any>) {
-      if (!f?.asset_id) continue;
-      const arr = peopleByAsset.get(f.asset_id) ?? [];
-      arr.push({
-        person_id: row.id,
-        auto_label: row.auto_label,
-        bbox: f.bbox,
-        confidence: f.confidence,
-      });
-      peopleByAsset.set(f.asset_id, arr);
-    }
-  }
-  for (const [assetId, list] of peopleByAsset) {
-    const { error: ammErr } = await sb.from("asset_media_metadata").upsert({
-      asset_id: assetId, user_id: uid, people: list,
-    }, { onConflict: "asset_id" });
-    if (ammErr) console.error("clusterPeople: amm people upsert failed", assetId, ammErr.message);
-  }
-
   return { user_id: uid, clustered: clusteredFaces, faces_total: faceEntries.length };
 }
