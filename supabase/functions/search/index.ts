@@ -48,10 +48,14 @@ app.post("/search", async (c) => {
       .select("id, capture_time, media_type, thumbnail_cache_key, blurhash, dominant_color, width, height")
       .in("id", ids);
     for (const a of assets ?? []) assetMap[a.id] = a;
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
       .in("asset_id", ids);
-    for (const preview of previews ?? []) {
+    for (const row of mm ?? []) {
+      const preview = {
+        asset_id: row.asset_id, blurhash: row.blurhash, dominant_color: row.dominant_color,
+        thumbnail_cache_key: row.thumbnail_url ?? row.thumbnail_storage_path,
+      };
       assetMap[preview.asset_id] = {
         ...assetMap[preview.asset_id],
         ...preview,

@@ -1,8 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { useActiveAssetCount, useBulkAssetAction, useTimeline, useViewport } from "@/lib/api/hooks";
-import { supabase } from "@/lib/supabase";
 import { VirtualGrid } from "@/components/app/VirtualGrid";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckSquare, Trash2, X } from "lucide-react";
@@ -11,20 +9,6 @@ import { toast } from "sonner";
 export const Route = createFileRoute("/_authenticated/library")({ component: Library });
 
 type Granularity = "year" | "month" | "day";
-
-const DERIVED_BUCKETS = ["lifeshot-derived", "thumbnails"] as const;
-
-async function resolveLibraryPreviewUrl(cacheKey: string | null | undefined) {
-  if (!cacheKey) return null;
-  if (/^https?:\/\//.test(cacheKey)) return cacheKey;
-
-  for (const bucket of DERIVED_BUCKETS) {
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(cacheKey, 60 * 60);
-    if (data?.signedUrl) return data.signedUrl;
-  }
-
-  return null;
-}
 
 function Library() {
   const [granularity, setGranularity] = useState<Granularity>("month");
@@ -37,44 +21,11 @@ function Library() {
   const lastClickedRef = useRef<string | null>(null);
   const bulk = useBulkAssetAction();
 
-  const rawItems = useMemo(
+  // asset_preview_metadata was dropped in B-NUKE; the catalog API now returns
+  // the resolved thumbnail_url directly (sourced from asset_media_metadata).
+  const items = useMemo(
     () => viewport.data?.pages.flatMap((p) => p.items) ?? [],
     [viewport.data],
-  );
-  const photoAssetIds = useMemo(
-    () => rawItems.filter((item) => item.media_type === "photo").map((item) => item.asset_id),
-    [rawItems],
-  );
-  const previewOverrides = useQuery({
-    queryKey: ["library-preview-overrides", photoAssetIds],
-    enabled: photoAssetIds.length > 0,
-    staleTime: 55 * 60_000,
-    queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from("asset_preview_metadata")
-          .select("asset_id, preview_cache_key")
-          .in("asset_id", photoAssetIds);
-
-        if (error) throw error;
-
-        const resolved = await Promise.all((data ?? []).map(async (row) => {
-          const url = await resolveLibraryPreviewUrl(row.preview_cache_key);
-          return url ? [row.asset_id, url] as const : null;
-        }));
-
-        return Object.fromEntries(resolved.filter((entry): entry is readonly [string, string] => Boolean(entry)));
-      } catch (error) {
-        console.warn("library preview override failed", error);
-        return {} as Record<string, string>;
-      }
-    },
-  });
-  const items = useMemo(
-    () => rawItems.map((item) => item.media_type === "photo" && previewOverrides.data?.[item.asset_id]
-      ? { ...item, thumbnail_url: previewOverrides.data[item.asset_id] }
-      : item),
-    [rawItems, previewOverrides.data],
   );
   const totalCount = range ? (viewport.data?.pages[0]?.total_count ?? items.length) : (assetCount.data?.count ?? viewport.data?.pages[0]?.total_count ?? items.length);
 

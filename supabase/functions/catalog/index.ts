@@ -66,10 +66,16 @@ app.get("/assets/:id", async (c) => {
   await enforceRateLimit(uid, "general");
   const { data: a } = await supa.from("assets").select("*").eq("id", id).maybeSingle();
   if (!a) throw new ApiError("not_found", "Asset not found");
-  const { data: preview } = await supa.from("asset_preview_metadata")
-    .select("blurhash, dominant_color, thumbnail_cache_key, preview_cache_key")
-    .eq("asset_id", id)
-    .maybeSingle();
+  // asset_preview_metadata dropped → cache keys live on asset_media_metadata.
+  const { data: mm } = await supa.from("asset_media_metadata")
+    .select("blurhash, dominant_color, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+    .eq("asset_id", id).maybeSingle();
+  const preview = mm ? {
+    blurhash: mm.blurhash,
+    dominant_color: mm.dominant_color,
+    thumbnail_cache_key: mm.thumbnail_url ?? mm.thumbnail_storage_path,
+    preview_cache_key: mm.preview_url ?? mm.preview_storage_path,
+  } : null;
   const descriptor = await descriptorFromRow(c, supa, uid, {
     ...a,
     ...(preview ?? {}),
@@ -120,10 +126,13 @@ app.get("/timeline", async (c) => {
       .select("id, capture_time, media_type, thumbnail_cache_key, blurhash, dominant_color, width, height")
       .in("id", coverIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
       .in("asset_id", coverIds);
-    for (const item of previews ?? []) previewMap[item.asset_id] = item;
+    for (const item of mm ?? []) previewMap[item.asset_id] = {
+      asset_id: item.asset_id, blurhash: item.blurhash, dominant_color: item.dominant_color,
+      thumbnail_cache_key: item.thumbnail_url ?? item.thumbnail_storage_path,
+    };
   }
   const buckets = await Promise.all((data ?? []).map(async b => ({
     bucket: b.bucket, asset_count: b.asset_count,
@@ -200,12 +209,16 @@ app.post("/memory/viewport", async (c) => {
   if (error) throw new ApiError("internal", error.message);
   const previewIds = (data ?? []).map((row: any) => row.id);
   const previewRows = previewIds.length
-    ? await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key, preview_cache_key")
+    ? await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
       .in("asset_id", previewIds)
     : { data: [] as any[] };
   const previewMap: Record<string, any> = {};
-  for (const row of previewRows.data ?? []) previewMap[row.asset_id] = row;
+  for (const row of previewRows.data ?? []) previewMap[row.asset_id] = {
+    asset_id: row.asset_id, blurhash: row.blurhash, dominant_color: row.dominant_color,
+    thumbnail_cache_key: row.thumbnail_url ?? row.thumbnail_storage_path,
+    preview_cache_key: row.preview_url ?? row.preview_storage_path,
+  };
   const items = await Promise.all((data ?? []).map(r =>
     descriptorFromRow(c, supa, uid, {
       ...r,
@@ -227,23 +240,24 @@ app.get("/dashboard", async (c) => {
   const hit = await cache.get<any>(c, keys.dashboard(uid));
   if (hit) return c.json({ ...hit, cache: { hit: true } });
 
-  const [assetsRes, dupesRes, sourceRefsRes] = await Promise.all([
+  // duplicate_groups dropped → duplicate count is distinct(duplicate_group_id)
+  // on assets, computed in-process.
+  const [assetsRes, sourceRefsRes] = await Promise.all([
     supa.from("assets")
-      .select("id, capture_time, source_count")
+      .select("id, capture_time, source_count, duplicate_group_id")
       .eq("deleted_state", "active"),
-    supa.from("duplicate_groups")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "open"),
     supa.from("asset_source_refs")
       .select("asset_id, account:source_accounts(provider:source_providers(kind))"),
   ]);
   if (assetsRes.error) throw new ApiError("internal", assetsRes.error.message);
-  if (dupesRes.error) throw new ApiError("internal", dupesRes.error.message);
   if (sourceRefsRes.error) throw new ApiError("internal", sourceRefsRes.error.message);
 
   const assets = assetsRes.data ?? [];
   const total_assets = assets.length;
   const at_risk = assets.filter((asset: any) => (asset.source_count ?? 0) <= 1).length;
+  const dupGroups = new Set(
+    assets.map((a: any) => a.duplicate_group_id).filter(Boolean) as string[],
+  );
 
   const per_year: Record<string, number> = {};
   for (const asset of assets) {
@@ -266,7 +280,7 @@ app.get("/dashboard", async (c) => {
   const data = {
     total_assets,
     at_risk,
-    duplicate_groups: dupesRes.count ?? 0,
+    duplicate_groups: dupGroups.size,
     per_year,
     per_source,
   };
