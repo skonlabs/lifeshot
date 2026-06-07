@@ -3,6 +3,7 @@ import { serviceClient, STORAGE_BUCKETS } from "../_pipeline/clients.ts";
 import { providers } from "./mocks.ts";
 import { installOpenAIProviders } from "../_ai/factory.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
+import { rekognitionConfigured } from "../_ai/rekognition.ts";
 
 // Safety net: ensure real providers are active when credentials are present.
 installOpenAIProviders();
@@ -145,7 +146,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .select("face_processing_enabled")
       .eq("user_id", asset.user_id)
       .maybeSingle();
-    if (privacy?.face_processing_enabled && faceDetectionUrl) {
+    // Only attempt face detection when we actually have a working backend.
+    // Previously we attempted even when Rekognition wasn't configured, the
+    // provider silently returned [] (no throw), faceScanned was set to true,
+    // and the asset got marked face_scanned_at — permanently skipping it
+    // once credentials were added. Gate on rekognitionConfigured() so the
+    // asset stays eligible for re-scan until faces are really attempted.
+    if (privacy?.face_processing_enabled && faceDetectionUrl && rekognitionConfigured()) {
       faceDetectionAttempted = true;
       const detected = await providers.faceDetector.detectFaces({
         url: faceDetectionUrl,
