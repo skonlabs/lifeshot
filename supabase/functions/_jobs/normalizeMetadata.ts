@@ -14,7 +14,7 @@ import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
-import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
+import { fetchAllBytes, fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
 import { extractExifFromBytes, extractExifFromBytesRaw } from "../_extractors/exif.ts";
 
 // Many JPEGs (esp. iPhone) place an embedded thumbnail BEFORE the GPS IFD,
@@ -22,6 +22,7 @@ import { extractExifFromBytes, extractExifFromBytesRaw } from "../_extractors/ex
 // GPS in the vast majority of files; if still missing we retry up to 8 MB.
 const HEAD_BYTES = 2 * 1024 * 1024;
 const HEAD_BYTES_RETRY = 8 * 1024 * 1024;
+const FULL_EXIF_FETCH_CAP = 32 * 1024 * 1024;
 
 async function nudgeWorkerDrain() {
   await wakeWorkerDrain({ batch: 4, budgetMs: 50_000 });
@@ -322,6 +323,21 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               });
               head = bigger;
               ex = await extractExifFromBytes(head.bytes);
+            }
+          }
+          if ((!ex.gps?.latitude || !ex.gps?.longitude) && providerKind === "dropbox") {
+            const token = await conn.getOriginalAccessToken(ref.source_asset_id).catch(() => null);
+            if (token?.url) {
+              const full = await fetchAllBytes(token.url, FULL_EXIF_FETCH_CAP);
+              if (full?.bytes?.byteLength && full.bytes.byteLength > head.bytes.byteLength) {
+                console.log("normalizeMetadata phase2 Dropbox full-file GPS fallback", {
+                  asset_id,
+                  headBytes: head.bytes.byteLength,
+                  fullBytes: full.bytes.byteLength,
+                });
+                head = full;
+                ex = await extractExifFromBytes(full.bytes);
+              }
             }
           }
           console.log("normalizeMetadata phase2 exif parsed", {
