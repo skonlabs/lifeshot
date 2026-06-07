@@ -499,8 +499,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       file_size_bytes: a.file_size_bytes ?? null,
       checksum_hash: a.checksum_hex ?? null,
       perceptual_hash: a.perceptual_hash ?? null,
-      location_lat: a.location?.lat ?? null,
-      location_lng: a.location?.lng ?? null,
       device_make: a.device_make ?? null,
       device_model: a.device_model ?? null,
       thumbnail_cache_key: a.thumbnail_url ?? null,
@@ -514,6 +512,27 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     (inserted ?? []).forEach((row: any, i: number) => {
       newAssetMap.set(newItems[i].provider_asset_id, row.id);
     });
+
+    // Provider-supplied GPS goes to canonical asset_gps store, not assets.
+    const gpsRows = newItems
+      .map((a) => {
+        const aid = newAssetMap.get(a.provider_asset_id);
+        if (!aid || a.location?.lat == null || a.location?.lng == null) return null;
+        return {
+          asset_id: aid,
+          user_id: acct.user_id,
+          gps_latitude: a.location.lat,
+          gps_longitude: a.location.lng,
+          location_source: "provider_api",
+          location_confidence: 0.9,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+    if (gpsRows.length > 0) {
+      const { error: gpsErr } = await sb.from("asset_gps")
+        .upsert(gpsRows, { onConflict: "asset_id" });
+      if (gpsErr) console.warn("syncSource: bulk asset_gps upsert failed", gpsErr.message);
+    }
   }
 
   // 3) Bulk-upsert asset_source_refs.
@@ -546,6 +565,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   // with fields the connector now provides (e.g. GPS unlocked by enabling
   // include_media_info on Dropbox).
   const existingAssetUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const existingGpsUpdates: Array<{ assetId: string; lat: number; lng: number }> = [];
   for (const a of page.items) {
     const existing = refMap.get(a.provider_asset_id);
     const assetId = existing?.asset_id ?? newAssetMap.get(a.provider_asset_id);
@@ -553,8 +573,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     if (existing) {
       const patch: Record<string, unknown> = {};
       if (a.location?.lat != null && a.location?.lng != null) {
-        patch.location_lat = a.location.lat;
-        patch.location_lng = a.location.lng;
+        existingGpsUpdates.push({ assetId, lat: a.location.lat, lng: a.location.lng });
       }
       if (a.capture_time) patch.capture_time = a.capture_time;
       if (a.width) patch.width = a.width;
@@ -599,8 +618,29 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
         console.warn("syncSource: existing-asset backfill failed", { id: u.id, error: upErr.message });
         continue;
       }
-      if (u.patch.location_lat != null && !needsNormalize.some((n) => n.assetId === u.id)) {
-        needsNormalize.push({ assetId: u.id, modifiedTime: null });
+    }
+  }
+
+  // Backfill GPS for existing assets via asset_gps (the canonical store).
+  if (existingGpsUpdates.length > 0) {
+    const gpsRows = existingGpsUpdates.map((u) => ({
+      asset_id: u.assetId,
+      user_id: acct.user_id,
+      gps_latitude: u.lat,
+      gps_longitude: u.lng,
+      location_source: "provider_api",
+      location_confidence: 0.9,
+    }));
+    const { error: gpsErr } = await sb.from("asset_gps")
+      .upsert(gpsRows, { onConflict: "asset_id" });
+    if (gpsErr) {
+      console.warn("syncSource: existing-asset asset_gps backfill failed", gpsErr.message);
+    } else {
+      // Force normalizeMetadata for any asset that gained GPS so clusterPlaces re-runs.
+      for (const u of existingGpsUpdates) {
+        if (!needsNormalize.some((n) => n.assetId === u.assetId)) {
+          needsNormalize.push({ assetId: u.assetId, modifiedTime: null });
+        }
       }
     }
   }

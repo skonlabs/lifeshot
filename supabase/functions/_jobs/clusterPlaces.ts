@@ -28,21 +28,8 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
 
   // ── 1. Collect every asset for this user that has GPS coords ──────────────
-  // Source of truth is `assets.location_lat/lng`. We also look at `asset_gps`
-  // in case some rows have GPS there but not on the asset row.
+  // Canonical store is `asset_gps` (assets.location_* columns were dropped).
   const coordsByAsset = new Map<string, { lat: number; lng: number }>();
-
-  const assetsQ = sb.from("assets")
-    .select("id, location_lat, location_lng")
-    .eq("user_id", uid)
-    .not("location_lat", "is", null)
-    .not("location_lng", "is", null);
-  const { data: assetRows, error: aErr } = asset_id ? await assetsQ.eq("id", asset_id) : await assetsQ;
-  if (aErr) throw new Error(`clusterPlaces assets fetch: ${aErr.message}`);
-  for (const r of (assetRows ?? []) as any[]) {
-    const lat = Number(r.location_lat), lng = Number(r.location_lng);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) coordsByAsset.set(r.id, { lat, lng });
-  }
 
   const gpsQ = sb.from("asset_gps")
     .select("asset_id, gps_latitude, gps_longitude")
@@ -52,7 +39,6 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
   const { data: gpsRows, error: gErr } = asset_id ? await gpsQ.eq("asset_id", asset_id) : await gpsQ;
   if (gErr) throw new Error(`clusterPlaces asset_gps fetch: ${gErr.message}`);
   for (const r of (gpsRows ?? []) as any[]) {
-    if (coordsByAsset.has(r.asset_id)) continue;
     const lat = Number(r.gps_latitude), lng = Number(r.gps_longitude);
     if (Number.isFinite(lat) && Number.isFinite(lng)) coordsByAsset.set(r.asset_id, { lat, lng });
   }
@@ -140,12 +126,11 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       continue;
     }
 
-    // Mirror onto canonical assets row for direct queries (places API joins here).
+    // Mirror place pointer onto assets (places API joins via assets.place_id).
+    // City/country live in asset_gps now (updated in the upsert above).
     await sb.from("assets").update({
       place_id: placeId,
       place_name: placeName,
-      location_city: geo.admin ?? null,
-      location_country: geo.country ?? null,
     }).eq("id", assetId);
 
     affectedAssets.push(assetId);
