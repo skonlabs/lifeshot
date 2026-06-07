@@ -438,33 +438,31 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     hasLocationMetadata: boolean;
   }>();
   if (existingAssetIds.length > 0) {
+    // asset_file_metadata + asset_preview_metadata were dropped in B-NUKE.
+    // filename now lives on assets directly, and thumbnail/preview presence is
+    // derived from asset_media_metadata.thumbnail_*/preview_* columns.
     const [
-      { data: fileMetadataRows, error: fileMetadataError },
+      { data: assetsMetaRows, error: assetsMetaError },
       { data: mediaMetadataRows, error: mediaMetadataError },
-      { data: previewMetadataRows, error: previewMetadataError },
       { data: aiEnrichmentRows, error: aiEnrichmentError },
       { data: locationRows, error: locationError },
     ] = await Promise.all([
-      sb.from("asset_file_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_media_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_preview_metadata").select("asset_id, thumbnail_generated, preview_generated, thumbnail_cache_key, preview_cache_key").in("asset_id", existingAssetIds),
+      sb.from("assets").select("id, filename, thumbnail_cache_key, proxy_cache_key").in("id", existingAssetIds),
+      sb.from("asset_media_metadata").select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path").in("asset_id", existingAssetIds),
       sb.from("asset_ai_enrichment").select("asset_id").in("asset_id", existingAssetIds),
       sb.from("asset_gps").select("asset_id").in("asset_id", existingAssetIds),
     ]);
-    if (fileMetadataError) throw new Error(`load file metadata completeness: ${fileMetadataError.message}`);
+    if (assetsMetaError) throw new Error(`load asset metadata completeness: ${assetsMetaError.message}`);
     if (mediaMetadataError) throw new Error(`load media metadata completeness: ${mediaMetadataError.message}`);
-    if (previewMetadataError) throw new Error(`load preview metadata completeness: ${previewMetadataError.message}`);
     if (aiEnrichmentError) throw new Error(`load ai enrichment completeness: ${aiEnrichmentError.message}`);
     if (locationError) throw new Error(`load location metadata completeness: ${locationError.message}`);
 
-    const fileIds = new Set((fileMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const fileIds = new Set((assetsMetaRows ?? []).filter((row: any) => !!row.filename).map((row: any) => row.id));
     const mediaIds = new Set((mediaMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const previewContentIds = new Set((previewMetadataRows ?? []).filter((row: any) => {
-      const thumbReady = row.thumbnail_generated === true || !!row.thumbnail_cache_key;
-      const previewReady = row.preview_generated === true || !!row.preview_cache_key;
-      return thumbReady || previewReady;
+    const previewContentIds = new Set((mediaMetadataRows ?? []).filter((row: any) => {
+      return !!(row.thumbnail_url || row.thumbnail_storage_path || row.preview_url || row.preview_storage_path);
     }).map((row: any) => row.asset_id).filter(Boolean));
-    const previewIds = new Set((previewMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const previewIds = previewContentIds;
     const aiEnrichmentIds = new Set((aiEnrichmentRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const locationIds = new Set((locationRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     for (const assetId of existingAssetIds) {
