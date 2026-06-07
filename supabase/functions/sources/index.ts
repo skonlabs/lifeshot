@@ -320,12 +320,18 @@ app.use("/v1/*", (await import("../_shared/auth.ts")).withAuth);
 app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
+  // Show every account the user has ever connected, EXCEPT ones they
+  // explicitly disconnected. A failed sync (status='error'), a transient
+  // auth blip (status='revoked'), or an in-flight reconnect (status=
+  // 'connecting'/'pending'/'syncing'/'paused') should NOT make the source
+  // vanish from the Connected list — the UI surfaces those states inline
+  // and lets the user re-auth or retry.
   const { data, error } = await supa.from("source_accounts").select(`
     id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
-  `).in("status", ["active", "pending"]).order("connected_at", { ascending: false });
+  `).neq("status", "disconnected").order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
-  const visibleAccounts = (data ?? []).filter((row: any) => row?.status === "active" || row?.status === "pending");
+  const visibleAccounts = (data ?? []).filter((row: any) => row?.status && row.status !== "disconnected");
   // Per-account counts, broken out by media_type so the UI can show
   // photos / videos / documents / other in addition to the total indexed.
   const ids = visibleAccounts.map((r: any) => r.id);
