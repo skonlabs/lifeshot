@@ -179,27 +179,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // file_metadata — always write, even if rel is a provider URL rather than a real path.
+  // file_metadata + organization_signals consolidated onto `assets` in B-NUKE.
   if (rel) {
-    await upsertLog(sb, "asset_file_metadata", {
-      asset_id, user_id: asset.user_id,
+    const orgSignals = inferOrganizationSignals(rel, filename);
+    await sb.from("assets").update({
+      filename,
       relative_path: rel,
       parent_folder_path: rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : null,
-      filename,
-      filename_without_extension: filename && dot > 0 ? filename.slice(0, dot) : filename,
-      extension: filename && dot > 0 ? filename.slice(dot + 1) : null,
-      normalized_extension: filename && dot > 0 ? filename.slice(dot + 1).toLowerCase() : null,
-      detected_file_type: asset.media_type ?? null,
-      modified_at_filesystem: ref?.source_modified_at ?? null,
-      scan_discovered_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" }, "phase1");
-
-    const orgSignals = inferOrganizationSignals(rel, filename);
-    await upsertLog(sb, "asset_organization_signals", {
-      asset_id,
-      user_id: asset.user_id,
-      ...orgSignals,
-    }, { onConflict: "asset_id" }, "phase1");
+      folder_tokens: orgSignals.folder_tokens,
+      filename_tokens: orgSignals.filename_tokens,
+    }).eq("id", asset_id);
   }
 
   // asset_media_metadata — write whatever dimensions / flags we already know.
@@ -219,14 +208,18 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     ocr_possible: isImage || isDocument,
   }, { onConflict: "asset_id" }, "phase1");
 
-  await upsertLog(sb, "asset_preview_metadata", {
-    asset_id,
-    user_id: asset.user_id,
-    thumbnail_generated: Boolean(asset.thumbnail_cache_key),
-    preview_generated: Boolean(asset.proxy_cache_key),
-    thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
-    preview_cache_key: asset.proxy_cache_key ?? null,
-  }, { onConflict: "asset_id" }, "phase1-preview");
+  // asset_preview_metadata dropped → cache keys persisted on asset_media_metadata.
+  {
+    const tk = asset.thumbnail_cache_key ?? null;
+    const pk = asset.proxy_cache_key ?? null;
+    await upsertLog(sb, "asset_media_metadata", {
+      asset_id, user_id: asset.user_id,
+      thumbnail_url: tk && /^https?:\/\//.test(tk) ? tk : null,
+      thumbnail_storage_path: tk && !/^https?:\/\//.test(tk) ? tk : null,
+      preview_url: pk && /^https?:\/\//.test(pk) ? pk : null,
+      preview_storage_path: pk && !/^https?:\/\//.test(pk) ? pk : null,
+    }, { onConflict: "asset_id" }, "phase1-preview");
+  }
 
   // For images: always write an asset_exif stub so phase 2 can upsert richer
   // data on top. Without this, assets lacking device_make/model still get a row.
@@ -279,19 +272,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }, { onConflict: "asset_id" }, "phase1");
   }
 
-  // ai_ready_metadata — always write.
-  await upsertLog(sb, "asset_ai_ready_metadata", {
-    asset_id, user_id: asset.user_id,
-    ai_processing_possible: isImage || isVideo || isDocument,
-    ai_processing_consent: false,
-    ocr_possible: isImage || isDocument,
-    ocr_status: isImage || isDocument ? "pending" : "skipped",
-    caption_status: isImage || isVideo || isDocument ? "pending" : "skipped",
-    labels_status: isImage || isVideo || isDocument ? "pending" : "skipped",
-    embedding_status: "pending",
-    face_processing_possible: isImage || isVideo,
-    face_processing_consent: false,
-  }, { onConflict: "asset_id" }, "phase1");
+  // asset_ai_ready_metadata dropped — readiness derived live from
+  // privacy_settings + media flags by the AI jobs themselves.
 
   // Ensure assets.status reflects at least "normalized".
   await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id).eq("status", "ingested");
