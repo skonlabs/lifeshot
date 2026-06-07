@@ -44,16 +44,22 @@ type SourceAccountsResponse = {
 };
 
 function normalizeSourceAccounts(data: SourceAccountsResponse): SourceAccountsResponse {
-  const visible = data.accounts.filter((account) => account.status === "active" || account.status === "pending");
+  const visible = data.accounts.filter((account) => account.status !== "disconnected");
   const byProvider = new Map<string, SourceAccountsResponse["accounts"][number]>();
 
   const score = (account: SourceAccountsResponse["accounts"][number]) => {
+    const statusRank = account.status === "syncing"
+      ? 3
+      : account.status === "pending"
+        ? 2
+        : account.status === "active"
+          ? 1
+          : 0;
     const selectedCount = account.selected_container_count ?? account.selected_containers?.length ?? 0;
     const hasSyncHistory = account.last_sync_at ? 1 : 0;
-    const isActive = account.status === "active" ? 1 : 0;
     const connectedAt = account.connected_at ? new Date(account.connected_at).getTime() : 0;
 
-    return [selectedCount, account.asset_count ?? 0, hasSyncHistory, isActive, connectedAt] as const;
+    return [statusRank, selectedCount, account.asset_count ?? 0, hasSyncHistory, connectedAt] as const;
   };
 
   const compareScore = (
