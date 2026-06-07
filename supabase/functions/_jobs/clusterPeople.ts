@@ -58,6 +58,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     bbox: any;
     confidence: number;
     face_id: string;
+    attributes: Record<string, unknown> | null;
   }
 
   const faceEntries: FaceEntry[] = [];
@@ -75,6 +76,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         bbox,
         confidence: Number(f.score ?? f.confidence ?? 0.5),
         face_id: faceId,
+        attributes: (f.attributes ?? null) as Record<string, unknown> | null,
       });
     }
   }

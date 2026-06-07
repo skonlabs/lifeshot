@@ -134,6 +134,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         embedding: f.embedding,
         face_id: f.face_id,
         face_crop: null,
+        attributes: f.attributes,
       }));
     }
   } catch (e: any) {

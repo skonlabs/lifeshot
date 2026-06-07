@@ -17,6 +17,7 @@ export interface DetectedFace {
   confidence: number;     // 0..1
   embedding: number[] | null;
   face_id: string | null; // AWS Rekognition FaceId
+  attributes: Record<string, unknown> | null; // Full Rekognition FaceDetail JSON
 }
 
 async function fetchImageBytes(url: string, maxBytes = 5 * 1024 * 1024): Promise<Uint8Array> {
@@ -75,5 +76,6 @@ export async function detectFaces(opts: {
     confidence: r.confidence / 100, // normalize to 0..1 for consistency with prior schema
     embedding: null,
     face_id: r.faceId,
+    attributes: r.attributes,
   }));
 }

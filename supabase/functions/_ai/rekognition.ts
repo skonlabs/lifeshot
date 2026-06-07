@@ -77,6 +77,8 @@ export interface RekFaceRecord {
   faceId: string;
   bbox: { x: number; y: number; w: number; h: number };
   confidence: number;     // 0-100
+  /** Full Rekognition FaceDetail JSON (age, gender, emotions, landmarks, pose, etc.). */
+  attributes: Record<string, unknown> | null;
 }
 
 /**
@@ -96,7 +98,7 @@ export async function indexFaces(opts: {
   const body: Record<string, unknown> = {
     CollectionId: opts.collectionId,
     Image: { Bytes: b64 },
-    DetectionAttributes: [],
+    DetectionAttributes: ["ALL"],
     MaxFaces: opts.maxFaces ?? 15,
     QualityFilter: opts.qualityFilter ?? "AUTO",
   };
@@ -118,6 +120,7 @@ export async function indexFaces(opts: {
         h: Number(bb.Height ?? 0),
       },
       confidence: Number(rec.Face?.Confidence ?? rec.FaceDetail?.Confidence ?? 0),
+      attributes: (rec.FaceDetail ?? null) as Record<string, unknown> | null,
     };
   }).filter((r) => r.faceId.length > 0);
 }
