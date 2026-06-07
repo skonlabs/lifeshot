@@ -166,7 +166,9 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         assetId: asset_id,
       });
       faceScanned = true;
-      faces = detected.map((f) => ({
+      faces = detected
+        .filter((f) => Number(f.confidence ?? 0) >= 0.6)
+        .map((f) => ({
         bbox: f.bbox,
         score: f.confidence,
         description: f.description,
