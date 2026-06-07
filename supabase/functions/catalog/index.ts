@@ -164,9 +164,14 @@ app.post("/memory/viewport", async (c) => {
   // intersect via .in("id", ...) on the main query.
   let restrictIds: string[] | null = null;
   if (body.people_filter?.length) {
-    const { data: pf } = await supa.from("person_faces")
-      .select("asset_id").in("person_id", body.people_filter);
-    const ids = Array.from(new Set((pf ?? []).map((r: any) => r.asset_id)));
+    // person_faces was merged into people.faces (jsonb) in B-NUKE; extract
+    // asset_ids from each selected person's faces array.
+    const { data: peopleRows } = await supa.from("people")
+      .select("faces").in("id", body.people_filter);
+    const ids = Array.from(new Set(
+      (peopleRows ?? []).flatMap((p: any) =>
+        Array.isArray(p.faces) ? p.faces.map((f: any) => f.asset_id).filter(Boolean) : [])
+    ));
     restrictIds = ids;
     if (ids.length === 0) {
       return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
