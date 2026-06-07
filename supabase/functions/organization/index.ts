@@ -39,29 +39,32 @@ app.get("/events", async (c) => {
   }
   const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
   const covers: Record<string, any> = {};
-  const previewMap: Record<string, any> = {};
+  const mediaMap: Record<string, any> = {};
   if (coverAssetIds.length) {
     const { data: cs } = await supa.from("assets")
       .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type")
       .in("id", coverAssetIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+    // asset_preview_metadata dropped → blurhash/dominant_color/thumbnail come
+    // from asset_media_metadata.
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
       .in("asset_id", coverAssetIds);
-    for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
   const enriched = await Promise.all(events.map(async (e: any) => {
     const cid = coverMap[e.id];
     const cov = cid && covers[cid] ? covers[cid] : null;
-    const preview = cid ? previewMap[cid] ?? null : null;
+    const mm = cid ? mediaMap[cid] ?? null : null;
     return {
       ...e,
       asset_count: countMap[e.id] ?? 0,
       cover: cov ? {
         asset_id: cid,
-        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid, preview?.thumbnail_cache_key ?? cov.thumbnail_cache_key ?? null),
-        blurhash: preview?.blurhash ?? cov.blurhash ?? null,
-        dominant_color: preview?.dominant_color ?? cov.dominant_color ?? null,
+        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid,
+          mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? cov.thumbnail_cache_key ?? null),
+        blurhash: mm?.blurhash ?? cov.blurhash ?? null,
+        dominant_color: mm?.dominant_color ?? cov.dominant_color ?? null,
         media_type: cov.media_type ?? "photo",
       } : null,
     };
@@ -79,17 +82,23 @@ app.get("/events/:id", async (c) => {
     supa.from("event_places").select("place_id, places(*)").eq("event_id", id),
   ]);
   if (!event) throw new ApiError("not_found", "Event not found");
+  const assetIds = (eAssets ?? []).map((r: any) => r.asset_id);
+  const mediaMap: Record<string, any> = {};
+  if (assetIds.length) {
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
+      .in("asset_id", assetIds);
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+  }
   const assets = await Promise.all((eAssets ?? []).map(async (row: any) => {
     const a = row.assets ?? {};
-    const { data: preview } = await supa.from("asset_preview_metadata")
-      .select("blurhash, dominant_color, thumbnail_cache_key")
-      .eq("asset_id", row.asset_id)
-      .maybeSingle();
+    const mm = mediaMap[row.asset_id] ?? null;
     return {
       asset_id: row.asset_id,
-      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id, preview?.thumbnail_cache_key ?? a.thumbnail_cache_key ?? null),
-      blurhash: preview?.blurhash ?? a.blurhash ?? null,
-      dominant_color: preview?.dominant_color ?? a.dominant_color ?? null,
+      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id,
+        mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? a.thumbnail_cache_key ?? null),
+      blurhash: mm?.blurhash ?? a.blurhash ?? null,
+      dominant_color: mm?.dominant_color ?? a.dominant_color ?? null,
       width: a.width ?? null,
       height: a.height ?? null,
       media_type: a.media_type ?? "photo",
