@@ -208,35 +208,8 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
   );
   if (derivErr) console.error("generateDerived: asset_derivatives upsert failed", { asset_id, error: derivErr.message });
 
-  // Mirror storage-backed derivatives into the legacy cache tables with sane
-  // semantics: thumbnails in asset_thumbnails, larger previews in asset_proxies.
-  const nowIso = new Date().toISOString();
-  const thumbRows = written.filter((w) => w.kind === "thumb").map((w) => ({
-    asset_id,
-    size: "thumb",
-    cache_key: w.path,
-    ready: true,
-    generated_at: nowIso,
-  }));
-  const proxyRows = written.filter((w) => w.kind === "preview").map((w) => ({
-    asset_id,
-    quality: "preview",
-    cache_key: w.path,
-    ready: true,
-    generated_at: nowIso,
-  }));
-  if (thumbRows.length > 0) {
-    const { error: thumbErr } = await sb.from("asset_thumbnails").upsert(thumbRows, {
-      onConflict: "asset_id,size",
-    });
-    if (thumbErr) console.error("generateDerived: asset_thumbnails upsert failed", { asset_id, error: thumbErr.message });
-  }
-  if (proxyRows.length > 0) {
-    const { error: proxyErr } = await sb.from("asset_proxies").upsert(proxyRows, {
-      onConflict: "asset_id,quality",
-    });
-    if (proxyErr) console.error("generateDerived: asset_proxies upsert failed", { asset_id, error: proxyErr.message });
-  }
+  // Legacy asset_thumbnails / asset_proxies cache tables removed — live read path
+  // is asset_derivatives + asset_preview_metadata.
 
   const thumb = written.find((w) => w.kind === "thumb");
   const preview = written.find((w) => w.kind === "preview");
