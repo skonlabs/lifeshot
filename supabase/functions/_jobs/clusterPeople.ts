@@ -21,6 +21,23 @@ import { collectionIdForUser, searchFaces, rekognitionConfigured } from "../_ai/
  */
 
 const FACE_MATCH_THRESHOLD = 90; // 0-100, AWS recommends 80+ for identity matching
+const FACE_VECTOR_MATCH_THRESHOLD = 0.82;
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (!a.length || !b.length || a.length !== b.length) return -1;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const av = Number(a[i] ?? 0);
+    const bv = Number(b[i] ?? 0);
+    dot += av * bv;
+    na += av * av;
+    nb += bv * bv;
+  }
+  if (na <= 0 || nb <= 0) return -1;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -57,7 +74,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face_index: number;
     bbox: any;
     confidence: number;
-    face_id: string;
+    face_id: string | null;
+    embedding: number[] | null;
     attributes: Record<string, unknown> | null;
   }
 
@@ -67,15 +85,19 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     for (let i = 0; i < faces.length; i++) {
       const f = faces[i] as any;
       const faceId = typeof f.face_id === "string" && f.face_id.length > 0 ? f.face_id : null;
-      if (!faceId) continue;
       const bbox = sanitizeFaceBox(f.bbox ?? null);
       if (!bbox) continue;
+      const embedding = Array.isArray(f.embedding) && f.embedding.length > 0
+        ? f.embedding.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value))
+        : null;
+      if (!faceId && !embedding?.length) continue;
       faceEntries.push({
         asset_id: row.asset_id,
         face_index: i,
         bbox,
         confidence: Number(f.score ?? f.confidence ?? 0.5),
         face_id: faceId,
+        embedding,
         attributes: (f.attributes ?? null) as Record<string, unknown> | null,
       });
     }
@@ -89,11 +111,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   // Load existing FaceId → personId mapping so we can attach incoming faces
   // to known clusters without re-querying Rekognition for previously-seen faces.
-  const allFaceIds = faceEntries.map((e) => e.face_id);
-  const { data: existingMappings } = await sb
-    .from("person_faces")
-    .select("person_id, rekognition_face_id")
-    .in("rekognition_face_id", allFaceIds);
+  const allFaceIds = faceEntries.map((e) => e.face_id).filter((faceId): faceId is string => !!faceId);
+  const { data: existingMappings } = allFaceIds.length > 0
+    ? await sb
+      .from("person_faces")
+      .select("person_id, rekognition_face_id")
+      .in("rekognition_face_id", allFaceIds)
+    : { data: [] as Array<{ person_id: string; rekognition_face_id: string | null }> };
   const faceIdToPerson = new Map<string, string>();
   for (const row of existingMappings ?? []) {
     if (row.rekognition_face_id) faceIdToPerson.set(row.rekognition_face_id, row.person_id);
@@ -111,12 +135,29 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       .map((p) => Number(String(p.auto_label ?? "").split(":").at(-1) ?? 0))
       .filter(Number.isFinite),
   );
+  const existingPersonIds = (existingPeople ?? []).map((p) => p.id).filter(Boolean);
+  const { data: existingFaceVectors } = existingPersonIds.length > 0
+    ? await sb
+      .from("person_faces")
+      .select("person_id, face_vector")
+      .in("person_id", existingPersonIds)
+    : { data: [] as Array<{ person_id: string; face_vector: number[] | null }> };
+  const personVectors = new Map<string, number[][]>();
+  for (const row of existingFaceVectors ?? []) {
+    const vector = Array.isArray(row.face_vector) && row.face_vector.length > 0
+      ? row.face_vector.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value))
+      : null;
+    if (!vector?.length) continue;
+    const list = personVectors.get(row.person_id) ?? [];
+    list.push(vector);
+    personVectors.set(row.person_id, list);
+  }
 
   let clusteredFaces = 0;
 
   for (const entry of faceEntries) {
     // Skip faces already linked to a person.
-    if (faceIdToPerson.has(entry.face_id)) {
+    if (entry.face_id && faceIdToPerson.has(entry.face_id)) {
       const existingPersonId = faceIdToPerson.get(entry.face_id)!;
       // Ensure this exact (person, asset, face) link exists.
       const { error: upErr } = await sb.from("person_faces").upsert({
@@ -124,6 +165,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         asset_id: entry.asset_id,
         bbox: entry.bbox,
         confidence: entry.confidence,
+        face_vector: entry.embedding,
         rekognition_face_id: entry.face_id,
         rekognition_response: entry.attributes,
       }, { onConflict: "person_id,asset_id" });
@@ -133,19 +175,38 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
     // Search the collection for similar faces (excluding this one).
     let matchedPersonId: string | null = null;
-    try {
-      const matches = await searchFaces({
-        collectionId,
-        faceId: entry.face_id,
-        faceMatchThreshold: FACE_MATCH_THRESHOLD,
-        maxFaces: 10,
-      });
-      for (const m of matches) {
-        const pid = faceIdToPerson.get(m.faceId);
-        if (pid) { matchedPersonId = pid; break; }
+    if (entry.face_id) {
+      try {
+        const matches = await searchFaces({
+          collectionId,
+          faceId: entry.face_id,
+          faceMatchThreshold: FACE_MATCH_THRESHOLD,
+          maxFaces: 10,
+        });
+        for (const m of matches) {
+          const pid = faceIdToPerson.get(m.faceId);
+          if (pid) { matchedPersonId = pid; break; }
+        }
+      } catch (e: any) {
+        console.warn("clusterPeople: searchFaces failed", entry.face_id, String(e?.message ?? e));
       }
-    } catch (e: any) {
-      console.warn("clusterPeople: searchFaces failed", entry.face_id, String(e?.message ?? e));
+    }
+
+    if (!matchedPersonId && entry.embedding?.length) {
+      let bestPersonId: string | null = null;
+      let bestSimilarity = Number.NEGATIVE_INFINITY;
+      for (const [candidatePersonId, vectors] of personVectors.entries()) {
+        for (const vector of vectors) {
+          const similarity = cosineSimilarity(entry.embedding, vector);
+          if (similarity > bestSimilarity) {
+            bestSimilarity = similarity;
+            bestPersonId = candidatePersonId;
+          }
+        }
+      }
+      if (bestPersonId && bestSimilarity >= FACE_VECTOR_MATCH_THRESHOLD) {
+        matchedPersonId = bestPersonId;
+      }
     }
 
     let personId: string;
@@ -173,12 +234,18 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       asset_id: entry.asset_id,
       bbox: entry.bbox,
       confidence: entry.confidence,
+      face_vector: entry.embedding,
       rekognition_face_id: entry.face_id,
       rekognition_response: entry.attributes,
     }, { onConflict: "person_id,asset_id" });
     if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
     else {
-      faceIdToPerson.set(entry.face_id, personId);
+      if (entry.face_id) faceIdToPerson.set(entry.face_id, personId);
+      if (entry.embedding?.length) {
+        const vectors = personVectors.get(personId) ?? [];
+        vectors.push(entry.embedding);
+        personVectors.set(personId, vectors);
+      }
       clusteredFaces++;
     }
   }
