@@ -6,12 +6,10 @@ import type { JobContext } from "../_pipeline/runner.ts";
 /**
  * clusterPlaces — turns raw GPS coordinates into named places.
  *
- * Source of truth: `asset_gps` (preferred) + `assets.location_lat/lng`
- * (fallback). On success it back-fills the reverse-geocoded city / country /
- * place_name onto `asset_gps`, ensures a `places` row exists, and mirrors
- * the resolved place onto `assets.place_id / place_name / location_city /
- * location_country` so callers can query in a single join.
- * We no longer write to `asset_locations` — that table is deprecated.
+ * Source of truth: `asset_gps` (canonical). On success it back-fills the
+ * reverse-geocoded city / country / place_name onto `asset_gps`, ensures a
+ * `places` row exists, and mirrors place_id / place_name onto `assets` so
+ * callers can query places in a single join.
  */
 
 // Round coords to ~1km so nearby assets share a single geocode lookup.
@@ -110,9 +108,7 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
       placeIdByName.set(placeName, placeId);
     }
 
-    // Upsert asset_gps with the reverse-geocode (creates the row if EXIF
-    // wasn't the GPS source, so coords pulled from assets.location_lat/lng
-    // still get a row here).
+    // Upsert asset_gps with the reverse-geocode result.
     const { error: gErr } = await sb.from("asset_gps").upsert({
       asset_id: assetId, user_id: uid,
       gps_latitude: lat, gps_longitude: lng,
