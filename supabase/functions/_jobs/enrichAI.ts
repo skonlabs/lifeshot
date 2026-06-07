@@ -51,8 +51,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let url: string | null = null;
   let faceDetectionUrl: string | null = null;
 
+  // For vision captioning a small thumb is fine. For face detection we MUST
+  // prefer the larger preview — Rekognition needs faces to be at least ~40px
+  // wide to detect, and provider-supplied thumbnails (often 256-512px) are
+  // too small. Earlier we used thumbnail_cache_key for faces, which silently
+  // caused 0 face detections across the entire library.
   const rawKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
-  const rawFaceKey = asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null;
+  const rawFaceKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
   if (rawKey && /^https?:\/\//.test(rawKey)) {
     url = rawKey;
   }
@@ -77,11 +82,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
 
   if (!faceDetectionUrl) {
     const { data: mm } = await sb.from("asset_media_metadata")
-      .select("thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
       .eq("asset_id", asset_id).maybeSingle();
-    faceDetectionUrl = mm?.thumbnail_url ?? mm?.preview_url ?? null;
+    // Prefer preview (larger) for face detection; fall back to thumbnail.
+    faceDetectionUrl = mm?.preview_url ?? mm?.thumbnail_url ?? null;
     if (!faceDetectionUrl) {
-      const path = mm?.thumbnail_storage_path ?? mm?.preview_storage_path ?? null;
+      const path = mm?.preview_storage_path ?? mm?.thumbnail_storage_path ?? null;
       if (path) {
         const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
         faceDetectionUrl = signed?.signedUrl ?? null;
