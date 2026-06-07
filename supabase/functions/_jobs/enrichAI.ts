@@ -156,7 +156,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     if (privacy?.face_processing_enabled && faceDetectionUrl) {
       faceDetectionAttempted = true;
       const detected = await providers.faceDetector.detectFaces({
-        url: faceDetectionUrl,
+        imageUrl: faceDetectionUrl,
         userId: asset.user_id,
         assetId: asset_id,
       });
