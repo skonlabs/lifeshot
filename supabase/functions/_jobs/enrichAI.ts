@@ -48,10 +48,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // storage path (after generateDerived runs). We must create a signed URL for
   // the latter — passing a bare storage path to the AI provider will fail.
   let url: string | null = null;
+  let faceDetectionUrl: string | null = null;
 
   const rawKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
+  const rawFaceKey = asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null;
   if (rawKey && /^https?:\/\//.test(rawKey)) {
     url = rawKey;
+  }
+  if (rawFaceKey && /^https?:\/\//.test(rawFaceKey)) {
+    faceDetectionUrl = rawFaceKey;
   }
 
   if (!url) {
@@ -72,6 +77,25 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }
   }
 
+  if (!faceDetectionUrl) {
+    // Prefer smaller thumbnail bytes for Rekognition so scans do not fail on
+    // large preview/original payloads that exceed the 5 MiB bytes limit.
+    for (const kind of ["thumb", "preview"]) {
+      const { data: deriv } = await sb
+        .from("asset_derivatives")
+        .select("storage_path, storage_bucket")
+        .eq("asset_id", asset_id)
+        .eq("kind", kind)
+        .maybeSingle();
+      if (deriv?.storage_path) {
+        const { data: signed } = await sb.storage
+          .from(deriv.storage_bucket)
+          .createSignedUrl(deriv.storage_path, 600);
+        if (signed?.signedUrl) { faceDetectionUrl = signed.signedUrl; break; }
+      }
+    }
+  }
+
   // If keys exist but aren't http URLs, try signing the storage path directly.
   if (!url && rawKey && !/^https?:\/\//.test(rawKey)) {
     const { data: signed } = await sb.storage
@@ -79,6 +103,14 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .createSignedUrl(rawKey, 600);
     url = signed?.signedUrl ?? null;
   }
+  if (!faceDetectionUrl && rawFaceKey && !/^https?:\/\//.test(rawFaceKey)) {
+    const { data: signed } = await sb.storage
+      .from(STORAGE_BUCKETS.derived)
+      .createSignedUrl(rawFaceKey, 600);
+    faceDetectionUrl = signed?.signedUrl ?? null;
+  }
+
+  if (!faceDetectionUrl) faceDetectionUrl = url;
 
   if (!url) {
     await enqueueJob("generateDerived", {
@@ -114,15 +146,17 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // Gracefully skipped (faces=[]) when either condition is false.
   let faces: Array<Record<string, unknown>> = [];
   let faceScanned = false;
+  let faceDetectionAttempted = false;
   try {
     const { data: privacy } = await sb
       .from("privacy_settings")
       .select("face_processing_enabled")
       .eq("user_id", asset.user_id)
       .maybeSingle();
-    if (privacy?.face_processing_enabled) {
+    if (privacy?.face_processing_enabled && faceDetectionUrl) {
+      faceDetectionAttempted = true;
       const detected = await providers.faceDetector.detectFaces({
-        url,
+        url: faceDetectionUrl,
         userId: asset.user_id,
         assetId: asset_id,
       });
@@ -139,6 +173,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }
   } catch (e: any) {
     console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
+    faceScanned = false;
   }
 
   await sb.from("asset_ai_enrichment").upsert({
@@ -152,7 +187,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   }, { onConflict: "asset_id" });
 
   // Mark the asset as face-scanned so it isn't reprocessed.
-  if (faceScanned) {
+  if (faceDetectionAttempted && faceScanned) {
     await sb.from("assets")
       .update({ face_scanned_at: new Date().toISOString() })
       .eq("id", asset_id);
