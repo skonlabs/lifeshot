@@ -125,13 +125,22 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
-    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
+    .select("id, user_id, media_type, mime_type, capture_time, timezone, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
     .eq("id", asset_id).single();
   if (error || !asset) throw new Error("not found: asset");
 
   const { data: ref } = await sb.from("asset_source_refs")
     .select("source_account_id, source_asset_id, source_relative_path, provider_url, source_modified_at, is_primary")
     .eq("asset_id", asset_id).order("is_primary", { ascending: false }).limit(1).maybeSingle();
+
+  // Canonical location store. syncSource writes here directly; we read it for
+  // backwards-compat with assets that already had a row.
+  const { data: gpsRow } = await sb.from("asset_gps")
+    .select("gps_latitude, gps_longitude")
+    .eq("asset_id", asset_id)
+    .maybeSingle();
+  const existingLat = gpsRow?.gps_latitude != null ? Number(gpsRow.gps_latitude) : null;
+  const existingLng = gpsRow?.gps_longitude != null ? Number(gpsRow.gps_longitude) : null;
 
   const mime = asset.mime_type ?? "";
   const { isImage, isVideo, isAudio, isDocument } = inferMediaFlags(mime, asset.media_type);
@@ -233,15 +242,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }, { onConflict: "asset_id" }, "phase1");
   }
 
-  // For images/videos: write asset_gps if location came from the provider API.
-  if ((isImage || isVideo) && asset.location_lat != null && asset.location_lng != null) {
+  // For images/videos with provider-supplied GPS (already in asset_gps from
+  // syncSource), ensure geohash is set.
+  if ((isImage || isVideo) && existingLat != null && existingLng != null) {
     await upsertLog(sb, "asset_gps", {
       asset_id, user_id: asset.user_id,
-      gps_latitude: asset.location_lat,
-      gps_longitude: asset.location_lng,
+      gps_latitude: existingLat,
+      gps_longitude: existingLng,
       location_source: "provider_api",
       location_confidence: 0.9,
-      geohash: geohashEncode(Number(asset.location_lat), Number(asset.location_lng), 9),
+      geohash: geohashEncode(existingLat, existingLng, 9),
     }, { onConflict: "asset_id" }, "phase1");
   }
 
@@ -291,7 +301,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // phase 1 data (above) from being used by downstream jobs.
 
   let byteExtractionSuccess = false;
-  let hasGpsData = asset.location_lat != null && asset.location_lng != null;
+  let hasGpsData = existingLat != null && existingLng != null;
 
   if (ref?.source_account_id && ref?.source_asset_id && isImage) {
     try {
@@ -428,8 +438,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           const assetUpdates: Record<string, unknown> = {};
           if (ex.exif?.exifCaptureTime && !asset.capture_time) assetUpdates.capture_time = ex.exif.exifCaptureTime;
           if (ex.gps?.latitude != null && ex.gps?.longitude != null) {
-            assetUpdates.location_lat = ex.gps.latitude;
-            assetUpdates.location_lng = ex.gps.longitude;
+            // GPS lives in asset_gps, not assets — upsert directly.
+            await sb.from("asset_gps").upsert({
+              asset_id, user_id: asset.user_id,
+              gps_latitude: ex.gps.latitude,
+              gps_longitude: ex.gps.longitude,
+              location_source: "exif",
+              location_confidence: 0.95,
+              geohash: geohashEncode(Number(ex.gps.latitude), Number(ex.gps.longitude), 9),
+            }, { onConflict: "asset_id" });
+            hasGpsData = true;
           }
           if (ex.media?.width && !asset.width) assetUpdates.width = ex.media.width;
           if (ex.media?.height && !asset.height) assetUpdates.height = ex.media.height;

@@ -56,13 +56,21 @@ async function findOrCreateAsset(
     file_size_bytes: rec.fileSystem?.fileSizeBytes ?? null,
     checksum_hash: rec.hashes?.fileHashSha256 ?? null,
     perceptual_hash: rec.hashes?.perceptualHashImage ?? null,
-    location_lat: rec.gps?.gpsLatitude ?? null,
-    location_lng: rec.gps?.gpsLongitude ?? null,
     device_make: rec.exif?.cameraMake ?? rec.exif?.exifMake ?? null,
     device_model: rec.exif?.cameraModel ?? rec.exif?.exifModel ?? null,
     status: "ingested",
   }).select("id").single();
   if (error) throw new Error(`insert assets: ${error.message}`);
+  // Location data lives in asset_gps (canonical store); insert if coords present.
+  if (rec.gps?.gpsLatitude != null && rec.gps?.gpsLongitude != null) {
+    await svc.from("asset_gps").upsert({
+      asset_id: created!.id,
+      user_id: userId,
+      gps_latitude: rec.gps.gpsLatitude,
+      gps_longitude: rec.gps.gpsLongitude,
+      location_source: "canonical_record",
+    }, { onConflict: "asset_id" });
+  }
   return { assetId: created!.id as string, created: true };
 }
 
