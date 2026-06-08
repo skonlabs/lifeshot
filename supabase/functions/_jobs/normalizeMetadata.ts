@@ -382,7 +382,6 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               exif_model: ex.exif.exifModel ?? null,
               lens_make: ex.exif.lensMake ?? null,
               lens_model: ex.exif.lensModel ?? null,
-              lens: ex.exif.lensModel ?? null,
               iso: ex.exif.iso ?? null,
               aperture: ex.exif.aperture ?? null,
               f_number: ex.exif.fNumber ?? null,
