@@ -192,8 +192,9 @@ app.get("/people", async (c) => {
   // the 150s edge-function idle timeout once the library grew past a few
   // hundred face clusters).
   const pathsToSign = new Set<string>();
-  for (const p of peopleRows) {
-    const cid = p.cover_asset_id as string | null;
+  for (const p of peopleRows as any[]) {
+    const cid: string | null =
+      (bestFaceByPerson.get(p.id)?.face?.asset_id as string | null) ?? (p.cover_asset_id as string | null) ?? null;
     if (!cid) continue;
     const asset = coverAssets[cid] ?? null;
     const media = mediaMap[cid] ?? null;
