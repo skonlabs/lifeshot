@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { signInWithPasswordServer } from "@/lib/auth/password-auth.functions";
@@ -14,6 +15,7 @@ export const Route = createFileRoute("/sign-in")({
 
 function SignIn() {
   const navigate = useNavigate();
+  const signInWithPassword = useServerFn(signInWithPasswordServer);
   const search = Route.useSearch();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,7 +26,7 @@ function SignIn() {
     setLoading(true);
 
     try {
-      const session = await signInWithPasswordServer({
+      const session = await signInWithPassword({
         data: { email, password },
       });
 

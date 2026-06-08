@@ -33,6 +33,7 @@ export const signInWithPasswordServer = createServerFn({ method: "POST" })
     try {
       const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
         method: "POST",
+        signal: AbortSignal.timeout(8_000),
         headers: {
           apikey: publishableKey,
           "Content-Type": "application/json",
@@ -44,7 +45,14 @@ export const signInWithPasswordServer = createServerFn({ method: "POST" })
       });
 
       const rawBody = await response.text();
-      const payload = rawBody ? JSON.parse(rawBody) : null;
+      const payload = (() => {
+        if (!rawBody) return null;
+        try {
+          return JSON.parse(rawBody);
+        } catch {
+          return null;
+        }
+      })();
 
       if (!response.ok) {
         const fallbackMessage = response.status >= 500
