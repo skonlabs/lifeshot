@@ -27,10 +27,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      // Only react to real identity transitions. INITIAL_SESSION and
+      // TOKEN_REFRESHED fire on every mount/tab-focus and would thrash the
+      // router + query cache, causing the "logged in / logged out" flicker.
+      if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") {
+        setSession(s);
+        return;
+      }
       setSession(s);
       router.invalidate();
-      qc.invalidateQueries();
+      // Don't refetch protected queries against a cleared session (401 storm).
+      if (event !== "SIGNED_OUT") qc.invalidateQueries();
     });
     return () => {
       mounted = false;
