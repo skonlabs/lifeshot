@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
-import { useAuth } from "@/lib/auth/AuthProvider";
+import { signInWithPasswordServer } from "@/lib/auth/password-auth.functions";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
@@ -15,23 +15,23 @@ export const Route = createFileRoute("/sign-in")({
 function SignIn() {
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const { isAuthenticated, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      navigate({ to: search.redirect, replace: true });
-    }
-  }, [authLoading, isAuthenticated, navigate, search.redirect]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const session = await signInWithPasswordServer({
+        data: { email, password },
+      });
+
+      const { error } = await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
 
       if (error) {
         toast.error(error.message);
