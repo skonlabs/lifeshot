@@ -11,19 +11,19 @@ function AuthenticatedLayout() {
   const { isAuthenticated, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const redirectTarget = typeof location.href === "string" && location.href.startsWith("/")
-    ? location.href
-    : location.pathname;
+  const pathname = location.pathname;
 
   useEffect(() => {
     if (loading || isAuthenticated) return;
-
+    const redirect = pathname && pathname.startsWith("/") && pathname !== "/sign-in"
+      ? pathname
+      : "/library";
     void navigate({
       to: "/sign-in",
-      search: { redirect: redirectTarget === "/sign-in" ? "/library" : redirectTarget },
+      search: { redirect },
       replace: true,
     });
-  }, [isAuthenticated, loading, navigate, redirectTarget]);
+  }, [isAuthenticated, loading, navigate, pathname]);
 
   if (loading) {
     return (
