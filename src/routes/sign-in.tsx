@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { supabase } from "@/lib/supabase";
+import { restoreSessionOnce, supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
@@ -20,8 +20,8 @@ function SignIn() {
 
   useEffect(() => {
     let cancelled = false;
-    supabase.auth.getUser().then(({ data, error }) => {
-      if (cancelled || error || !data.user) return;
+    void restoreSessionOnce().then((session) => {
+      if (cancelled || !session?.user) return;
       navigate({ to: search.redirect, replace: true });
     });
     return () => {
@@ -32,15 +32,19 @@ function SignIn() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
-    await supabase.auth.signOut({ scope: "local" });
+
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) { toast.error(error.message); return; }
+
+    if (error) {
+      setLoading(false);
+      toast.error(error.message);
+      return;
+    }
+
     navigate({ to: search.redirect, replace: true });
   }
 
   async function signInWithGoogle() {
-    await supabase.auth.signOut({ scope: "local" });
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}/callback` },
