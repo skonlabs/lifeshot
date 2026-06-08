@@ -22,7 +22,7 @@ import type {
   TDeleteDerivedIn,
   TSourceStatus,
 } from "@core/api";
-import { ApiError, api } from "./client";
+import { ApiError, api, isTemporaryUpstreamError } from "./client";
 import { supabase } from "@/lib/supabase";
 
 
@@ -257,9 +257,19 @@ export function useProviders() {
 export function useSourceAccounts() {
   return useQuery({
     queryKey: ["source-accounts"],
-    queryFn: () => api.sources<SourceAccountsResponse>("/accounts"),
+    queryFn: async () => {
+      try {
+        return await api.sources<SourceAccountsResponse>("/accounts");
+      } catch (error) {
+        if (isTemporaryUpstreamError(error)) {
+          return { accounts: [] } satisfies SourceAccountsResponse;
+        }
+        throw error;
+      }
+    },
     select: normalizeSourceAccounts,
     staleTime: 30_000,
+    retry: false,
   });
 }
 
@@ -533,7 +543,10 @@ export function useSourceStatus(accountId: string | undefined) {
       try {
         return await api.sources<TSourceStatus | null>(`/${accountId}/status`, { signal });
       } catch (error) {
-        if (error instanceof ApiError && error.code === "not_found") {
+        if (
+          (error instanceof ApiError && error.code === "not_found") ||
+          isTemporaryUpstreamError(error)
+        ) {
           return null;
         }
         throw error;
@@ -573,8 +586,18 @@ export function useConfirmDuplicate() {
 export function usePeople() {
   return useQuery({
     queryKey: ["people"],
-    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people"),
+    queryFn: async () => {
+      try {
+        return await api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people");
+      } catch (error) {
+        if (isTemporaryUpstreamError(error)) {
+          return { people: [], face_processing_disabled: false };
+        }
+        throw error;
+      }
+    },
     staleTime: 30_000,
+    retry: false,
   });
 }
 
