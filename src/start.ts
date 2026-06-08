@@ -19,12 +19,16 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 });
 
 const attachSupabaseAuth = createMiddleware({ type: "function" }).client(async ({ next }) => {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
 
-  return token
-    ? next({ headers: { Authorization: `Bearer ${token}` } })
-    : next();
+    return token
+      ? next({ headers: { Authorization: `Bearer ${token}` } })
+      : next();
+  } catch {
+    return next();
+  }
 });
 
 export const startInstance = createStart(() => ({
