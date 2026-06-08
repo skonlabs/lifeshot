@@ -45,7 +45,14 @@ function SignIn() {
         return;
       }
 
-      navigate({ to: search.redirect, replace: true });
+      const { data: refreshed } = await supabase.auth.getSession();
+      if (!refreshed.session) {
+        toast.error("Sign in failed");
+        return;
+      }
+
+      window.location.replace(search.redirect);
+      return;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Sign in failed");
     } finally {
