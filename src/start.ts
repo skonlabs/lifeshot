@@ -19,6 +19,11 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 });
 
 const attachSupabaseAuth = createMiddleware({ type: "function" }).client(async ({ next }) => {
+  const pathname = typeof window === "undefined" ? "" : window.location.pathname;
+  if (pathname === "/sign-in" || pathname === "/sign-up" || pathname === "/callback") {
+    return next();
+  }
+
   try {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
