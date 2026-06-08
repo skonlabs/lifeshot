@@ -8,10 +8,18 @@ import { Aperture } from "lucide-react";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: (s: Record<string, unknown>) => ({
-    redirect: typeof s.redirect === "string" ? s.redirect : "/library",
+    redirect: sanitizeRedirect(typeof s.redirect === "string" ? s.redirect : "/library"),
   }),
   component: SignIn,
 });
+
+function sanitizeRedirect(value: string) {
+  if (!value.startsWith("/") || value.startsWith("//")) return "/library";
+  if (value.startsWith("/sign-in") || value.startsWith("/sign-up") || value.startsWith("/callback")) {
+    return "/library";
+  }
+  return value;
+}
 
 function SignIn() {
   const navigate = useNavigate();

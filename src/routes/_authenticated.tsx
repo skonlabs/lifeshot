@@ -11,14 +11,14 @@ function AuthenticatedLayout() {
   const { isAuthenticated, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const redirectTarget = location.href;
+  const redirectTarget = `${location.pathname}${location.search}${location.hash}`;
 
   useEffect(() => {
     if (loading || isAuthenticated) return;
 
     void navigate({
       to: "/sign-in",
-      search: { redirect: redirectTarget },
+      search: { redirect: redirectTarget === "/sign-in" ? "/library" : redirectTarget },
       replace: true,
     });
   }, [isAuthenticated, loading, navigate, redirectTarget]);
