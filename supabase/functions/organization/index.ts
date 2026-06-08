@@ -190,32 +190,75 @@ app.get("/people", async (c) => {
     const coverAssetId = p.cover_asset_id as string | null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
     const media = coverAssetId ? mediaMap[coverAssetId] ?? null : null;
-    // The best face's face_crop (if any) is the highest-confidence entry.
-    const topFace = Array.isArray(p.faces) && p.faces.length ? p.faces[0] : null;
+    // Pick the best face for the avatar: prefer frontal, sharp, well-lit
+    // detections so each tile shows a single recognisable face rather than
+    // a side-profile or back-of-head crop. Falls back to any face when no
+    // detection meets the quality bar.
+    const allFaces = Array.isArray(p.faces) ? p.faces : [];
+    const scoreFace = (f: any): number => {
+      const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+      const pose = attrs.Pose ?? {};
+      const q = attrs.Quality ?? {};
+      const yaw = Math.abs(Number(pose.Yaw ?? 0));
+      const pitch = Math.abs(Number(pose.Pitch ?? 0));
+      const sharp = Number(q.Sharpness ?? 50);
+      const bright = Number(q.Brightness ?? 50);
+      const conf = Number(f?.confidence ?? 0);
+      // Heavy penalty for off-axis / blurry / dark; reward confidence.
+      return conf * 100
+        - yaw * 1.2 - pitch * 1.0
+        + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2;
+    };
+    const goodFaces = allFaces.filter((f: any) => {
+      const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+      const pose = attrs.Pose ?? {};
+      const q = attrs.Quality ?? {};
+      const yaw = Math.abs(Number(pose.Yaw ?? 0));
+      const pitch = Math.abs(Number(pose.Pitch ?? 0));
+      const sharp = Number(q.Sharpness ?? 100);
+      const bright = Number(q.Brightness ?? 100);
+      const conf = Number(f?.confidence ?? 0);
+      if (conf < 0.6) return false;
+      if (Number.isFinite(yaw) && yaw > 30) return false;
+      if (Number.isFinite(pitch) && pitch > 25) return false;
+      if (Number.isFinite(sharp) && sharp < 35) return false;
+      if (Number.isFinite(bright) && bright < 25) return false;
+      return true;
+    });
+    const sortedFaces = (goodFaces.length ? goodFaces : allFaces)
+      .slice()
+      .sort((a: any, b: any) => scoreFace(b) - scoreFace(a));
+    const topFace = sortedFaces[0] ?? null;
     const faceCropDataUrl = typeof topFace?.face_crop === "string" ? topFace.face_crop : null;
-    const coverBbox = sanitizeFaceBox(p.cover_bbox ?? topFace?.bbox ?? null);
+    const preferredBbox = topFace?.bbox ?? p.cover_bbox ?? null;
+    const coverBbox = sanitizeFaceBox(preferredBbox);
+    // Override cover asset to the chosen top face's asset when available.
+    const effectiveCoverId = (topFace?.asset_id as string | null) ?? coverAssetId;
+    const effectiveAsset = effectiveCoverId ? coverAssets[effectiveCoverId] ?? asset : asset;
+    const effectiveMedia = effectiveCoverId ? mediaMap[effectiveCoverId] ?? media : media;
+    const goodFaceCount = goodFaces.length;
     const thumbUrl = faceCropDataUrl
-      ?? resolve(media?.thumbnail_url) ?? resolve(media?.thumbnail_storage_path)
-      ?? resolve(asset?.thumbnail_cache_key) ?? resolve(media?.preview_url)
-      ?? resolve(media?.preview_storage_path) ?? resolve(asset?.proxy_cache_key);
-    const cover = coverAssetId && asset ? {
-      asset_id: coverAssetId,
+      ?? resolve(effectiveMedia?.thumbnail_url) ?? resolve(effectiveMedia?.thumbnail_storage_path)
+      ?? resolve(effectiveAsset?.thumbnail_cache_key) ?? resolve(effectiveMedia?.preview_url)
+      ?? resolve(effectiveMedia?.preview_storage_path) ?? resolve(effectiveAsset?.proxy_cache_key);
+    const cover = effectiveCoverId && effectiveAsset ? {
+      asset_id: effectiveCoverId,
       thumbnail_url: thumbUrl,
-      blurhash: media?.blurhash ?? asset.blurhash ?? null,
-      dominant_color: media?.dominant_color ?? asset.dominant_color ?? null,
-      width: asset.width ?? null,
-      height: asset.height ?? null,
-      capture_time: asset.capture_time ?? null,
-      media_type: asset.media_type ?? "photo",
+      blurhash: effectiveMedia?.blurhash ?? effectiveAsset.blurhash ?? null,
+      dominant_color: effectiveMedia?.dominant_color ?? effectiveAsset.dominant_color ?? null,
+      width: effectiveAsset.width ?? null,
+      height: effectiveAsset.height ?? null,
+      capture_time: effectiveAsset.capture_time ?? null,
+      media_type: effectiveAsset.media_type ?? "photo",
       source_badge: null,
       face_bbox: faceCropDataUrl ? null : coverBbox,
-      face_count: p.face_count ?? 1,
+      face_count: goodFaceCount || (p.face_count ?? 1),
       hydration_status: (thumbUrl ? "ready" : "pending") as const,
     } : null;
     return {
       id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
       consent_required: p.consent_required, auto_label: p.auto_label,
-      asset_count: p.face_count ?? 0, cover,
+      asset_count: goodFaceCount || (p.face_count ?? 0), cover,
     };
   }).filter((person: any) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
