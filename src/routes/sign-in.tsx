@@ -1,7 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
-import { useAuth } from "@/lib/auth/AuthProvider";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
@@ -15,16 +14,20 @@ export const Route = createFileRoute("/sign-in")({
 function SignIn() {
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const { isAuthenticated, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
+    let cancelled = false;
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (cancelled || error || !data.user) return;
       navigate({ to: search.redirect, replace: true });
-    }
-  }, [authLoading, isAuthenticated, navigate, search.redirect]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, search.redirect]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
