@@ -8,10 +8,18 @@ import { Aperture } from "lucide-react";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: (s: Record<string, unknown>) => ({
-    redirect: typeof s.redirect === "string" ? s.redirect : "/library",
+    redirect: sanitizeRedirect(typeof s.redirect === "string" ? s.redirect : "/library"),
   }),
   component: SignIn,
 });
+
+function sanitizeRedirect(value: string) {
+  if (!value.startsWith("/") || value.startsWith("//")) return "/library";
+  if (value.startsWith("/sign-in") || value.startsWith("/sign-up") || value.startsWith("/callback")) {
+    return "/library";
+  }
+  return value;
+}
 
 function SignIn() {
   const navigate = useNavigate();
@@ -45,7 +53,14 @@ function SignIn() {
         return;
       }
 
-      navigate({ to: search.redirect, replace: true });
+      const { data: refreshed } = await supabase.auth.getSession();
+      if (!refreshed.session) {
+        toast.error("Sign in failed");
+        return;
+      }
+
+      window.location.replace(search.redirect);
+      return;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Sign in failed");
     } finally {
