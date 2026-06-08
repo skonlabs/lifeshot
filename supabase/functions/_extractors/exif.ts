@@ -127,8 +127,8 @@ export async function extractExifFromBytes(bytes: Uint8Array): Promise<FullExifR
   let parsed: any = null;
   try {
     parsed = await exifr.parse(bytes, {
-      tiff: true, ifd0: true, exif: true, gps: true, interop: true,
-      xmp: true, iptc: true, icc: false, jfif: true,
+      tiff: true, ifd0: true, exif: true, gps: true,
+      xmp: true, iptc: true,
       mergeOutput: true, sanitize: true, reviveValues: true,
       translateKeys: true, translateValues: true,
     });
