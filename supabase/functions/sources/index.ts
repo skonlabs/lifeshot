@@ -402,7 +402,14 @@ app.get("/v1/accounts", async (c) => {
       const cached = await cache.get<SourceSelectionStats>(c, cacheKey);
       if (cached) return [row.id, cached] as const;
 
-      const liveStats = await getSelectionStats(row.provider.kind, row.id, row.user_id ?? uid);
+      // Bound provider crawls so /v1/accounts can't hit the 150s edge
+      // function idle timeout when Dropbox/OneDrive are slow or a user has
+      // many selected containers. Fall back to indexed counts on timeout;
+      // the next request will re-attempt and populate the cache.
+      const liveStats = await Promise.race<SourceSelectionStats | null>([
+        getSelectionStats(row.provider.kind, row.id, row.user_id ?? uid).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
       const resolved = liveStats ?? fallback;
       if (liveStats) {
         await cache.set(c, cacheKey, liveStats, 300, row.user_id ?? uid);
