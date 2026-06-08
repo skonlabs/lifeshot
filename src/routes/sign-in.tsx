@@ -28,6 +28,11 @@ function SignIn() {
         data: { email, password },
       });
 
+      if (!session.ok) {
+        toast.error(session.message);
+        return;
+      }
+
       const { error } = await supabase.auth.setSession({
         access_token: session.access_token,
         refresh_token: session.refresh_token,
