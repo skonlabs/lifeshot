@@ -166,8 +166,28 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         assetId: asset_id,
       });
       faceScanned = true;
+      // Quality gate: reject low-confidence detections, profile/turned faces,
+      // and blurry/dark crops. Without these filters every silhouette and
+      // back-of-head Rekognition returns ends up as its own "Person" tile.
+      //   - confidence >= 0.6 (0..1 scale; Rekognition confidence/100)
+      //   - |Yaw| <= 30°, |Pitch| <= 25°   (roughly frontal)
+      //   - Quality.Sharpness >= 35, Quality.Brightness >= 25 (0..100)
       faces = detected
-        .filter((f) => Number(f.confidence ?? 0) >= 0.6)
+        .filter((f) => {
+          if (Number(f.confidence ?? 0) < 0.6) return false;
+          const a = (f.attributes ?? {}) as Record<string, any>;
+          const pose = a.Pose ?? {};
+          const yaw = Math.abs(Number(pose.Yaw ?? 0));
+          const pitch = Math.abs(Number(pose.Pitch ?? 0));
+          if (Number.isFinite(yaw) && yaw > 30) return false;
+          if (Number.isFinite(pitch) && pitch > 25) return false;
+          const q = a.Quality ?? {};
+          const sharp = Number(q.Sharpness ?? 100);
+          const bright = Number(q.Brightness ?? 100);
+          if (Number.isFinite(sharp) && sharp < 35) return false;
+          if (Number.isFinite(bright) && bright < 25) return false;
+          return true;
+        })
         .map((f) => ({
         bbox: f.bbox,
         score: f.confidence,
