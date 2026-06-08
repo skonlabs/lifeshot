@@ -3,6 +3,7 @@ import { createApi, authed } from "../_shared/router.ts";
 import { parseBody, parseQuery, parseParams } from "../_shared/validation.ts";
 import { ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
+import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
