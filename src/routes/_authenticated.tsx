@@ -11,7 +11,9 @@ function AuthenticatedLayout() {
   const { isAuthenticated, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const redirectTarget = `${location.pathname}${location.search}${location.hash}`;
+  const redirectTarget = typeof location.href === "string" && location.href.startsWith("/")
+    ? location.href
+    : location.pathname;
 
   useEffect(() => {
     if (loading || isAuthenticated) return;
