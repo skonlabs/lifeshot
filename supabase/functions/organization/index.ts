@@ -126,9 +126,14 @@ app.get("/people", async (c) => {
   }
   // person_faces was merged onto people in B-NUKE: faces jsonb[],
   // face_count int, cover_asset_id uuid, cover_bbox jsonb.
+  // NOTE: we deliberately do NOT select `faces` here. With hundreds of
+  // people each carrying hundreds of face entries (including embeddings
+  // and full Rekognition attribute blobs), pulling that column blows past
+  // the Postgres statement timeout. We rely on the precomputed
+  // cover_asset_id / cover_bbox that clusterPeople keeps in sync.
   const { data, error } = await supa.from("people")
     .select("id, display_name, is_child, is_elder, consent_required, auto_label, " +
-            "face_count, cover_asset_id, cover_bbox, faces");
+            "face_count, cover_asset_id, cover_bbox");
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
 
@@ -163,14 +168,19 @@ app.get("/people", async (c) => {
     if (Number.isFinite(bright) && bright < 25) return false;
     return true;
   };
+  // Without the heavy faces[] payload we use the precomputed cover_*
+  // columns. clusterPeople keeps cover_asset_id pinned to the
+  // highest-confidence face it has seen for the person.
   const bestFaceByPerson = new Map<string, { face: any; good_count: number }>();
   for (const p of peopleRows as any[]) {
-    const faces = Array.isArray(p.faces) ? p.faces : [];
-    const good = faces.filter(isGoodFace);
-    const pool = good.length ? good : faces;
-    const best = pool.slice().sort((a: any, b: any) => scoreFaceQuality(b) - scoreFaceQuality(a))[0] ?? null;
-    bestFaceByPerson.set(p.id, { face: best, good_count: good.length });
+    const face = p.cover_asset_id
+      ? { asset_id: p.cover_asset_id, bbox: p.cover_bbox, confidence: 1 }
+      : null;
+    bestFaceByPerson.set(p.id, { face, good_count: p.face_count ?? 0 });
   }
+  // Silence unused-helper warnings — these were only needed when we
+  // re-scored the full faces[] array client-side.
+  void scoreFaceQuality; void isGoodFace;
   const coverIds = Array.from(new Set(
     peopleRows.map((p: any) => bestFaceByPerson.get(p.id)?.face?.asset_id ?? p.cover_asset_id).filter(Boolean),
   ));
