@@ -123,6 +123,11 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const bb = cover?.face_bbox;
   const [imgFailed, setImgFailed] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const dims = useMemo(() => {
+    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
+    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
+    return width && height ? { width, height } : null;
+  }, [cover?.height, cover?.width, naturalSize]);
 
   if (!cover?.thumbnail_url || imgFailed) {
     return (
@@ -132,11 +137,6 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
 
-  const dims = useMemo(() => {
-    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
-    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
-    return width && height ? { width, height } : null;
-  }, [cover?.height, cover?.width, naturalSize]);
   const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
 
   if (!hasUsableBbox || !dims) {
