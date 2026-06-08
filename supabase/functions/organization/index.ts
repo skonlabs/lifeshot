@@ -3,6 +3,7 @@ import { createApi, authed } from "../_shared/router.ts";
 import { parseBody, parseQuery, parseParams } from "../_shared/validation.ts";
 import { ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
+import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
@@ -145,7 +146,47 @@ app.get("/people", async (c) => {
     for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
 
-  const people = (await Promise.all(peopleRows.map(async (p: any) => {
+  // Batch-sign all storage paths up front to avoid N×4 sequential
+  // createSignedUrl calls (which were causing the /people endpoint to hit
+  // the 150s edge-function idle timeout once the library grew past a few
+  // hundred face clusters).
+  const pathsToSign = new Set<string>();
+  for (const p of peopleRows) {
+    const cid = p.cover_asset_id as string | null;
+    if (!cid) continue;
+    const asset = coverAssets[cid] ?? null;
+    const media = mediaMap[cid] ?? null;
+    const candidates = [
+      media?.thumbnail_url, media?.thumbnail_storage_path,
+      asset?.thumbnail_cache_key, media?.preview_url, media?.preview_storage_path,
+      asset?.proxy_cache_key,
+    ];
+    for (const ck of candidates) {
+      if (typeof ck === "string" && ck && !/^https?:\/\//.test(ck)) pathsToSign.add(ck);
+    }
+  }
+  const signedMap = new Map<string, string>();
+  if (pathsToSign.size) {
+    const allPaths = Array.from(pathsToSign);
+    const svc = getServiceClient();
+    for (const bucket of ["thumbnails", "lifeshot-derived"] as const) {
+      const remaining = allPaths.filter((p) => !signedMap.has(p));
+      if (!remaining.length) break;
+      try {
+        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        for (const s of signed ?? []) {
+          if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
+        }
+      } catch (_) { /* try next bucket */ }
+    }
+  }
+  const resolve = (ck: string | null | undefined): string | null => {
+    if (!ck) return null;
+    if (/^https?:\/\//.test(ck)) return ck;
+    return signedMap.get(ck) ?? null;
+  };
+
+  const people = peopleRows.map((p: any) => {
     const coverAssetId = p.cover_asset_id as string | null;
     const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
     const media = coverAssetId ? mediaMap[coverAssetId] ?? null : null;
@@ -153,12 +194,13 @@ app.get("/people", async (c) => {
     const topFace = Array.isArray(p.faces) && p.faces.length ? p.faces[0] : null;
     const faceCropDataUrl = typeof topFace?.face_crop === "string" ? topFace.face_crop : null;
     const coverBbox = sanitizeFaceBox(p.cover_bbox ?? topFace?.bbox ?? null);
+    const thumbUrl = faceCropDataUrl
+      ?? resolve(media?.thumbnail_url) ?? resolve(media?.thumbnail_storage_path)
+      ?? resolve(asset?.thumbnail_cache_key) ?? resolve(media?.preview_url)
+      ?? resolve(media?.preview_storage_path) ?? resolve(asset?.proxy_cache_key);
     const cover = coverAssetId && asset ? {
       asset_id: coverAssetId,
-      thumbnail_url: faceCropDataUrl ?? await resolveThumbUrl(c, supa, uid, coverAssetId,
-        media?.thumbnail_url ?? media?.thumbnail_storage_path ??
-        asset.thumbnail_cache_key ?? media?.preview_url ?? media?.preview_storage_path ??
-        asset.proxy_cache_key ?? null, "thumb"),
+      thumbnail_url: thumbUrl,
       blurhash: media?.blurhash ?? asset.blurhash ?? null,
       dominant_color: media?.dominant_color ?? asset.dominant_color ?? null,
       width: asset.width ?? null,
@@ -168,14 +210,14 @@ app.get("/people", async (c) => {
       source_badge: null,
       face_bbox: faceCropDataUrl ? null : coverBbox,
       face_count: p.face_count ?? 1,
-      hydration_status: (faceCropDataUrl || media?.thumbnail_url || asset.thumbnail_cache_key ? "ready" : "pending") as const,
+      hydration_status: (thumbUrl ? "ready" : "pending") as const,
     } : null;
     return {
       id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
       consent_required: p.consent_required, auto_label: p.auto_label,
       asset_count: p.face_count ?? 0, cover,
     };
-  }))).filter((person: any) => {
+  }).filter((person: any) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
     if (!(person.asset_count > 0)) return false;
     if (!person.cover?.thumbnail_url) return false;
