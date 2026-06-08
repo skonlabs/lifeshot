@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { restoreSessionOnce, supabase } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/lib/auth/AuthProvider";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
@@ -14,34 +15,35 @@ export const Route = createFileRoute("/sign-in")({
 function SignIn() {
   const navigate = useNavigate();
   const search = Route.useSearch();
+  const { isAuthenticated, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void restoreSessionOnce().then((session) => {
-      if (cancelled || !session?.user) return;
+    if (!authLoading && isAuthenticated) {
       navigate({ to: search.redirect, replace: true });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [navigate, search.redirect]);
+    }
+  }, [authLoading, isAuthenticated, navigate, search.redirect]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
 
-    if (error) {
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      navigate({ to: search.redirect, replace: true });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Sign in failed");
+    } finally {
       setLoading(false);
-      toast.error(error.message);
-      return;
     }
-
-    navigate({ to: search.redirect, replace: true });
   }
 
   async function signInWithGoogle() {
