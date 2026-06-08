@@ -22,25 +22,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
-    (async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (sessionData.session) {
-        // Validate the session against the auth server. If the session was
-        // revoked server-side (session_not_found / JWT issues), clear the
-        // stale tokens from localStorage so sign-in can proceed cleanly.
-        const { error } = await supabase.auth.getUser();
-        if (error) {
-          try { await supabase.auth.signOut({ scope: "local" } as never); } catch { /* ignore */ }
-          if (!mounted) return;
-          setSession(null);
-          setLoading(false);
-          return;
-        }
-      }
+    supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setSession(sessionData.session);
+      setSession(data.session);
       setLoading(false);
-    })();
+    });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       router.invalidate();
