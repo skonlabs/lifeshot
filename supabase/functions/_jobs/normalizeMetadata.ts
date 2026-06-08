@@ -314,6 +314,11 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         if (head?.bytes?.byteLength) {
           let ex = await extractExifFromBytes(head.bytes);
           phase2Diag.parsed1 = { exif: !!ex.exif, gps: !!ex.gps, media: !!ex.media };
+          phase2Diag.exExif = ex.exif ? {
+            iso: ex.exif.iso, fNumber: ex.exif.fNumber, aperture: ex.exif.aperture,
+            exposureTime: ex.exif.exposureTime, focalLength: ex.exif.focalLength,
+            cameraMake: ex.exif.cameraMake, exifCaptureTime: ex.exif.exifCaptureTime,
+          } : null;
           // Capture the ACTUAL exifr key names (translated) so we can fix mapping.
           try {
             const exifr = (await import("npm:exifr@7.1.3")).default;
