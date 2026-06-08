@@ -2,12 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import type { Session, User } from "@supabase/supabase-js";
 import { useRouter } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  getCachedSession,
-  isAuthReady,
-  supabase,
-  syncSessionCache,
-} from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 
 interface AuthCtx {
   user: User | null;
@@ -20,20 +15,29 @@ interface AuthCtx {
 const Ctx = createContext<AuthCtx | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(() => getCachedSession());
-  const [loading, setLoading] = useState(() => !isAuthReady());
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
   const qc = useQueryClient();
 
   useEffect(() => {
+    let mounted = true;
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) {
+        setLoading(false);
+        return;
+      }
+      setSession(data.session);
+      setLoading(false);
+    });
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      syncSessionCache(nextSession);
       setSession(nextSession);
-      if (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
-        setLoading(false);
-      }
+      setLoading(false);
 
       if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
         void router.invalidate();
@@ -45,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
   }, [router, qc]);
@@ -57,11 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!session,
         loading,
         signOut: async () => {
-          await qc.cancelQueries();
-          qc.clear();
           const { error } = await supabase.auth.signOut();
           if (error) throw error;
-          await router.navigate({ to: "/sign-in", replace: true });
         },
       }}
     >
