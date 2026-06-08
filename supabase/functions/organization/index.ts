@@ -132,18 +132,48 @@ app.get("/people", async (c) => {
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
 
-  // Collect every candidate cover asset id — the stored cover_asset_id PLUS
-  // every asset referenced by a face. We may swap the cover to a better
-  // (more frontal / sharper) face below and need its asset row available.
-  const coverIdSet = new Set<string>();
+  // Pre-pick the best face per person (frontal + sharp + bright) up front
+  // so we only fetch / sign one asset per person rather than the entire
+  // face history (which can be many hundreds of rows for popular people).
+  const scoreFaceQuality = (f: any): number => {
+    const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+    const pose = attrs.Pose ?? {};
+    const q = attrs.Quality ?? {};
+    const yaw = Math.abs(Number(pose.Yaw ?? 0));
+    const pitch = Math.abs(Number(pose.Pitch ?? 0));
+    const sharp = Number(q.Sharpness ?? 50);
+    const bright = Number(q.Brightness ?? 50);
+    const conf = Number(f?.confidence ?? 0);
+    return conf * 100 - yaw * 1.2 - pitch * 1.0
+      + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2;
+  };
+  const isGoodFace = (f: any): boolean => {
+    const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+    const pose = attrs.Pose ?? {};
+    const q = attrs.Quality ?? {};
+    const yaw = Math.abs(Number(pose.Yaw ?? 0));
+    const pitch = Math.abs(Number(pose.Pitch ?? 0));
+    const sharp = Number(q.Sharpness ?? 100);
+    const bright = Number(q.Brightness ?? 100);
+    const conf = Number(f?.confidence ?? 0);
+    if (conf < 0.6) return false;
+    if (Number.isFinite(yaw) && yaw > 30) return false;
+    if (Number.isFinite(pitch) && pitch > 25) return false;
+    if (Number.isFinite(sharp) && sharp < 35) return false;
+    if (Number.isFinite(bright) && bright < 25) return false;
+    return true;
+  };
+  const bestFaceByPerson = new Map<string, { face: any; good_count: number }>();
   for (const p of peopleRows as any[]) {
-    if (p.cover_asset_id) coverIdSet.add(p.cover_asset_id);
     const faces = Array.isArray(p.faces) ? p.faces : [];
-    for (const f of faces) {
-      if (typeof f?.asset_id === "string") coverIdSet.add(f.asset_id);
-    }
+    const good = faces.filter(isGoodFace);
+    const pool = good.length ? good : faces;
+    const best = pool.slice().sort((a: any, b: any) => scoreFaceQuality(b) - scoreFaceQuality(a))[0] ?? null;
+    bestFaceByPerson.set(p.id, { face: best, good_count: good.length });
   }
-  const coverIds = Array.from(coverIdSet);
+  const coverIds = Array.from(new Set(
+    peopleRows.map((p: any) => bestFaceByPerson.get(p.id)?.face?.asset_id ?? p.cover_asset_id).filter(Boolean),
+  ));
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
   if (coverIds.length) {
