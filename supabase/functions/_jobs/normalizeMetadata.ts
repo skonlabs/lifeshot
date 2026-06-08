@@ -314,6 +314,26 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         if (head?.bytes?.byteLength) {
           let ex = await extractExifFromBytes(head.bytes);
           phase2Diag.parsed1 = { exif: !!ex.exif, gps: !!ex.gps, media: !!ex.media };
+          phase2Diag.exExif = ex.exif ? {
+            iso: ex.exif.iso, fNumber: ex.exif.fNumber, aperture: ex.exif.aperture,
+            exposureTime: ex.exif.exposureTime, focalLength: ex.exif.focalLength,
+            cameraMake: ex.exif.cameraMake, exifCaptureTime: ex.exif.exifCaptureTime,
+          } : null;
+          // Capture the ACTUAL exifr key names (translated) so we can fix mapping.
+          try {
+            const exifr = (await import("npm:exifr@7.1.3")).default;
+            const translated = await exifr.parse(head.bytes, {
+              tiff: true, ifd0: true, exif: true, gps: true,
+              xmp: true, iptc: true, mergeOutput: true,
+              translateKeys: true, translateValues: true, sanitize: true, reviveValues: true,
+            });
+            phase2Diag.translatedKeys = translated ? Object.keys(translated).slice(0, 60) : null;
+            phase2Diag.translatedSample = translated ? {
+              ISO: (translated as any).ISO, FNumber: (translated as any).FNumber,
+              ExposureTime: (translated as any).ExposureTime, FocalLength: (translated as any).FocalLength,
+              Make: (translated as any).Make, Model: (translated as any).Model,
+            } : null;
+          } catch (e) { phase2Diag.translatedErr = String((e as Error)?.message ?? e); }
           // GPS fallback: if no GPS yet and the file is larger than our first
           // window, fetch up to HEAD_BYTES_RETRY and re-parse. This unblocks
           // GPS extraction for Dropbox-hosted iPhone JPEGs where GPS sits
@@ -362,7 +382,6 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               exif_model: ex.exif.exifModel ?? null,
               lens_make: ex.exif.lensMake ?? null,
               lens_model: ex.exif.lensModel ?? null,
-              lens: ex.exif.lensModel ?? null,
               iso: ex.exif.iso ?? null,
               aperture: ex.exif.aperture ?? null,
               f_number: ex.exif.fNumber ?? null,
