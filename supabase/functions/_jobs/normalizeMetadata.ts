@@ -289,6 +289,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
   let byteExtractionSuccess = false;
   let hasGpsData = existingLat != null && existingLng != null;
+  const phase2Diag: Record<string, unknown> = {};
 
   if (ref?.source_account_id && ref?.source_asset_id && isImage) {
     try {
@@ -307,8 +308,12 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
         let head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
         console.log("normalizeMetadata phase2 head fetched", { asset_id, bytes: head?.bytes?.byteLength ?? 0 });
+        phase2Diag.headBytes = head?.bytes?.byteLength ?? 0;
+        phase2Diag.totalSize = head?.totalSize ?? null;
+        phase2Diag.providerKind = providerKind;
         if (head?.bytes?.byteLength) {
           let ex = await extractExifFromBytes(head.bytes);
+          phase2Diag.parsed1 = { exif: !!ex.exif, gps: !!ex.gps, media: !!ex.media };
           // GPS fallback: if no GPS yet and the file is larger than our first
           // window, fetch up to HEAD_BYTES_RETRY and re-parse. This unblocks
           // GPS extraction for Dropbox-hosted iPhone JPEGs where GPS sits
@@ -337,6 +342,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
                 });
                 head = full;
                 ex = await extractExifFromBytes(full.bytes);
+                phase2Diag.fullFetched = full.bytes.byteLength;
+                phase2Diag.parsed2 = { exif: !!ex.exif, gps: !!ex.gps };
               }
             }
           }
@@ -409,8 +416,12 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
                 asset_id, device: `${asset.device_make}/${asset.device_model}`,
                 totalKeys: allKeys.length, gpsKeysFound: gpsKeys, sample,
               });
+              phase2Diag.rawTotalKeys = allKeys.length;
+              phase2Diag.rawSampleKeys = allKeys.slice(0, 30);
+              phase2Diag.rawGpsKeys = gpsKeys;
             } catch (e) {
               console.warn("normalizeMetadata phase2-gps diagnostic failed", String((e as Error)?.message ?? e));
+              phase2Diag.rawError = String((e as Error)?.message ?? e);
             }
           }
 
