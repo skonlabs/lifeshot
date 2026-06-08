@@ -1,5 +1,5 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
@@ -8,10 +8,6 @@ export const Route = createFileRoute("/sign-in")({
   validateSearch: (s: Record<string, unknown>) => ({
     redirect: typeof s.redirect === "string" ? s.redirect : "/library",
   }),
-  beforeLoad: async ({ search }) => {
-    const { data } = await supabase.auth.getSession();
-    if (data.session) throw redirect({ to: search.redirect });
-  },
   component: SignIn,
 });
 
@@ -22,16 +18,29 @@ function SignIn() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (cancelled || error || !data.user) return;
+      navigate({ to: search.redirect, replace: true });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, search.redirect]);
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
+    await supabase.auth.signOut({ scope: "local" });
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) { toast.error(error.message); return; }
-    navigate({ to: search.redirect });
+    navigate({ to: search.redirect, replace: true });
   }
 
   async function signInWithGoogle() {
+    await supabase.auth.signOut({ scope: "local" });
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}/callback` },
