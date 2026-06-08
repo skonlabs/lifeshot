@@ -132,7 +132,18 @@ app.get("/people", async (c) => {
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = data ?? [];
 
-  const coverIds = Array.from(new Set(peopleRows.map((p: any) => p.cover_asset_id).filter(Boolean)));
+  // Collect every candidate cover asset id — the stored cover_asset_id PLUS
+  // every asset referenced by a face. We may swap the cover to a better
+  // (more frontal / sharper) face below and need its asset row available.
+  const coverIdSet = new Set<string>();
+  for (const p of peopleRows as any[]) {
+    if (p.cover_asset_id) coverIdSet.add(p.cover_asset_id);
+    const faces = Array.isArray(p.faces) ? p.faces : [];
+    for (const f of faces) {
+      if (typeof f?.asset_id === "string") coverIdSet.add(f.asset_id);
+    }
+  }
+  const coverIds = Array.from(coverIdSet);
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
   if (coverIds.length) {
