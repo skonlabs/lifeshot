@@ -5,7 +5,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   getCachedSession,
   isAuthReady,
-  restoreSessionOnce,
   supabase,
   syncSessionCache,
 } from "@/lib/supabase";
@@ -27,20 +26,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
 
   useEffect(() => {
-    let active = true;
-
-    void restoreSessionOnce().then((nextSession) => {
-      if (!active) return;
-      setSession(nextSession);
-      setLoading(false);
-    });
-
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
       syncSessionCache(nextSession);
       setSession(nextSession);
-      setLoading(false);
+      if (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
+        setLoading(false);
+      }
 
       if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
         void router.invalidate();
@@ -52,7 +45,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
-      active = false;
       subscription.unsubscribe();
     };
   }, [router, qc]);
