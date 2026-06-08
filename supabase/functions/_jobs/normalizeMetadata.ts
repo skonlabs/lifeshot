@@ -579,5 +579,5 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
   await nudgeWorkerDrain();
 
-  return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess };
+  return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess, phase2: phase2Diag };
 }
