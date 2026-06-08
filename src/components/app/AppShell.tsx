@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate, useRouter } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import {
@@ -25,7 +25,6 @@ const META = [
 
 export function AppShell() {
   const { user, signOut } = useAuth();
-  const router = useRouter();
   const navigate = useNavigate();
   const [q, setQ] = useState("");
 
@@ -80,7 +79,7 @@ export function AppShell() {
             </Link>
           ))}
           <button
-            onClick={async () => { await signOut(); router.navigate({ to: "/sign-in" }); }}
+            onClick={() => { void signOut(); }}
             aria-label="Sign out"
             className="grid h-10 w-10 place-items-center rounded-md text-[color:var(--umber)] hover:bg-[color:var(--paper)] hover:text-[color:var(--ink)]"
           >

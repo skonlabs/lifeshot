@@ -1,14 +1,25 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { supabase } from "@/lib/supabase";
+import { restoreSessionOnce } from "@/lib/supabase";
 
 export const Route = createFileRoute("/callback")({ component: Callback });
 
 function Callback() {
   const navigate = useNavigate();
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      navigate({ to: data.session ? "/library" : "/sign-in" });
+    void restoreSessionOnce().then((session) => {
+      let redirectTo = "/library";
+      try {
+        const pendingInviteToken = sessionStorage.getItem("pending_invite_token");
+        if (pendingInviteToken) {
+          sessionStorage.removeItem("pending_invite_token");
+          redirectTo = `/invite/${pendingInviteToken}`;
+        }
+      } catch {
+        // ignore sessionStorage access errors
+      }
+
+      navigate({ to: session ? redirectTo : "/sign-in", replace: true });
     });
   }, [navigate]);
   return (
