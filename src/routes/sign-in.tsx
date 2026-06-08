@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
+import { signInWithPasswordServer } from "@/lib/auth/password-auth.functions";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
@@ -23,7 +24,14 @@ function SignIn() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const session = await signInWithPasswordServer({
+        data: { email, password },
+      });
+
+      const { error } = await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
 
       if (error) {
         toast.error(error.message);
