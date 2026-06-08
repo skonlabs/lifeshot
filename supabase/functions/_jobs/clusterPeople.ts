@@ -19,8 +19,13 @@ import { collectionIdForUser, searchFaces, rekognitionConfigured } from "../_ai/
  * Faces are appended to people.faces (idempotent on asset_id+rekognition_face_id).
  */
 
-const FACE_MATCH_THRESHOLD = 90;
-const FACE_VECTOR_MATCH_THRESHOLD = 0.82;
+// Rekognition's own recommended same-person threshold is 80. We were running
+// at 90, which is conservative enough to split the same person across multiple
+// "people" rows when lighting/angle differs. Drop to 80 for primary matching
+// and use 70 as a wider safety-net sweep before creating a brand-new person.
+const FACE_MATCH_THRESHOLD = 80;
+const FACE_MATCH_FALLBACK_THRESHOLD = 70;
+const FACE_VECTOR_MATCH_THRESHOLD = 0.78;
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return -1;
@@ -152,15 +157,16 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
 
     if (!matchedPersonId && entry.face_id) {
+      // Primary search: vote across ALL matched face ids by similarity, not
+      // just the first hit. This is the dedup step the user asked for —
+      // before assigning to a person we make Rekognition compare this face
+      // against every face already indexed for the user.
       try {
         const matches = await searchFaces({
           collectionId, faceId: entry.face_id,
-          faceMatchThreshold: FACE_MATCH_THRESHOLD, maxFaces: 10,
+          faceMatchThreshold: FACE_MATCH_THRESHOLD, maxFaces: 20,
         });
-        for (const m of matches) {
-          const pid = faceIdToPerson.get(m.faceId);
-          if (pid) { matchedPersonId = pid; break; }
-        }
+        matchedPersonId = pickPersonFromMatches(matches, faceIdToPerson);
       } catch (e: any) {
         console.warn("clusterPeople: searchFaces failed", entry.face_id, String(e?.message ?? e));
       }
@@ -168,6 +174,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
     if (!matchedPersonId && entry.embedding?.length) {
       matchedPersonId = bestPersonByEmbedding(entry.embedding);
+    }
+
+    if (!matchedPersonId && entry.face_id) {
+      // Safety-net sweep at a lower threshold to avoid creating a duplicate
+      // person for the same face under different lighting/pose.
+      try {
+        const matches = await searchFaces({
+          collectionId, faceId: entry.face_id,
+          faceMatchThreshold: FACE_MATCH_FALLBACK_THRESHOLD, maxFaces: 20,
+        });
+        matchedPersonId = pickPersonFromMatches(matches, faceIdToPerson);
+      } catch (e: any) {
+        console.warn("clusterPeople: fallback searchFaces failed", entry.face_id, String(e?.message ?? e));
+      }
     }
 
     let personId: string;
@@ -244,4 +264,28 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   return { user_id: uid, clustered: clusteredFaces, faces_total: faceEntries.length };
+}
+
+/**
+ * Pick the best person from a SearchFaces result set: walk matches in
+ * similarity order and return the first one whose FaceId we already mapped
+ * to a person. If multiple matches map to the same person, that person wins
+ * (Rekognition returns matches sorted by similarity desc).
+ */
+function pickPersonFromMatches(
+  matches: Array<{ faceId: string; similarity: number }>,
+  faceIdToPerson: Map<string, string>,
+): string | null {
+  const votes = new Map<string, number>();
+  for (const m of matches) {
+    const pid = faceIdToPerson.get(m.faceId);
+    if (!pid) continue;
+    votes.set(pid, (votes.get(pid) ?? 0) + m.similarity);
+  }
+  let best: string | null = null;
+  let bestScore = -1;
+  for (const [pid, score] of votes.entries()) {
+    if (score > bestScore) { bestScore = score; best = pid; }
+  }
+  return best;
 }
