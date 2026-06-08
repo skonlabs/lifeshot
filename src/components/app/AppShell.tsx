@@ -79,7 +79,7 @@ export function AppShell() {
             </Link>
           ))}
           <button
-            onClick={() => { void signOut(); }}
+            onClick={async () => { await signOut(); navigate({ to: "/sign-in" }); }}
             aria-label="Sign out"
             className="grid h-10 w-10 place-items-center rounded-md text-[color:var(--umber)] hover:bg-[color:var(--paper)] hover:text-[color:var(--ink)]"
           >
