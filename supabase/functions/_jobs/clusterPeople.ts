@@ -3,6 +3,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { sanitizeFaceBox } from "../_shared/face-box.ts";
 import { collectionIdForUser, searchFaces, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { isUsableFace } from "../_ai/face-quality.ts";
 
 /**
  * clusterPeople — groups detected faces into people using AWS Rekognition.
@@ -92,11 +93,16 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         ? f.embedding.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v))
         : null;
       if (!faceId && !embedding?.length) continue;
+      // Re-apply the shared quality gate in case this row was written by an
+      // older code path that didn't filter pose/quality before persisting.
+      const attrs = (f.attributes ?? null) as Record<string, unknown> | null;
+      const conf = Number(f.score ?? f.confidence ?? 0.5);
+      if (!isUsableFace({ confidence: conf, attributes: attrs as Record<string, any> | null })) continue;
       faceEntries.push({
         asset_id: row.asset_id, face_index: i, bbox,
-        confidence: Number(f.score ?? f.confidence ?? 0.5),
+        confidence: conf,
         face_id: faceId, embedding,
-        attributes: (f.attributes ?? null) as Record<string, unknown> | null,
+        attributes: attrs,
         face_crop: typeof f.face_crop === "string" ? f.face_crop : null,
       });
     }
@@ -222,13 +228,34 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const row = people.get(personId);
     if (!row) continue;
 
-    // Idempotency: avoid pushing the exact same (asset_id, face_id|bbox) twice.
-    const exists = row.faces.some((f: any) =>
+    // Cross-person dedup: scan ALL people for any existing (asset_id, face_id)
+    // (or, when face_id is null, asset_id+bbox). If found on a different
+    // person, remove it there — every (asset_id, face_id) lives on exactly
+    // one person. If found on the same person, this is a no-op.
+    const matches = (f: any) =>
       f.asset_id === entry.asset_id &&
       ((entry.face_id && f.rekognition_face_id === entry.face_id) ||
-       (!entry.face_id && JSON.stringify(f.bbox) === JSON.stringify(entry.bbox)))
-    );
-    if (!exists) {
+       (!entry.face_id && JSON.stringify(f.bbox) === JSON.stringify(entry.bbox)));
+    let alreadyOnThisPerson = false;
+    for (const [otherId, otherRow] of people.entries()) {
+      const hitIdx = otherRow.faces.findIndex(matches);
+      if (hitIdx < 0) continue;
+      if (otherId === personId) { alreadyOnThisPerson = true; continue; }
+      // Move: remove from the other person, recompute its derived fields.
+      otherRow.faces.splice(hitIdx, 1);
+      otherRow.face_count = otherRow.faces.length;
+      if (otherRow.faces.length > 0) {
+        const top = otherRow.faces.reduce((a: any, b: any) =>
+          (a.confidence ?? 0) >= (b.confidence ?? 0) ? a : b);
+        otherRow.cover_asset_id = top.asset_id;
+        otherRow.cover_bbox = top.bbox;
+      } else {
+        otherRow.cover_asset_id = null;
+        otherRow.cover_bbox = null;
+      }
+      dirty.add(otherId);
+    }
+    if (!alreadyOnThisPerson) {
       row.faces.push({
         asset_id: entry.asset_id, bbox: entry.bbox, confidence: entry.confidence,
         face_crop: entry.face_crop, face_vector: entry.embedding,
