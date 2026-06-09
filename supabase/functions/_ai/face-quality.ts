@@ -20,12 +20,19 @@ export const FACE_MIN_BRIGHTNESS = 25;    // 0..100
 /**
  * Returns true if a face passes the front-facing / quality gate.
  * Accepts a partial input: `confidence` in 0..1 plus a Rekognition `FaceDetail`-shaped
- * attributes object (Pose.Yaw/Pitch, Quality.Sharpness/Brightness).
+ * attributes object (Pose.Yaw/Pitch, Quality.Sharpness/Brightness, FaceOccluded).
+ *
+ * Rejection rules (any match → false):
+ *  - confidence present and below FACE_MIN_CONFIDENCE
+ *  - FaceOccluded.Value === true (any significant occlusion per Rekognition)
+ *  - |Pose.Yaw| > FACE_MAX_YAW   (too far turned sideways)
+ *  - |Pose.Pitch| > FACE_MAX_PITCH (too far tilted up/down)
+ *  - Quality.Sharpness < FACE_MIN_SHARPNESS (blurry)
+ *  - Quality.Brightness < FACE_MIN_BRIGHTNESS (too dark)
  *
  * If attributes are missing entirely (older rows without Rekognition payload),
  * we keep the face — we cannot prove it's bad. Only attributes that are
- * present and out of range cause rejection. This keeps the function safe for
- * both fresh detections and historical cleanup.
+ * present and out of range cause rejection.
  */
 export function isUsableFace(input: {
   confidence?: number | null;
@@ -36,6 +43,12 @@ export function isUsableFace(input: {
 
   const a = input.attributes ?? null;
   if (!a) return true;
+
+  // Reject occluded faces — Rekognition sets FaceOccluded.Value = true when
+  // part of the face is covered by hair, glasses, hands, or other objects.
+  // Only reject when Rekognition is confident enough (Value is definitively true).
+  const occ = (a.FaceOccluded ?? null) as Record<string, any> | null;
+  if (occ && occ.Value === true) return false;
 
   const pose = (a.Pose ?? null) as Record<string, any> | null;
   if (pose) {

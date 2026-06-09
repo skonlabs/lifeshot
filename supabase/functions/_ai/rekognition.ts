@@ -84,7 +84,7 @@ export interface RekFaceRecord {
 /**
  * IndexFaces — detects all faces in the image (passed as bytes) and stores
  * them in the given collection. Returns one record per indexed face.
- * MaxFaces defaults to 15 (Rekognition hard limit per call is 100).
+ * MaxFaces defaults to 100 (Rekognition hard limit per call).
  */
 export async function indexFaces(opts: {
   collectionId: string;
@@ -99,7 +99,7 @@ export async function indexFaces(opts: {
     CollectionId: opts.collectionId,
     Image: { Bytes: b64 },
     DetectionAttributes: ["ALL"],
-    MaxFaces: opts.maxFaces ?? 15,
+    MaxFaces: opts.maxFaces ?? 100,
     QualityFilter: opts.qualityFilter ?? "AUTO",
   };
   if (opts.externalImageId) {

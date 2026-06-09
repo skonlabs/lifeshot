@@ -76,7 +76,7 @@ export async function detectFaces(opts: {
       collectionId,
       imageBytes: bytes,
       externalImageId: opts.assetId,
-      maxFaces: 15,
+      maxFaces: 100, // Rekognition hard limit — detect every face in the photo
       qualityFilter: "AUTO",
     });
   } catch (e: any) {
