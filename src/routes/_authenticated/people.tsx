@@ -166,7 +166,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   // Tight crop around the face. The previous 1.75x multiplier (with a 12%
   // minimum) often grew the crop large enough to include neighbouring faces
   // in group photos, which made each "person" tile look like a small group.
-  let sidePx = clamp(longestFaceSide * 1.25, shortestImageSide * 0.08, shortestImageSide * 0.6);
+  let sidePx = clamp(longestFaceSide * 1.05, shortestImageSide * 0.08, shortestImageSide * 0.6);
 
   const cxPx = (bb!.x + bb!.w / 2) * W;
   const cyPx = (bb!.y + Math.min(bb!.h * 0.44, bb!.h / 2)) * H;

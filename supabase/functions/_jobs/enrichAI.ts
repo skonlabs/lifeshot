@@ -223,7 +223,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       await enqueueJob("clusterPeople", {
         userId: ctx.userId,
         payload: { user_id: asset.user_id, asset_id },
-        idempotencyKey: `cluster:${asset_id}:${Date.now()}`,
+        idempotencyKey: `cluster:${asset_id}`,
       });
     }
   }

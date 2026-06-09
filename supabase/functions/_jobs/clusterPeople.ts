@@ -87,7 +87,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     for (let i = 0; i < faces.length; i++) {
       const f = faces[i] as any;
       const faceId = typeof f.face_id === "string" && f.face_id.length > 0 ? f.face_id : null;
-      const bbox = sanitizeFaceBox(f.bbox ?? null);
+      const bbox = sanitizeFaceBox(f.bbox ?? null) ?? (f.bbox ?? null);
       if (!bbox) continue;
       const embedding = Array.isArray(f.embedding) && f.embedding.length > 0
         ? f.embedding.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v))

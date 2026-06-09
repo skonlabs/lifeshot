@@ -34,7 +34,7 @@ export interface DetectedFace {
   attributes: Record<string, unknown> | null; // Full Rekognition FaceDetail JSON
 }
 
-async function fetchImageBytes(url: string, maxBytes = 5 * 1024 * 1024): Promise<Uint8Array> {
+async function fetchImageBytes(url: string, maxBytes = 3_750_000): Promise<Uint8Array> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`fetch image ${resp.status}`);
   const buf = new Uint8Array(await resp.arrayBuffer());

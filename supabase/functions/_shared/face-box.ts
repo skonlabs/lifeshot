@@ -7,8 +7,8 @@ export interface FaceBox {
 
 const MIN_SIDE = 0.04;
 const MIN_AREA = 0.0035;
-const MAX_SIDE = 0.58;
-const MAX_AREA = 0.22;
+const MAX_SIDE = 0.75;
+const MAX_AREA = 0.50;
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;

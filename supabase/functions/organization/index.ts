@@ -9,7 +9,7 @@ import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
-import { faceQualityScore, faceVisualSignature, sanitizeFaceBox } from "../_shared/face-box.ts";
+import { faceQualityScore, faceVisualSignature, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -241,7 +241,10 @@ app.get("/people", async (c) => {
     const goodFaceCount = pick?.good_count ?? 0;
     const faceCropDataUrl = typeof topFace?.face_crop === "string" ? topFace.face_crop : null;
     const preferredBbox = topFace?.bbox ?? p.cover_bbox ?? null;
-    const coverBbox = sanitizeFaceBox(preferredBbox);
+    // bbox stored in DB is already sanitized by clusterPeople — do NOT run
+    // sanitizeFaceBox again or it double-expands the padding (1.18×1.18 = 1.39×).
+    const coverBbox = (preferredBbox && typeof preferredBbox === "object" &&
+      typeof (preferredBbox as any).x === "number") ? preferredBbox as FaceBox : null;
     // Override cover asset to the chosen top face's asset when available.
     const effectiveCoverId = (topFace?.asset_id as string | null) ?? coverAssetId;
     const effectiveAsset = effectiveCoverId ? coverAssets[effectiveCoverId] ?? asset : asset;
