@@ -38,9 +38,21 @@ app.get("/", (c) => c.json({ ok: true, service: "lifeshot-worker" }));
  * concurrency reasonable. */
 app.post("/drain", async (c) => {
   const url = new URL(c.req.url);
-  const batch = Number(url.searchParams.get("batch") ?? "4");
+  // Default batch is 2: larger batches occasionally trip
+  // WORKER_RESOURCE_LIMIT on the Edge runtime, which kills the worker
+  // mid-job and leaves locks behind. Smaller batches + self-perpetuating
+  // drain keeps throughput high without crashing.
+  const batch = Number(url.searchParams.get("batch") ?? "2");
   const budgetMs = Number(url.searchParams.get("budget_ms") ?? "50000");
   const lanes = url.searchParams.getAll("lanes").flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+  // Self-heal: reclaim any job whose worker died (locked > 120s). Without
+  // this a crashed worker can leave a sync stuck waiting on jobs that no
+  // one is processing, until the every-minute cron sweep catches up.
+  try {
+    await serviceClient().rpc("sweep_stuck_jobs", { _stale_seconds: 120 });
+  } catch (err) {
+    console.warn("worker self-heal sweep failed:", String(err));
+  }
   const r = lanes.length
     ? await drainUntilEmptyForLanes(budgetMs, batch, lanes)
     : await drainUntilEmpty(budgetMs, batch);
