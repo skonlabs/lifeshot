@@ -1,24 +1,9 @@
--- =====================================================================
--- People dedup, face cleanup, and UNIQUE(user_id, auto_label) on people.
---
--- Rationale:
---   1. clusterPeople upserts with onConflict: "user_id,auto_label" but the
---      base schema never created that unique constraint, so PostgREST has
---      silently inserted duplicate rows. We must add the index, but first
---      merge any pre-existing duplicates so CREATE UNIQUE INDEX succeeds.
---   2. people.faces accumulated entries that fail the front-facing /
---      quality gate, and across runs picked up duplicate
---      (asset_id, rekognition_face_id) entries. Clean both using the same
---      thresholds the runtime now enforces (_ai/face-quality.ts).
---
--- Idempotent: safe to re-run.
--- =====================================================================
-
 begin;
 
 -- Step 1: merge duplicate (user_id, auto_label) rows on `people`.
 with dups as (
-  select user_id, auto_label, min(id) as keep_id,
+  select user_id, auto_label,
+         (array_agg(id order by created_at nulls last, id))[1] as keep_id,
          array_agg(id order by created_at nulls last, id) as all_ids
   from public.people
   where auto_label is not null
@@ -47,7 +32,8 @@ delete from public.people p
 using (
   select unnest(all_ids) as id, keep_id
   from (
-    select min(id) as keep_id, array_agg(id) as all_ids
+    select (array_agg(id order by created_at nulls last, id))[1] as keep_id,
+           array_agg(id) as all_ids
     from public.people
     where auto_label is not null
     group by user_id, auto_label
@@ -56,7 +42,7 @@ using (
 ) d
 where p.id = d.id and p.id <> d.keep_id;
 
--- Step 2: clean `people.faces` — quality filter + dedup.
+-- Step 2: clean faces — quality filter + dedup.
 with face_rows as (
   select
     p.id as person_id,
@@ -99,7 +85,6 @@ set faces = coalesce(a.new_faces, '[]'::jsonb),
 from agg a
 where p.id = a.person_id;
 
--- People with zero kept faces → reset arrays.
 update public.people p
 set faces = '[]'::jsonb,
     face_count = 0,
@@ -110,7 +95,6 @@ where p.id not in (
        lateral jsonb_array_elements(coalesce(p2.faces, '[]'::jsonb)) as f(elem)
 );
 
--- Recompute cover.
 with covers as (
   select distinct on (p.id)
     p.id as person_id,
@@ -118,7 +102,7 @@ with covers as (
     f.elem->'bbox' as cover_bbox
   from public.people p,
        lateral jsonb_array_elements(coalesce(p.faces, '[]'::jsonb)) as f(elem)
-  order by p.id, coalesce((f.elem->>'confidence')::float, (f.elem->>'score')::float, 0) desc
+  where exists (select 1 from public.assets a where a.id = (f.elem->>'asset_id')::uuid) order by p.id, coalesce((f.elem->>'confidence')::float, (f.elem->>'score')::float, 0) desc
 )
 update public.people p
 set cover_asset_id = c.cover_asset_id,
@@ -126,15 +110,17 @@ set cover_asset_id = c.cover_asset_id,
 from covers c
 where p.id = c.person_id;
 
--- Delete auto-labelled empty people. Manually-labelled rows preserved.
 delete from public.people
 where face_count = 0
   and auto_label is not null
   and (display_name is null or display_name like 'Person %');
 
--- Step 3: enforce UNIQUE(user_id, auto_label).
 create unique index if not exists people_user_auto_label_uidx
   on public.people (user_id, auto_label)
   where auto_label is not null;
 
 commit;
+
+select
+  (select count(*) from public.people) as people_after,
+  (select count(*) from pg_indexes where indexname='people_user_auto_label_uidx') as has_unique_idx;
