@@ -4,8 +4,11 @@
  *
  * For each asset:
  *   1. Fetches the image bytes from the signed thumbnail/preview URL.
- *   2. Ensures the per-user collection exists.
- *   3. Calls IndexFaces — detects all faces AND indexes them in the
+ *   2. Resizes the image if it exceeds Rekognition's 5 MB base64 limit
+ *      (~3.75 MB raw) using OffscreenCanvas — no face is silently dropped
+ *      just because the source image is large.
+ *   3. Ensures the per-user collection exists.
+ *   4. Calls IndexFaces — detects all faces AND indexes them in the
  *      collection. Returns a FaceId per face, used downstream by
  *      clusterPeople (SearchFaces) for real identity matching.
  */
@@ -19,10 +22,11 @@ import {
 } from "./rekognition.ts";
 import { isUsableFace } from "./face-quality.ts";
 
+// Rekognition accepts images up to 5 MB of base64, which is ~3.75 MB raw.
+const REKOGNITION_MAX_BYTES = 3_750_000;
+
 // Similarity (%) above which two Rekognition FaceIds are treated as the
-// same physical face. 98 is intentionally strict — we only collapse a
-// freshly-indexed face into an existing one when AWS is highly confident
-// they are the same person from a very similar angle/lighting.
+// same physical face when deduplicating a fresh IndexFaces batch.
 const DEDUP_SIMILARITY = 98;
 
 export interface DetectedFace {
@@ -34,14 +38,47 @@ export interface DetectedFace {
   attributes: Record<string, unknown> | null; // Full Rekognition FaceDetail JSON
 }
 
-async function fetchImageBytes(url: string, maxBytes = 3_750_000): Promise<Uint8Array> {
+/**
+ * Resize an image so its raw byte count fits within maxBytes.
+ * Uses the Web platform OffscreenCanvas API available in Deno edge runtime.
+ * Falls back to the original bytes when the API is unavailable (e.g. unit tests).
+ */
+async function resizeToFit(bytes: Uint8Array, mime: string, maxBytes: number): Promise<Uint8Array> {
+  if (bytes.byteLength <= maxBytes) return bytes;
+
+  // Scale area proportionally, then take 10% extra margin for encoder overhead.
+  const scale = Math.sqrt(maxBytes / bytes.byteLength) * 0.90;
+
+  try {
+    const blob = new Blob([bytes], { type: mime });
+    const bitmap = await createImageBitmap(blob);
+    const w = Math.max(1, Math.floor(bitmap.width * scale));
+    const h = Math.max(1, Math.floor(bitmap.height * scale));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const resized = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.90 });
+    const out = new Uint8Array(await resized.arrayBuffer());
+    console.log(`face-detector: resized ${bytes.byteLength} → ${out.byteLength} bytes (scale ${scale.toFixed(2)})`);
+    // Recurse once in case JPEG encoder output still exceeds limit.
+    if (out.byteLength > maxBytes) return resizeToFit(out, "image/jpeg", maxBytes);
+    return out;
+  } catch (e: any) {
+    // OffscreenCanvas not available — send original; Rekognition will reject
+    // oversized images with an error we'll catch upstream.
+    console.warn("face-detector: canvas resize unavailable, sending original", String(e?.message ?? e));
+    return bytes;
+  }
+}
+
+async function fetchAndPrepareImage(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`fetch image ${resp.status}`);
-  const buf = new Uint8Array(await resp.arrayBuffer());
-  if (buf.byteLength > maxBytes) {
-    throw new Error(`image too large for Rekognition: ${buf.byteLength} bytes (max ${maxBytes})`);
-  }
-  return buf;
+  const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
+  const raw = new Uint8Array(await resp.arrayBuffer());
+  const bytes = await resizeToFit(raw, mime, REKOGNITION_MAX_BYTES);
+  return { bytes, mime };
 }
 
 export async function detectFaces(opts: {
@@ -56,9 +93,9 @@ export async function detectFaces(opts: {
 
   let bytes: Uint8Array;
   try {
-    bytes = await fetchImageBytes(opts.imageUrl);
+    ({ bytes } = await fetchAndPrepareImage(opts.imageUrl));
   } catch (e: any) {
-    console.warn("face-detector: image fetch failed", String(e?.message ?? e));
+    console.warn("face-detector: image fetch/prepare failed", String(e?.message ?? e));
     return [];
   }
 
@@ -76,7 +113,7 @@ export async function detectFaces(opts: {
       collectionId,
       imageBytes: bytes,
       externalImageId: opts.assetId,
-      maxFaces: 100, // Rekognition hard limit — detect every face in the photo
+      maxFaces: 100,
       qualityFilter: "AUTO",
     });
   } catch (e: any) {
@@ -84,10 +121,9 @@ export async function detectFaces(opts: {
     return [];
   }
 
-  // Quality gate BEFORE anything else: reject non-front-facing / low-quality
-  // detections and DELETE their FaceIds from the AWS collection so they cannot
-  // pollute future SearchFaces results. Same thresholds the rest of the
-  // pipeline uses (see _ai/face-quality.ts).
+  // Filter only by the shared quality gate (occlusion, pose, sharpness, brightness).
+  // We trust Rekognition's BoundingBox and Confidence for all other face attributes
+  // — no custom area or side-length rejection here.
   const rejectedFaceIds: string[] = [];
   const acceptedRecords: typeof records = [];
   for (const r of records) {
@@ -106,11 +142,10 @@ export async function detectFaces(opts: {
   }
   records = acceptedRecords;
 
-  // De-duplicate against the collection: for each newly-indexed face, ask
-  // Rekognition CompareFaces-style (SearchFaces) whether a very similar
-  // face already exists. If so, drop the just-created FaceId and reuse
-  // the existing one so downstream clustering doesn't create duplicate
-  // person_faces rows for the same physical face.
+  // De-duplicate: for each newly-indexed face, check whether a nearly-identical
+  // face already exists in the collection (same physical face, different photo).
+  // When found, reuse the existing FaceId so clusterPeople doesn't create a
+  // duplicate person row.
   const dedupedFaceIds = new Set<string>();
   const toDelete: string[] = [];
   const finalRecords = await Promise.all(records.map(async (r) => {
@@ -121,8 +156,6 @@ export async function detectFaces(opts: {
         faceMatchThreshold: DEDUP_SIMILARITY,
         maxFaces: 5,
       });
-      // Pick the best match that isn't the face we just indexed and that
-      // we haven't already collapsed another new face onto in this batch.
       const existing = matches
         .filter((m) => m.faceId !== r.faceId && !dedupedFaceIds.has(m.faceId))
         .sort((a, b) => b.similarity - a.similarity)[0];
@@ -148,7 +181,7 @@ export async function detectFaces(opts: {
   return finalRecords.map((r) => ({
     bbox: r.bbox,
     description: "",
-    confidence: r.confidence / 100, // normalize to 0..1 for consistency with prior schema
+    confidence: r.confidence / 100,
     embedding: null,
     face_id: r.faceId,
     attributes: r.attributes,

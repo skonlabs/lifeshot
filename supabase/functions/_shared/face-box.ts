@@ -5,11 +5,6 @@ export interface FaceBox {
   h: number;
 }
 
-const MIN_SIDE = 0.04;
-const MIN_AREA = 0.0035;
-const MAX_SIDE = 0.75;
-const MAX_AREA = 0.50;
-
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -23,53 +18,41 @@ export function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function squareFromCenter(cx: number, cy: number, side: number): FaceBox {
-  const normalizedSide = Math.min(Math.max(side, MIN_SIDE), 1);
-  const x = clamp01(Math.min(Math.max(cx - normalizedSide / 2, 0), 1 - normalizedSide));
-  const y = clamp01(Math.min(Math.max(cy - normalizedSide / 2, 0), 1 - normalizedSide));
-  return { x, y, w: normalizedSide, h: normalizedSide };
-}
-
+/**
+ * Normalize and lightly pad a Rekognition bounding box.
+ *
+ * Rekognition already identifies the face region precisely — we trust its
+ * output and only:
+ *   1. Validate that x/y/w/h are finite numbers.
+ *   2. Clamp coords to [0, 1].
+ *   3. Add a small uniform 20% padding so the crop has context around the face.
+ *   4. Convert to a square centred on the face (required for circular avatars).
+ *
+ * No area or side-length rejection — every face Rekognition found is valid.
+ */
 export function sanitizeFaceBox(input: unknown): FaceBox | null {
   if (!input || typeof input !== "object") return null;
   const raw = input as Record<string, unknown>;
   const rawX = toFiniteNumber(raw.x);
   const rawY = toFiniteNumber(raw.y);
-  let rawW = toFiniteNumber(raw.w);
-  let rawH = toFiniteNumber(raw.h);
+  const rawW = toFiniteNumber(raw.w);
+  const rawH = toFiniteNumber(raw.h);
   if (rawX == null || rawY == null || rawW == null || rawH == null) return null;
 
   const x = clamp01(rawX);
   const y = clamp01(rawY);
-  rawW = Math.max(Math.min(rawW, 1), 0);
-  rawH = Math.max(Math.min(rawH, 1), 0);
-  if (x + rawW > 1) rawW = 1 - x;
-  if (y + rawH > 1) rawH = 1 - y;
-  if (rawW < MIN_SIDE || rawH < MIN_SIDE) return null;
+  const w = clamp01(Math.min(rawW, 1 - x));
+  const h = clamp01(Math.min(rawH, 1 - y));
+  if (w <= 0 || h <= 0) return null;
 
-  const rawArea = rawW * rawH;
-  if (rawArea < MIN_AREA || rawW > 0.72 || rawH > 0.85 || rawArea > 0.42) return null;
-
-  const aspect = rawW / rawH;
-  let side = Math.max(rawW, rawH);
-  const cx = x + rawW / 2;
-  let cy = y + rawH / 2;
-
-  if (aspect < 0.72 || rawH > rawW * 1.28) {
-    side = Math.min(Math.max(rawW * 1.1, rawH * 0.52), 0.5);
-    cy = y + Math.min(rawH * 0.34, side * 0.58);
-  } else if (aspect > 1.18) {
-    side = Math.min(Math.max(rawH * 1.12, rawW * 0.64), 0.5);
-  } else {
-    side = Math.min(Math.max(Math.max(rawW, rawH) * 1.18, 0.08), 0.5);
-    cy = y + rawH * 0.48;
-  }
-
-  const box = squareFromCenter(cx, cy, side);
-  const area = box.w * box.h;
-  if (box.w < MIN_SIDE || box.h < MIN_SIDE) return null;
-  if (box.w > MAX_SIDE || box.h > MAX_SIDE || area > MAX_AREA) return null;
-  return box;
+  // Square side = longest face dimension + 20% padding on each side.
+  const longest = Math.max(w, h);
+  const side = Math.min(longest * 1.40, 1.0);
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const sx = clamp01(Math.min(Math.max(cx - side / 2, 0), 1 - side));
+  const sy = clamp01(Math.min(Math.max(cy - side / 2, 0), 1 - side));
+  return { x: sx, y: sy, w: side, h: side };
 }
 
 export function faceQualityScore(box: FaceBox | null, confidence: number, facesInAsset = 1): number {
