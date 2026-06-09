@@ -17,6 +17,7 @@ import {
   collectionIdForUser,
   rekognitionConfigured,
 } from "./rekognition.ts";
+import { isUsableFace } from "./face-quality.ts";
 
 // Similarity (%) above which two Rekognition FaceIds are treated as the
 // same physical face. 98 is intentionally strict — we only collapse a
@@ -82,6 +83,28 @@ export async function detectFaces(opts: {
     console.warn("face-detector: indexFaces failed", String(e?.message ?? e));
     return [];
   }
+
+  // Quality gate BEFORE anything else: reject non-front-facing / low-quality
+  // detections and DELETE their FaceIds from the AWS collection so they cannot
+  // pollute future SearchFaces results. Same thresholds the rest of the
+  // pipeline uses (see _ai/face-quality.ts).
+  const rejectedFaceIds: string[] = [];
+  const acceptedRecords: typeof records = [];
+  for (const r of records) {
+    if (isUsableFace({ confidence: (r.confidence ?? 0) / 100, attributes: r.attributes ?? null })) {
+      acceptedRecords.push(r);
+    } else if (r.faceId) {
+      rejectedFaceIds.push(r.faceId);
+    }
+  }
+  if (rejectedFaceIds.length > 0) {
+    try {
+      await deleteFaces({ collectionId, faceIds: rejectedFaceIds });
+    } catch (e: any) {
+      console.warn("face-detector: deleteFaces (quality) failed", String(e?.message ?? e));
+    }
+  }
+  records = acceptedRecords;
 
   // De-duplicate against the collection: for each newly-indexed face, ask
   // Rekognition CompareFaces-style (SearchFaces) whether a very similar
