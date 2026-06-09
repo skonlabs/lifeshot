@@ -1,0 +1,57 @@
+// deno-lint-ignore-file no-explicit-any
+/**
+ * Shared face-quality gate.
+ *
+ * Used by:
+ *  - face-detector.ts  → filters BEFORE faces enter the Rekognition collection
+ *  - enrichAI.ts       → filters BEFORE persisting to asset_ai_enrichment.faces
+ *  - clusterPeople.ts  → re-filters in case older rows contain bad entries
+ *  - cleanup migration → mirrored thresholds for one-time backfill
+ *
+ * Thresholds match the historical enrichAI values so behaviour for compliant
+ * faces is unchanged.
+ */
+export const FACE_MIN_CONFIDENCE = 0.6;   // 0..1 (Rekognition confidence/100)
+export const FACE_MAX_YAW = 30;           // degrees
+export const FACE_MAX_PITCH = 25;         // degrees
+export const FACE_MIN_SHARPNESS = 35;     // 0..100
+export const FACE_MIN_BRIGHTNESS = 25;    // 0..100
+
+/**
+ * Returns true if a face passes the front-facing / quality gate.
+ * Accepts a partial input: `confidence` in 0..1 plus a Rekognition `FaceDetail`-shaped
+ * attributes object (Pose.Yaw/Pitch, Quality.Sharpness/Brightness).
+ *
+ * If attributes are missing entirely (older rows without Rekognition payload),
+ * we keep the face — we cannot prove it's bad. Only attributes that are
+ * present and out of range cause rejection. This keeps the function safe for
+ * both fresh detections and historical cleanup.
+ */
+export function isUsableFace(input: {
+  confidence?: number | null;
+  attributes?: Record<string, any> | null;
+}): boolean {
+  const conf = Number(input.confidence ?? 0);
+  if (Number.isFinite(conf) && conf > 0 && conf < FACE_MIN_CONFIDENCE) return false;
+
+  const a = input.attributes ?? null;
+  if (!a) return true;
+
+  const pose = (a.Pose ?? null) as Record<string, any> | null;
+  if (pose) {
+    const yaw = Math.abs(Number(pose.Yaw ?? 0));
+    const pitch = Math.abs(Number(pose.Pitch ?? 0));
+    if (Number.isFinite(yaw) && yaw > FACE_MAX_YAW) return false;
+    if (Number.isFinite(pitch) && pitch > FACE_MAX_PITCH) return false;
+  }
+
+  const q = (a.Quality ?? null) as Record<string, any> | null;
+  if (q) {
+    const sharp = Number(q.Sharpness ?? 100);
+    const bright = Number(q.Brightness ?? 100);
+    if (Number.isFinite(sharp) && sharp < FACE_MIN_SHARPNESS) return false;
+    if (Number.isFinite(bright) && bright < FACE_MIN_BRIGHTNESS) return false;
+  }
+
+  return true;
+}

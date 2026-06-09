@@ -1,82 +1,78 @@
+# Sync + face-recognition hardening
 
-# Database Cleanup Plan
+After a full trace of the pipeline (`syncSource → normalizeMetadata → enrichAI → clusterPeople`, plus the worker drain loop), most of your 8 items are already implemented correctly. The real bugs are concentrated in face handling. This plan fixes only what's actually broken, so nothing else regresses.
 
-The DB currently has **91 public tables** — most are empty or unused. Only ~25 are actually read/written by the app today. This plan drops the dead weight, consolidates the per-asset metadata sprawl, and leaves a clean, documented schema.
+## What is already correct (won't touch)
 
-## Audit Summary (rows in prod)
+- **Sync / force-sync flow.** `force` clears cursors, bypasses staleness, and uses a unique run-id idempotency key. Normal sync resumes from `source_sync_cursors`.
+- **Auto-stop when done.** `source_sync_jobs.status` flips to `completed` only when there are no more pages *and* zero pending `normalizeMetadata` jobs. Worker self-perpetuates only while `job_queue` has pending rows, then naturally stops.
+- **Data extraction coverage.** Every job writes to the right tables (`assets`, `asset_media_metadata`, `asset_exif`, `asset_gps`, `asset_xmp_iptc`, `asset_ai_enrichment`, `people`, `places`, `events`, `event_assets`, etc.). No table is being skipped.
+- **Loop safety.** `syncSource` already detects identical-cursor loops and force-terminates.
 
-**Actively used (keep):**
-`assets` (427), `asset_source_refs` (427), `asset_thumbnails` (427), `asset_derivatives` (854), `asset_proxies` (427), `asset_hashes` (424), `asset_exif` (422), `asset_media_metadata` (427), `asset_file_metadata` (427), `asset_ai_enrichment` (427), `asset_ai_ready_metadata` (427), `asset_ocr` (426), `asset_organization_signals` (427), `asset_preview_metadata` (427), `asset_search_documents` (427), `asset_video_metadata` (5), `person_faces` (1412), `people` (122), `source_*` (accounts/tokens/providers/jobs/cursors/errors/capabilities/permissions/rate_buckets), `families`/`family_members`/`family_invitations`, `privacy_settings`, `consent_records`, `job_queue`, `job_ledger`, `dead_letter_jobs`, `ai_usage_log`, `api_*` (cache/idempotency/oauth_states/rate_limits), `user_profiles`, `search_queries`, `audit_logs`.
+## Real bugs to fix
 
-**Empty + unreferenced by code (DROP — 38 tables):**
-- Albums/collections (never built): `asset_albums`, `asset_album_memberships`, `collection_assets`, `smart_collections`
-- Per-format metadata never extracted: `asset_audio_metadata`, `asset_document_metadata`, `asset_xmp_iptc`, `asset_devices`, `asset_blurhashes`, `asset_captions`, `asset_labels`, `asset_locations` (replaced by `asset_organization_signals.place_*`), `asset_gps` (data lives in `assets.gps_*` + `asset_exif`), `asset_quality_scores`, `asset_sensitive_flags`, `asset_visibility`, `asset_cache_status`, `asset_embeddings`, `asset_search_index` (replaced by `asset_search_documents`), `asset_dedup_groups`, `asset_metadata` (legacy stub)
-- Duplicates UI not shipped: `duplicate_groups`, `duplicate_group_members`
-- Events UI not populated: `events`, `event_assets`, `event_people`, `event_places`
-- Places aggregation (we compute on the fly): `places`, `places_summary`
-- Graph/memory experiment (not used): `memory_nodes`, `memory_edges`, `graph_snapshots`
-- Face clustering legacy: `face_clusters` (we use `people` + `person_faces`)
-- Scan engine v1 (replaced by job_queue): `scan_sessions`, `scan_batches`, `scan_checkpoints`, `scan_errors`, `scan_roots`, `ingest_uploads`, `ingestion_events`
-- Other dead: `user_corrections`, `user_activity_events`, `performance_metrics`, `data_exports`, `timeline_windows`, `search_result_cache`, `system_config`, `ai_vision_cache`, `ai_embedding_cache`
+### Bug 1 — Non-front-facing faces enter the AWS Rekognition collection
+`face-detector.ts` calls `indexFaces` with **all** detected faces. The pose/quality filter (Yaw ≤ 30°, Pitch ≤ 25°, Sharpness ≥ 35, Brightness ≥ 25, Confidence ≥ 0.6) runs **after** indexing in `enrichAI.ts`. Rejected faces stay in the AWS collection and pollute future `SearchFaces` calls.
 
-**Consolidate (merge into `assets`):**
-- `asset_file_metadata`, `asset_media_metadata`, `asset_preview_metadata` are 1:1 with `assets` and the columns are mostly already on `assets` (width/height/duration/orientation/mime_type/file_size_bytes). Drop the side tables; ensure `assets` carries: `width`, `height`, `aspect_ratio`, `orientation`, `mime_type`, `file_size_bytes`, `capture_time`, `gps_lat`, `gps_lng`, `dominant_color`, `filename`.
+**Fix:** Move the pose/quality filter into `face-detector.ts`, applied to Rekognition's returned `FaceDetail` *before* deciding what to keep. Any face that fails the filter gets `deleteFaces` called immediately on its FaceId so the collection stays clean. The filter constants get extracted into one shared module (`_ai/face-quality.ts`) so detector + enrich + cluster all use the same thresholds.
 
-**Slim `assets` itself (47 → ~25 cols):** drop unused columns `embedding_id`, `primary_source_ref_id`, `quality_score`, `perceptual_hash` (moved to `asset_hashes`), `duplicate_group_id`, plus any column not referenced by the app.
+### Bug 2 — `clusterPeople` re-trusts `enrichAI` faces without re-filtering
+If older `asset_ai_enrichment` rows were written before Bug 1 was fixed (or by an older code path), they may still contain non-front-facing entries. `clusterPeople` blindly iterates them.
 
-## Final Schema (≈ 30 tables)
+**Fix:** Apply the same shared `isUsableFace()` check in `clusterPeople` before clustering. Faces that fail are silently skipped (not deleted from `asset_ai_enrichment` — that's the cleanup migration's job).
+
+### Bug 3 — Cross-run duplicate in `people.faces`
+The existing idempotency check only rejects exact `(asset_id, face_id)` repeats. A bad assignment in one run can leave a `(asset_id, face_id)` row pointing to person A; a later run that correctly maps the same `face_id` to person B will append a *second* entry on B without removing the wrong one on A.
+
+**Fix:** Before appending in `clusterPeople`, scan *all* people for any existing `(asset_id, face_id)` entry. If found on a different person, remove it from that person and re-attach to the correct one (and recompute that person's `face_count` and `cover`). Net effect: every `(asset_id, face_id)` lives on exactly one person.
+
+### Bug 4 — Missing `UNIQUE(user_id, auto_label)` on `people`
+`clusterPeople` upserts with `onConflict: "user_id,auto_label"`, but no migration adds that unique index. PostgREST upserts without a real unique constraint silently insert duplicate rows.
+
+**Fix:** Add migration `add_people_user_auto_label_unique.sql` that creates the unique index. Before creating it, the same migration de-duplicates any existing rows by merging their `faces`, `rekognition_face_ids`, `face_count`, and keeping the earliest `id`.
+
+### Bug 5 — Existing duplicate / non-front-facing faces in `people.faces`
+Backfill the cleanup so the people grid stops showing fake "extra" people.
+
+**Fix:** One-time migration `cleanup_people_faces.sql` that:
+1. For each row in `people`, rewrites `faces` to keep only entries where the embedded `rekognition_response` attributes pass the quality filter (Yaw/Pitch/Sharpness/Brightness/Confidence). Entries missing attributes are kept (we can't judge them).
+2. Deduplicates the resulting array on `(asset_id, rekognition_face_id)` — keeps the highest-confidence copy.
+3. Recomputes `face_count` and `cover_asset_id`/`cover_bbox` from the new array.
+4. Deletes any `people` row that ends up with `face_count = 0`.
+5. Removes orphan FaceIds from `rekognition_face_ids` that no longer appear in `faces`.
+
+The migration is idempotent (safe to re-run) and runs in a single transaction.
+
+## What I will not change (and why)
+
+- **No queue/worker rewrite.** The worker already auto-terminates and the 504s you saw earlier were on read endpoints (`/accounts`, `/people`), not on sync itself. Those are already mitigated by the 4 s provider timeout and graceful-degradation fallbacks added in earlier turns.
+- **No deletion of dead-code jobs** (`materializeTimelineWindows`, `disconnectSource`, `deleteAccount`, `exportUserData`). They're registered but not enqueued from anywhere — leaving them in `registry.ts` is harmless and removing them risks breaking a future wiring you may add. I'll just note them.
+- **No change to `syncSource` / `normalizeMetadata` chaining.** It works.
+
+## Why this won't break anything
+
+- All filter thresholds match what `enrichAI.ts` already uses — same numbers, just applied earlier and in more places. Existing behavior for compliant faces is unchanged.
+- The cleanup migration only *removes* entries; no new rows, no schema-shape change. The `people` table columns stay identical.
+- The unique-index migration first merges any pre-existing duplicates, so the `CREATE UNIQUE INDEX` cannot fail.
+- `clusterPeople`'s cross-person move is gated behind the same `(asset_id, face_id)` key it already uses, so on a clean DB it's a no-op.
+- No edge-function entry points, no route files, no UI files touched.
+
+## Files changed
 
 ```text
-auth.users
-  └── user_profiles, privacy_settings, consent_records, families, family_members, family_invitations
-
-source_providers
-  └── source_accounts ── source_tokens (service_role only)
-        ├── source_sync_jobs, source_sync_cursors, source_errors
-        ├── source_capabilities, source_permissions, source_rate_buckets
-
-assets ─┬─ asset_source_refs (n source rows per asset)
-        ├─ asset_thumbnails       (1:1, square thumb + dominant color)
-        ├─ asset_derivatives      (n: web/preview/poster)
-        ├─ asset_proxies          (1:1, signed-url proxy)
-        ├─ asset_hashes           (1:1, sha256 + phash)
-        ├─ asset_exif             (1:1, raw exif)
-        ├─ asset_video_metadata   (1:1, only for video)
-        ├─ asset_ai_enrichment    (1:1, captions/tags/scene)
-        ├─ asset_ai_ready_metadata(1:1, what was sent to AI)
-        ├─ asset_ocr              (1:1, OCR text)
-        ├─ asset_organization_signals (1:1, place/event/activity)
-        ├─ asset_search_documents (1:1, FTS tsvector)
-        └─ person_faces ── people  (faces per asset, clustered into people)
-
-job_queue ── job_ledger ── dead_letter_jobs
-ai_usage_log
-api_cache_entries, api_idempotency_keys, api_oauth_states, api_rate_limits
-audit_logs, search_queries
+NEW   supabase/functions/_ai/face-quality.ts              shared isUsableFace() + thresholds
+EDIT  supabase/functions/_ai/face-detector.ts             pre-index filter + deleteFaces for rejects
+EDIT  supabase/functions/_jobs/enrichAI.ts                use shared filter (delete inline copy)
+EDIT  supabase/functions/_jobs/clusterPeople.ts           re-filter + cross-person dedup move
+NEW   supabase/migrations/<ts>_people_user_auto_label_unique.sql
+NEW   supabase/migrations/<ts>_cleanup_people_faces.sql
 ```
 
-All FKs `on delete cascade` from `assets`. Indexes on `(user_id, capture_time desc)`, `(user_id, deleted_state)`, `person_faces(person_id)`, `asset_source_refs(source_account_id)`.
+## Verification after build
 
-## Execution
+1. `psql` check that the unique index exists and `people` has no `(user_id, auto_label)` dups.
+2. `psql` check that no row in `people.faces` has Yaw/Pitch outside thresholds (where attributes present).
+3. Open `/people` in the preview and confirm faces render without the "same person split across tiles" symptom.
+4. Trigger a force-sync on one account and watch `source_sync_jobs.status` flip `running → completed` with `pending_normalize_jobs = 0`.
 
-Migrations under `supabase/migrations/`:
-
-1. **`20260606080000_drop_unused_tables.sql`** — `DROP TABLE ... CASCADE` for the 38 empty unused tables, plus the 3 consolidatable per-asset tables (after verifying their columns are already on `assets`).
-2. **`20260606080100_slim_assets.sql`** — drop unused columns from `assets`; add missing indexes; add table/column comments.
-3. **`20260606080200_grants_and_rls.sql`** — re-grant + verify RLS on the surviving tables.
-
-Then update code:
-- Remove any imports/queries referencing dropped tables in `supabase/functions/_jobs/*`, `_metadata/persistence.ts`, `organization/index.ts`, `privacy/index.ts`, `catalog/index.ts`.
-- Update `docs/query-catalog.md`.
-- Run `deno test` and the 26 logic tests to confirm green.
-
-## Risks / Safeguards
-
-- All dropped tables currently have **0 rows** (verified above) except `asset_metadata` (0), so no data loss.
-- `assets` column drops are limited to columns not referenced in any `.ts`/`.sql` file (grep-verified before each drop).
-- Migrations are reversible by re-creating tables from `0001…0014` if needed.
-- I will run the migrations against your project via the Management API and re-run the test suite before declaring done.
-
-## Confirm before I run
-
-This will permanently drop ~38 tables and ~20 columns. Shall I proceed exactly as above, or do you want to keep any of the "dropped" tables (e.g., events, duplicates, albums) because you plan to use them soon?
+If you approve, I'll execute in this exact order and stop only if a step fails.
