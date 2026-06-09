@@ -139,6 +139,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
 
   const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
 
+  // When we have a bbox but dims haven't loaded yet, render the image hidden
+  // so onLoad fires to get natural dimensions, showing a neutral background
+  // in the meantime instead of a blank cream circle.
   if (!hasUsableBbox || !dims) {
     return (
       <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
@@ -149,7 +152,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
           decoding="async"
           onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           onError={() => setImgFailed(true)}
-          className="absolute inset-0 h-full w-full object-cover object-[center_25%]"
+          className={`absolute inset-0 h-full w-full object-cover object-[center_25%] transition-opacity duration-200 ${hasUsableBbox && !dims ? "opacity-0" : "opacity-100"}`}
         />
       </div>
     );

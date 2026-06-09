@@ -136,7 +136,8 @@ app.get("/people", async (c) => {
   // so we only fetch / sign one asset per person rather than the entire
   // face history (which can be many hundreds of rows for popular people).
   const scoreFaceQuality = (f: any): number => {
-    const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+    const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
+    if (!attrs) return -Infinity; // no attributes → worst score
     const pose = attrs.Pose ?? {};
     const q = attrs.Quality ?? {};
     const yaw = Math.abs(Number(pose.Yaw ?? 0));
@@ -148,7 +149,11 @@ app.get("/people", async (c) => {
       + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2;
   };
   const isGoodFace = (f: any): boolean => {
-    const attrs = (f?.rekognition_response ?? f?.attributes ?? {}) as Record<string, any>;
+    const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
+    // Reject faces stored without Rekognition attributes — pose/quality cannot be verified.
+    if (!attrs) return false;
+    const occ = attrs.FaceOccluded as Record<string, any> | null;
+    if (occ?.Value === true) return false;
     const pose = attrs.Pose ?? {};
     const q = attrs.Quality ?? {};
     const yaw = Math.abs(Number(pose.Yaw ?? 0));
@@ -274,6 +279,12 @@ app.get("/people", async (c) => {
     };
   }).filter((person: any) => {
     if (person.auto_label === "auto:unclustered-faces") return false;
+    // Only show people where at least one face passed the quality gate.
+    // goodFaceCount=0 means every stored face failed pose/quality/attribute
+    // checks — this person row should not appear in the UI.
+    const pick = bestFaceByPerson.get(person.id);
+    if (!pick?.face) return false;
+    if (!isGoodFace(pick.face)) return false;
     if (!(person.asset_count > 0)) return false;
     if (!person.cover?.thumbnail_url) return false;
     return true;

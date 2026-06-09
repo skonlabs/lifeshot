@@ -93,9 +93,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         ? f.embedding.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v))
         : null;
       if (!faceId && !embedding?.length) continue;
-      // Re-apply the shared quality gate in case this row was written by an
-      // older code path that didn't filter pose/quality before persisting.
+      // Require Rekognition attributes — faces stored without them are old data
+      // that cannot be quality-checked (pose, occlusion, sharpness). Skipping
+      // them ensures only faces that passed the full DetectionAttributes:ALL
+      // pipeline are clustered into people rows.
       const attrs = (f.attributes ?? null) as Record<string, unknown> | null;
+      if (!attrs) continue;
       const conf = Number(f.score ?? f.confidence ?? 0.5);
       if (!isUsableFace({ confidence: conf, attributes: attrs as Record<string, any> | null })) continue;
       faceEntries.push({
