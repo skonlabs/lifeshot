@@ -72,16 +72,22 @@ async function cropFace(
   try {
     const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
     const W = bitmap.width, H = bitmap.height;
-    const m = Math.max(bbox.w, bbox.h) * 0.10;
-    const sx = Math.max(0, (bbox.x - m) * W);
-    const sy = Math.max(0, (bbox.y - m) * H);
-    const sw = Math.min(W - sx, (bbox.w + m * 2) * W);
-    const sh = Math.min(H - sy, (bbox.h + m * 2) * H);
-    const size = Math.min(200, Math.max(Math.round(sw), Math.round(sh)));
+    // Rekognition bbox is tight around the face (ear-to-ear, forehead-to-chin).
+    // Add generous padding so the avatar shows full head with hair and chin.
+    // Use asymmetric vertical padding: more above (hair) than below (chin/neck).
+    const padH = bbox.h * 0.40;  // 40% of face height above and below
+    const padW = bbox.w * 0.30;  // 30% of face width on each side
+    const sx = Math.max(0, (bbox.x - padW) * W);
+    const sy = Math.max(0, (bbox.y - padH) * H);
+    const ex = Math.min(W, (bbox.x + bbox.w + padW) * W);
+    const ey = Math.min(H, (bbox.y + bbox.h + padH) * H);
+    const sw = ex - sx;
+    const sh = ey - sy;
+    const size = Math.min(300, Math.max(Math.round(sw), Math.round(sh)));
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
-    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     const buf = new Uint8Array(await blob.arrayBuffer());
     return `data:image/jpeg;base64,${btoa(String.fromCharCode(...buf))}`;
   } catch {

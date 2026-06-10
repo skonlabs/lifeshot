@@ -127,11 +127,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const ids = existingPeople.map((p: any) => p.id);
     const { data: pf } = await sb
       .from("person_faces")
-      .select("person_id, face_id")
+      .select("person_id, rekognition_face_id")
       .in("person_id", ids)
-      .not("face_id", "is", null);
+      .not("rekognition_face_id", "is", null);
     for (const row of pf ?? []) {
-      if (row.face_id) faceIdToPersonId.set(row.face_id, row.person_id);
+      if (row.rekognition_face_id) faceIdToPersonId.set(row.rekognition_face_id, row.person_id);
     }
   }
 
@@ -197,7 +197,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       asset_id: entry.asset_id,
       bbox: entry.bbox,
       confidence: entry.confidence,
-      face_id: entry.face_id,
+      rekognition_face_id: entry.face_id,
     }, { onConflict: "person_id,asset_id" });
 
     if (fErr) {
