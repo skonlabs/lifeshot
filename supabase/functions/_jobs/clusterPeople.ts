@@ -4,6 +4,28 @@ import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
+ * Score a face for cover selection. Higher = better avatar quality.
+ * Prioritises: frontal pose > sharpness > non-occluded.
+ * All faces are clustered regardless of score — score only controls which
+ * face is chosen as the person's display avatar.
+ */
+function coverScore(entry: { attributes: any; confidence: number }): number {
+  const a = entry.attributes;
+  if (!a) return 0;
+  const pose = a.Pose ?? {};
+  const quality = a.Quality ?? {};
+  const occluded = a.FaceOccluded?.Value === true || a.FaceOccluded?.Value === "true";
+  const yaw     = Math.abs(Number(pose.Yaw   ?? 90));
+  const pitch   = Math.abs(Number(pose.Pitch ?? 90));
+  const sharp   = Number(quality.Sharpness  ?? 0);
+  const bright  = Number(quality.Brightness ?? 0);
+  if (occluded) return 0;
+  // Normalise: lower yaw/pitch = better; higher sharpness/brightness = better.
+  const frontality = Math.max(0, (1 - yaw / 90)) * Math.max(0, (1 - pitch / 90));
+  return frontality * 0.6 + (sharp / 100) * 0.3 + (bright / 100) * 0.1;
+}
+
+/**
  * clusterPeople — identifies people across detected faces using AWS Rekognition
  * SearchFaces for identity matching.
  *
@@ -179,29 +201,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       console.error("clusterPeople: person_faces upsert failed", fErr.message);
     } else {
       clusteredFaces++;
-      // Track the best face crop candidate for each person's cover.
-      if (entry.face_crop && !coverCandidates.has(personId)) {
-        coverCandidates.set(personId, entry);
+      // Track best-quality face crop for this person's cover avatar.
+      // Replace the current candidate if this face scores higher.
+      if (entry.face_crop) {
+        const current = coverCandidates.get(personId);
+        const score = coverScore({ attributes: entry.attributes, confidence: entry.confidence });
+        const currentScore = current ? coverScore({ attributes: current.attributes, confidence: current.confidence }) : -1;
+        if (score > currentScore) coverCandidates.set(personId, entry);
       }
     }
   }
 
-  // Update cover_face_crop for people that don't already have one.
+  // Update cover_face_crop — always write the best-scored face found this run.
   if (coverCandidates.size > 0) {
-    const personIds = Array.from(coverCandidates.keys());
-    const { data: peopleWithCovers } = await sb
-      .from("people")
-      .select("id, cover_face_crop")
-      .in("id", personIds);
-
-    const needsCover = new Set(
-      (peopleWithCovers ?? [])
-        .filter((p: any) => !p.cover_face_crop)
-        .map((p: any) => p.id),
-    );
-
     for (const [pid, entry] of coverCandidates) {
-      if (!needsCover.has(pid)) continue;
       await sb.from("people").update({
         cover_face_crop: entry.face_crop,
         cover_asset_id: entry.asset_id,
