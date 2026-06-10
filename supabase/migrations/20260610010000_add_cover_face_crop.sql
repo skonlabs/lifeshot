@@ -4,6 +4,7 @@
 alter table public.people add column if not exists cover_face_crop text;
 
 -- Update people_list_for_user to expose cover_face_crop.
+drop function if exists public.people_list_for_user(uuid);
 create or replace function public.people_list_for_user(_user_id uuid)
 returns table (
   id uuid,
