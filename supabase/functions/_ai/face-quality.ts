@@ -6,13 +6,13 @@
  *   3. clusterPeople.ts: re-check stored faces in case older rows exist
  *
  * Rekognition underreports yaw/pitch relative to human perception:
- *   Rekognition 15° ≈ 25-30° visual turn → use 15° as the threshold
+ *   Rekognition 20° ≈ 30-40° visual turn → use 20° as the threshold
  */
-export const FACE_MIN_CONFIDENCE = 0.70; // 0..1 (Rekognition confidence / 100)
-export const FACE_MAX_YAW       = 10;    // degrees — Rekognition underreports ~2x, so 10 ≈ 20° visual
-export const FACE_MAX_PITCH     = 8;     // degrees — same underreport factor
-export const FACE_MIN_SHARPNESS = 50;    // 0..100
-export const FACE_MIN_BRIGHTNESS = 30;   // 0..100
+export const FACE_MIN_CONFIDENCE = 0.60; // 0..1 (Rekognition confidence / 100)
+export const FACE_MAX_YAW       = 20;    // degrees — rejects clear side profiles
+export const FACE_MAX_PITCH     = 15;    // degrees — rejects faces looking sharply up/down
+export const FACE_MIN_SHARPNESS = 40;    // 0..100
+export const FACE_MIN_BRIGHTNESS = 25;   // 0..100
 
 /**
  * Returns true when a face passes ALL quality criteria.
