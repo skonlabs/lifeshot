@@ -8,11 +8,11 @@
  * Rekognition underreports yaw/pitch relative to human perception:
  *   Rekognition 15° ≈ 25-30° visual turn → use 15° as the threshold
  */
-export const FACE_MIN_CONFIDENCE = 0.60; // 0..1 (Rekognition confidence / 100)
-export const FACE_MAX_YAW       = 15;    // degrees
-export const FACE_MAX_PITCH     = 10;    // degrees
-export const FACE_MIN_SHARPNESS = 40;    // 0..100
-export const FACE_MIN_BRIGHTNESS = 25;   // 0..100
+export const FACE_MIN_CONFIDENCE = 0.70; // 0..1 (Rekognition confidence / 100)
+export const FACE_MAX_YAW       = 10;    // degrees — Rekognition underreports ~2x, so 10 ≈ 20° visual
+export const FACE_MAX_PITCH     = 8;     // degrees — same underreport factor
+export const FACE_MIN_SHARPNESS = 50;    // 0..100
+export const FACE_MIN_BRIGHTNESS = 30;   // 0..100
 
 /**
  * Returns true when a face passes ALL quality criteria.

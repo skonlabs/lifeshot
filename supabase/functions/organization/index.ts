@@ -203,10 +203,9 @@ app.get("/people", async (c) => {
         ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
         ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key);
     }
+    // Only use face_crop — never CSS-crop a group photo thumbnail as avatar.
     const cover = faceCrop
       ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null }
-      : p.cover_asset_id && thumbUrl
-      ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: coverBbox }
       : null;
     return {
       id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,

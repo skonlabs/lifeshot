@@ -146,7 +146,7 @@ export async function detectFaces(opts: {
       imageBytes: bytes,
       externalImageId: opts.assetId,
       maxFaces: 100,
-      qualityFilter: "AUTO",
+      qualityFilter: "MEDIUM",
     });
   } catch (e: any) {
     console.warn("face-detector: indexFaces failed", String(e?.message ?? e));
