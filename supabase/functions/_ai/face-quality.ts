@@ -1,60 +1,37 @@
 // deno-lint-ignore-file no-explicit-any
-/**
- * Face quality gate — applied at every stage of the pipeline:
- *   1. face-detector.ts: reject before indexing into Rekognition collection
- *   2. enrichAI.ts: reject before persisting to asset_ai_enrichment.faces
- *   3. clusterPeople.ts: re-check stored faces in case older rows exist
- *
- * Rekognition underreports yaw/pitch relative to human perception:
- *   Rekognition 20° ≈ 30-40° visual turn → use 20° as the threshold
- */
-export const FACE_MIN_CONFIDENCE = 0.60; // 0..1 (Rekognition confidence / 100)
-export const FACE_MAX_YAW       = 20;    // degrees — rejects clear side profiles
-export const FACE_MAX_PITCH     = 15;    // degrees — rejects faces looking sharply up/down
-export const FACE_MIN_SHARPNESS = 40;    // 0..100
-export const FACE_MIN_BRIGHTNESS = 25;   // 0..100
+export const FACE_MIN_CONFIDENCE  = 0.60;
+export const FACE_MAX_YAW         = 20;   // degrees — rejects clear side profiles (data: bad faces at 25°–77°)
+export const FACE_MAX_PITCH       = 20;   // degrees — rejects sharp up/down tilt (data: bad faces at -29° to -63°)
+export const FACE_MIN_SHARPNESS   = 35;   // 0..100 — data: bad faces at 5–16, good faces at 38+
+export const FACE_MIN_BRIGHTNESS  = 20;   // 0..100
 
-/**
- * Returns true when a face passes ALL quality criteria.
- * Any failing criterion causes rejection — there is no partial pass.
- *
- * Input:
- *   confidence — Rekognition FaceDetail.Confidence / 100 (0..1 scale)
- *   attributes — full Rekognition FaceDetail JSON (Pose, Quality, FaceOccluded…)
- *
- * If attributes is null the face is rejected — we cannot verify frontal pose
- * or quality without Rekognition's full detection output.
- */
 export function isUsableFace(input: {
   confidence?: number | null;
   attributes?: Record<string, any> | null;
 }): boolean {
   const conf = Number(input.confidence ?? 0);
-  if (Number.isFinite(conf) && conf > 0 && conf < FACE_MIN_CONFIDENCE) return false;
+  if (conf > 0 && conf < FACE_MIN_CONFIDENCE) return false;
 
-  const a = input.attributes ?? null;
-  if (!a) return false; // reject faces without quality data
+  const a = input.attributes;
+  if (!a) return false;
 
-  // Reject if face is occluded (hair over face, hands, other objects).
-  const occ = (a.FaceOccluded ?? null) as Record<string, any> | null;
-  if (occ?.Value === true) return false;
+  // Reject occluded faces (hair, hands, objects over face).
+  const occVal = a?.FaceOccluded?.Value ?? a?.FaceOccluded?.value ?? null;
+  if (occVal === true || occVal === "true") return false;
 
-  // Reject side profiles and tilted faces.
-  const pose = (a.Pose ?? null) as Record<string, any> | null;
-  if (pose) {
-    const yaw   = Math.abs(Number(pose.Yaw   ?? 0));
-    const pitch = Math.abs(Number(pose.Pitch ?? 0));
-    if (Number.isFinite(yaw)   && yaw   > FACE_MAX_YAW)   return false;
-    if (Number.isFinite(pitch) && pitch > FACE_MAX_PITCH) return false;
-  } else {
-    return false; // no pose data → can't verify frontal → reject
-  }
+  // Reject side profiles and sharp up/down tilt.
+  const pose = a?.Pose ?? null;
+  if (!pose) return false;
+  const yaw   = Math.abs(Number(pose.Yaw   ?? pose.yaw   ?? 0));
+  const pitch = Math.abs(Number(pose.Pitch ?? pose.pitch ?? 0));
+  if (!Number.isFinite(yaw)   || yaw   > FACE_MAX_YAW)   return false;
+  if (!Number.isFinite(pitch) || pitch > FACE_MAX_PITCH) return false;
 
-  // Reject blurry or dark faces.
-  const q = (a.Quality ?? null) as Record<string, any> | null;
+  // Reject blurry faces.
+  const q = a?.Quality ?? null;
   if (q) {
-    const sharp  = Number(q.Sharpness  ?? 100);
-    const bright = Number(q.Brightness ?? 100);
+    const sharp  = Number(q.Sharpness  ?? q.sharpness  ?? 100);
+    const bright = Number(q.Brightness ?? q.brightness ?? 100);
     if (Number.isFinite(sharp)  && sharp  < FACE_MIN_SHARPNESS)  return false;
     if (Number.isFinite(bright) && bright < FACE_MIN_BRIGHTNESS) return false;
   }
