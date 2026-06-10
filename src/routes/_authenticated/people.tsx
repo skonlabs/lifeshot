@@ -126,6 +126,13 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
 
+  // useMemo must be called unconditionally — before any early returns.
+  const dims = useMemo(() => {
+    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
+    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
+    return width && height ? { width, height } : null;
+  }, [cover?.height, cover?.width, naturalSize]);
+
   // 1. Exact face crop (data-URL from Rekognition).
   if (cover?.face_crop && !imgFailed) {
     return (
@@ -153,13 +160,6 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   }
 
   const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
-
-  const dims = useMemo(() => {
-    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
-    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
-    return width && height ? { width, height } : null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cover?.height, cover?.width, naturalSize]);
 
   // 2. Thumbnail without usable bbox (or dims not yet loaded) — show full photo.
   if (!hasUsableBbox || !dims) {
