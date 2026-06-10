@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { usePeople, useCorrection } from "@/lib/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -169,7 +169,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   // Tight crop around the face. The previous 1.75x multiplier (with a 12%
   // minimum) often grew the crop large enough to include neighbouring faces
   // in group photos, which made each "person" tile look like a small group.
-  let sidePx = clamp(longestFaceSide * 1.05, shortestImageSide * 0.08, shortestImageSide * 0.6);
+  const sidePx = clamp(longestFaceSide * 1.05, shortestImageSide * 0.08, shortestImageSide * 0.6);
 
   const cxPx = (bb!.x + bb!.w / 2) * W;
   const cyPx = (bb!.y + Math.min(bb!.h * 0.44, bb!.h / 2)) * H;
@@ -177,7 +177,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   let topPx = cyPx - sidePx / 2;
   leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));
   topPx = Math.min(Math.max(topPx, 0), Math.max(H - sidePx, 0));
-  const imageStyle: React.CSSProperties = {
+  const imageStyle: CSSProperties = {
     position: "absolute",
     width: `${(W / sidePx) * 100}%`,
     height: `${(H / sidePx) * 100}%`,
