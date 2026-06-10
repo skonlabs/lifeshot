@@ -134,19 +134,29 @@ app.get("/people", async (c) => {
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
 
+  // Asset counts: derive from the canonical `people.faces` jsonb array — the
+  // clusterPeople pipeline writes there, not into the legacy `person_faces`
+  // table. Counting distinct asset_id within the array gives the true number
+  // of photos this person appears in.
   const ids = peopleRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
   if (ids.length) {
-    const { data: pf } = await supa.from("person_faces")
-      .select("person_id, asset_id").in("person_id", ids);
-    const seen: Record<string, Set<string>> = {};
-    for (const f of pf ?? []) (seen[f.person_id] ??= new Set()).add(f.asset_id);
-    for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
+    const { data: faceRows } = await supa.from("people")
+      .select("id, faces").in("id", ids);
+    for (const row of faceRows ?? []) {
+      const arr = Array.isArray((row as any).faces) ? (row as any).faces : [];
+      const seen = new Set<string>();
+      for (const f of arr) if (f && typeof f.asset_id === "string") seen.add(f.asset_id);
+      counts[(row as any).id] = seen.size;
+    }
   }
 
-  // Batch-resolve thumbnail URLs for people without a face_crop.
+  // Batch-resolve thumbnail URLs for any cover that doesn't already have a
+  // baked-in face_crop data URL.
   const coverAssetIds = Array.from(new Set(
-    peopleRows.filter((p: any) => p.cover_asset_id && !p.cover_face_crop).map((p: any) => p.cover_asset_id as string),
+    peopleRows
+      .filter((p: any) => p.cover_asset_id && !p.cover_face_crop)
+      .map((p: any) => p.cover_asset_id as string),
   ));
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
@@ -197,17 +207,26 @@ app.get("/people", async (c) => {
     const coverBbox = (p.cover_bbox && typeof p.cover_bbox === "object" &&
       typeof (p.cover_bbox as any).x === "number") ? p.cover_bbox : null;
     let thumbUrl: string | null = null;
+    let coverWidth: number | null = null;
+    let coverHeight: number | null = null;
     if (!faceCrop && p.cover_asset_id) {
       const asset = coverAssets[p.cover_asset_id] ?? null;
       const media = mediaMap[p.cover_asset_id] ?? null;
       thumbUrl = resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
         ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
         ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key);
+      coverWidth  = typeof asset?.width  === "number" ? asset.width  : null;
+      coverHeight = typeof asset?.height === "number" ? asset.height : null;
     }
-    // Only use face_crop — never CSS-crop a group photo thumbnail as avatar.
+    // Cover preference:
+    //   1. baked face_crop data URL (when face-detector produced one)
+    //   2. thumbnail + face_bbox  (PersonTile CSS-crops to the face region)
+    //   3. thumbnail alone        (PersonTile falls back to centered crop)
     const cover = faceCrop
-      ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null }
-      : null;
+      ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null, width: null, height: null }
+      : thumbUrl
+        ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: coverBbox, width: coverWidth, height: coverHeight }
+        : null;
     return {
       id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
       consent_required: p.consent_required, auto_label: p.auto_label,
