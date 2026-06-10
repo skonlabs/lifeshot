@@ -160,9 +160,12 @@ export async function detectFaces(opts: {
         .filter((m) => m.faceId !== r.faceId && !dedupedFaceIds.has(m.faceId))
         .sort((a, b) => b.similarity - a.similarity)[0];
       if (existing) {
-        toDelete.push(r.faceId);
-        dedupedFaceIds.add(existing.faceId);
-        return { ...r, faceId: existing.faceId, deduped: true as const };
+        // Delete the OLD matching face (may be a pre-reset stale ID) and keep
+        // the newly indexed one. This progressively purges stale collection
+        // entries so clusterPeople can map all FaceIds to current DB people.
+        toDelete.push(existing.faceId);
+        dedupedFaceIds.add(r.faceId);
+        return { ...r, deduped: true as const };
       }
     } catch (e: any) {
       console.warn("face-detector: dedup search failed", r.faceId, String(e?.message ?? e));

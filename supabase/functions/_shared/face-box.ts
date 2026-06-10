@@ -45,9 +45,9 @@ export function sanitizeFaceBox(input: unknown): FaceBox | null {
   const h = clamp01(Math.min(rawH, 1 - y));
   if (w <= 0 || h <= 0) return null;
 
-  // Square side = longest face dimension + 20% padding on each side.
+  // Square side = longest face dimension + 10% padding on each side.
   const longest = Math.max(w, h);
-  const side = Math.min(longest * 1.40, 1.0);
+  const side = Math.min(longest * 1.20, 1.0);
   const cx = x + w / 2;
   const cy = y + h / 2;
   const sx = clamp01(Math.min(Math.max(cx - side / 2, 0), 1 - side));

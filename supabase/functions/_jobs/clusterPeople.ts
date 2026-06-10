@@ -24,9 +24,9 @@ import { isUsableFace } from "../_ai/face-quality.ts";
 // at 90, which is conservative enough to split the same person across multiple
 // "people" rows when lighting/angle differs. Drop to 80 for primary matching
 // and use 70 as a wider safety-net sweep before creating a brand-new person.
-const FACE_MATCH_THRESHOLD = 80;
-const FACE_MATCH_FALLBACK_THRESHOLD = 70;
-const FACE_VECTOR_MATCH_THRESHOLD = 0.78;
+const FACE_MATCH_THRESHOLD = 75;
+const FACE_MATCH_FALLBACK_THRESHOLD = 65;
+const FACE_VECTOR_MATCH_THRESHOLD = 0.75;
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return -1;

@@ -166,8 +166,8 @@ app.get("/people", async (c) => {
     const bright = Number(q.Brightness ?? 100);
     const conf = Number(f?.confidence ?? 0);
     if (conf < 0.6) return false;
-    if (Number.isFinite(yaw) && yaw > 20) return false;
-    if (Number.isFinite(pitch) && pitch > 15) return false;
+    if (Number.isFinite(yaw) && yaw > 15) return false;
+    if (Number.isFinite(pitch) && pitch > 10) return false;
     if (Number.isFinite(sharp) && sharp < 40) return false;
     if (Number.isFinite(bright) && bright < 25) return false;
     return true;
@@ -291,6 +291,9 @@ app.get("/people", async (c) => {
     if (!isGoodFace(pick.face)) return false;
     if (!(person.asset_count > 0)) return false;
     if (!person.cover?.thumbnail_url) return false;
+    // Require a valid face crop bbox — without it, the tile shows a full photo
+    // (potentially a scene with no visible face or multiple people in frame).
+    if (!person.cover?.face_bbox) return false;
     return true;
   });
   // Suppress quality scoring helper warnings (no longer used in this code path).

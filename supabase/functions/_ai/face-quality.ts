@@ -12,8 +12,8 @@
  * faces is unchanged.
  */
 export const FACE_MIN_CONFIDENCE = 0.6;   // 0..1 (Rekognition confidence/100)
-export const FACE_MAX_YAW = 20;           // degrees — Rekognition underreports yaw vs visual perception; 20° here ≈ 35-40° visually turned
-export const FACE_MAX_PITCH = 15;         // degrees — rejects faces looking up/down
+export const FACE_MAX_YAW = 15;           // degrees — Rekognition underreports yaw; 15° here ≈ 25-30° visually turned
+export const FACE_MAX_PITCH = 10;         // degrees — rejects faces looking up/down
 export const FACE_MIN_SHARPNESS = 40;     // 0..100
 export const FACE_MIN_BRIGHTNESS = 25;    // 0..100
 
