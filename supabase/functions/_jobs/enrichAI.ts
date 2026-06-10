@@ -1,13 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient, STORAGE_BUCKETS } from "../_pipeline/clients.ts";
 import { providers } from "./mocks.ts";
-import { installOpenAIProviders } from "../_ai/factory.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
-import { rekognitionConfigured } from "../_ai/rekognition.ts";
-import { isUsableFace } from "../_ai/face-quality.ts";
 
-// Safety net: ensure real providers are active when credentials are present.
-installOpenAIProviders();
+import { detectFaces } from "../_ai/face-detector.ts";
+import { rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
  * enrichAI — runs vision analysis + object detection on an asset's derived
@@ -50,48 +47,26 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // storage path (after generateDerived runs). We must create a signed URL for
   // the latter — passing a bare storage path to the AI provider will fail.
   let url: string | null = null;
-  let faceDetectionUrl: string | null = null;
 
-  // For vision captioning a small thumb is fine. For face detection we MUST
-  // prefer the larger preview — Rekognition needs faces to be at least ~40px
-  // wide to detect, and provider-supplied thumbnails (often 256-512px) are
-  // too small. Earlier we used thumbnail_cache_key for faces, which silently
-  // caused 0 face detections across the entire library.
   const rawKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
-  const rawFaceKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
   if (rawKey && /^https?:\/\//.test(rawKey)) {
     url = rawKey;
   }
-  if (rawFaceKey && /^https?:\/\//.test(rawFaceKey)) {
-    faceDetectionUrl = rawFaceKey;
-  }
 
   if (!url) {
-    // Pull URLs/paths from asset_media_metadata (asset_derivatives dropped).
-    const { data: mm } = await sb.from("asset_media_metadata")
-      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
-      .eq("asset_id", asset_id).maybeSingle();
-    url = mm?.preview_url ?? mm?.thumbnail_url ?? null;
-    if (!url) {
-      const path = mm?.preview_storage_path ?? mm?.thumbnail_storage_path ?? null;
-      if (path) {
-        const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
-        url = signed?.signedUrl ?? null;
-      }
-    }
-  }
-
-  if (!faceDetectionUrl) {
-    const { data: mm } = await sb.from("asset_media_metadata")
-      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
-      .eq("asset_id", asset_id).maybeSingle();
-    // Prefer preview (larger) for face detection; fall back to thumbnail.
-    faceDetectionUrl = mm?.preview_url ?? mm?.thumbnail_url ?? null;
-    if (!faceDetectionUrl) {
-      const path = mm?.preview_storage_path ?? mm?.thumbnail_storage_path ?? null;
-      if (path) {
-        const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(path, 600);
-        faceDetectionUrl = signed?.signedUrl ?? null;
+    // Try stored derivatives (preview first, then thumb).
+    for (const kind of ["preview", "thumb"]) {
+      const { data: deriv } = await sb
+        .from("asset_derivatives")
+        .select("storage_path, storage_bucket")
+        .eq("asset_id", asset_id)
+        .eq("kind", kind)
+        .maybeSingle();
+      if (deriv?.storage_path) {
+        const { data: signed } = await sb.storage
+          .from(deriv.storage_bucket)
+          .createSignedUrl(deriv.storage_path, 600);
+        if (signed?.signedUrl) { url = signed.signedUrl; break; }
       }
     }
   }
@@ -103,14 +78,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .createSignedUrl(rawKey, 600);
     url = signed?.signedUrl ?? null;
   }
-  if (!faceDetectionUrl && rawFaceKey && !/^https?:\/\//.test(rawFaceKey)) {
-    const { data: signed } = await sb.storage
-      .from(STORAGE_BUCKETS.derived)
-      .createSignedUrl(rawFaceKey, 600);
-    faceDetectionUrl = signed?.signedUrl ?? null;
-  }
-
-  if (!faceDetectionUrl) faceDetectionUrl = url;
 
   if (!url) {
     await enqueueJob("generateDerived", {
@@ -126,6 +93,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let objects: Array<{ label: string; score: number }> = [];
   let error: string | null = null;
 
+  // Caption and object detection via configured AI provider.
   try {
     const [capResult, objResult] = await Promise.all([
       providers.ai.caption({ url }),
@@ -137,60 +105,30 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   } catch (e: any) {
     error = String(e?.message ?? e);
     console.error("enrichAI vision failed", { asset_id, error });
-    // Record the failure but do not throw — enrichment is best-effort.
   }
 
-  // Face detection — runs server-side via AWS Rekognition when:
-  //  (a) the user has opted in to biometric processing, and
-  //  (b) the faceDetector provider is installed (AWS keys configured).
-  // Gracefully skipped (faces=[]) when either condition is false.
+  // Face detection via Rekognition (consent + configuration gated).
+  // Each returned face has already passed the full quality gate inside
+  // face-detector.ts (yaw ≤ 15°, pitch ≤ 10°, sharpness ≥ 40, not occluded).
   let faces: Array<Record<string, unknown>> = [];
-  let faceScanned = false;
   let faceDetectionAttempted = false;
-  try {
-    const { data: privacy } = await sb
-      .from("privacy_settings")
-      .select("face_processing_enabled")
-      .eq("user_id", asset.user_id)
-      .maybeSingle();
-    // Only attempt face detection when we actually have a working backend.
-    // Previously we attempted even when Rekognition wasn't configured, the
-    // provider silently returned [] (no throw), faceScanned was set to true,
-    // and the asset got marked face_scanned_at — permanently skipping it
-    // once credentials were added. Gate on rekognitionConfigured() so the
-    // asset stays eligible for re-scan until faces are really attempted.
-    if (privacy?.face_processing_enabled && faceDetectionUrl && rekognitionConfigured()) {
-      faceDetectionAttempted = true;
-      const detected = await providers.faceDetector.detectFaces({
-        url: faceDetectionUrl,
-        userId: asset.user_id,
-        assetId: asset_id,
-      });
-      faceScanned = true;
-      // Quality gate: reject low-confidence detections, profile/turned faces,
-      // and blurry/dark crops. Without these filters every silhouette and
-      // back-of-head Rekognition returns ends up as its own "Person" tile.
-      //   - confidence >= 0.6 (0..1 scale; Rekognition confidence/100)
-      //   - |Yaw| <= 30°, |Pitch| <= 25°   (roughly frontal)
-      //   - Quality.Sharpness >= 35, Quality.Brightness >= 25 (0..100)
-      faces = detected
-        .filter((f) => isUsableFace({
-          confidence: Number(f.confidence ?? 0),
-          attributes: (f.attributes ?? null) as Record<string, any> | null,
-        }))
-        .map((f) => ({
+  const { data: privacy } = await sb.from("privacy_settings")
+    .select("face_processing_enabled").eq("user_id", asset.user_id).maybeSingle();
+  if (privacy?.face_processing_enabled && rekognitionConfigured()) {
+    faceDetectionAttempted = true;
+    try {
+      const detected = await detectFaces({ imageUrl: url, userId: asset.user_id, assetId: asset_id });
+      faces = detected.map((f) => ({
         bbox: f.bbox,
         score: f.confidence,
-        description: f.description,
-        embedding: f.embedding,
         face_id: f.face_id,
-        face_crop: f.face_crop ?? null,
-        attributes: f.attributes,
+        face_crop: f.face_crop,
+        attributes: f.attributes, // full Rekognition FaceDetail (Pose, Quality, etc.)
       }));
+    } catch (e: any) {
+      console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
+      faceDetectionAttempted = false;
     }
-  } catch (e: any) {
-    console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
-    faceScanned = false;
   }
 
   await sb.from("asset_ai_enrichment").upsert({
@@ -203,9 +141,9 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
 
-  // Mirror the raw Rekognition face payload onto asset_media_metadata.recognition
-  // so the UI can read everything off one row per asset.
-  if (faceScanned) {
+  // Mirror the raw Rekognition face payload onto asset_media_metadata so the
+  // UI can read everything off one row per asset.
+  if (faceDetectionAttempted && faces.length > 0) {
     const recognition = faces.map((f: any) => f.attributes).filter(Boolean);
     await sb.from("asset_media_metadata").upsert({
       asset_id, user_id: asset.user_id,
@@ -213,10 +151,11 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }, { onConflict: "asset_id" });
   }
 
-  // Mark the asset as face-scanned so it isn't reprocessed.
-  if (faceDetectionAttempted && faceScanned) {
-    await sb.from("assets")
-      .update({ face_scanned_at: new Date().toISOString() })
+  // Mark face scan complete only when detection was actually attempted.
+  // If Rekognition was not configured or consent was denied, leave face_scanned_at
+  // null so the asset remains eligible for face scanning later.
+  if (faceDetectionAttempted) {
+    await sb.from("assets").update({ face_scanned_at: new Date().toISOString() })
       .eq("id", asset_id);
 
     if (faces.length > 0) {
@@ -241,5 +180,5 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     idempotencyKey: `index:${asset_id}`,
   });
 
-  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, error };
+  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };
 }

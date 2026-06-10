@@ -6,6 +6,23 @@ import { ShieldAlert, UserRound } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/people")({ component: People });
 
+type Bbox = { x: number; y: number; w: number; h: number } | null;
+type Cover = {
+  face_crop?: string | null;
+  thumbnail_url: string | null;
+  face_bbox?: Bbox;
+  width?: number | null;
+  height?: number | null;
+  face_count?: number | null;
+} | null | undefined;
+
+type Person = {
+  id: string;
+  display_name: string | null;
+  asset_count: number;
+  cover?: Cover;
+};
+
 function People() {
   const { data, isLoading } = usePeople();
   const faceOff = (data as { face_processing_disabled?: boolean } | undefined)?.face_processing_disabled;
@@ -41,20 +58,13 @@ function People() {
       ) : (
         <div className="grid grid-cols-6 gap-3 md:grid-cols-12">
           {people.map((p) => (
-            <PersonTile key={p.id} person={p} />
+            <PersonTile key={(p as any).id} person={p as unknown as Person} />
           ))}
         </div>
       )}
     </div>
   );
 }
-
-type Person = {
-  id: string;
-  display_name: string | null;
-  asset_count: number;
-  cover?: Cover;
-};
 
 function PersonTile({ person }: { person: Person }) {
   const correction = useCorrection();
@@ -104,30 +114,35 @@ function PersonTile({ person }: { person: Person }) {
   );
 }
 
-type Bbox = { x: number; y: number; w: number; h: number } | null;
-type Cover = {
-  thumbnail_url: string | null;
-  face_bbox?: Bbox;
-  width?: number | null;
-  height?: number | null;
-  face_count?: number | null;
-} | null | undefined;
-
 /**
- * Renders a circular face crop from the cover asset's thumbnail.
- * Uses CSS background-position+size to crop the face_bbox region into a
- * round avatar without needing a server-side face thumbnail.
- * bbox is expected in normalized [0..1] coordinates.
+ * Renders a circular face avatar.
+ * Priority:
+ *   1. face_crop data-URL (200×200 JPEG from Rekognition crop) — exact face pixels, no CSS cropping needed.
+ *   2. thumbnail_url + face_bbox — CSS zoom/position trick to isolate the face region.
+ *   3. thumbnail_url only — full photo centered at 25% from top (portraits are usually top-half).
+ *   4. Fallback icon.
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
-  const bb = cover?.face_bbox;
   const [imgFailed, setImgFailed] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
-  const dims = useMemo(() => {
-    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
-    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
-    return width && height ? { width, height } : null;
-  }, [cover?.height, cover?.width, naturalSize]);
+
+  // 1. Exact face crop (data-URL from Rekognition).
+  if (cover?.face_crop && !imgFailed) {
+    return (
+      <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
+        <img
+          src={cover.face_crop}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setImgFailed(true)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      </div>
+    );
+  }
+
+  const bb = cover?.face_bbox;
 
   if (!cover?.thumbnail_url || imgFailed) {
     return (
@@ -139,9 +154,14 @@ function FaceAvatar({ cover }: { cover: Cover }) {
 
   const hasUsableBbox = !!(bb && bb.w > 0.04 && bb.h > 0.04 && bb.w <= 1 && bb.h <= 1);
 
-  // When we have a bbox but dims haven't loaded yet, render the image hidden
-  // so onLoad fires to get natural dimensions, showing a neutral background
-  // in the meantime instead of a blank cream circle.
+  const dims = useMemo(() => {
+    const width = cover?.width && cover.width > 0 ? cover.width : naturalSize?.width ?? null;
+    const height = cover?.height && cover.height > 0 ? cover.height : naturalSize?.height ?? null;
+    return width && height ? { width, height } : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cover?.height, cover?.width, naturalSize]);
+
+  // 2. Thumbnail without usable bbox (or dims not yet loaded) — show full photo.
   if (!hasUsableBbox || !dims) {
     return (
       <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
@@ -158,7 +178,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     );
   }
 
-  // Compute a square crop around the face and render with object-position.
+  // 3. CSS zoom crop around face bbox.
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
   const W = Math.max(dims.width, 1);
   const H = Math.max(dims.height, 1);
@@ -166,11 +186,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const faceHpx = bb!.h * H;
   const longestFaceSide = Math.max(faceWpx, faceHpx);
   const shortestImageSide = Math.min(W, H);
-  // Tight crop around the face. The previous 1.75x multiplier (with a 12%
-  // minimum) often grew the crop large enough to include neighbouring faces
-  // in group photos, which made each "person" tile look like a small group.
   const sidePx = clamp(longestFaceSide, shortestImageSide * 0.08, shortestImageSide * 0.6);
-
   const cxPx = (bb!.x + bb!.w / 2) * W;
   const cyPx = (bb!.y + bb!.h / 2) * H;
   let leftPx = cxPx - sidePx / 2;

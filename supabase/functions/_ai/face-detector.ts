@@ -1,16 +1,28 @@
 // deno-lint-ignore-file no-explicit-any
 /**
- * Face detector backed by AWS Rekognition.
+ * Face detector backed by AWS Rekognition IndexFaces.
  *
- * For each asset:
- *   1. Fetches the image bytes from the signed thumbnail/preview URL.
- *   2. Resizes the image if it exceeds Rekognition's 5 MB base64 limit
- *      (~3.75 MB raw) using OffscreenCanvas — no face is silently dropped
- *      just because the source image is large.
- *   3. Ensures the per-user collection exists.
- *   4. Calls IndexFaces — detects all faces AND indexes them in the
- *      collection. Returns a FaceId per face, used downstream by
- *      clusterPeople (SearchFaces) for real identity matching.
+ * Pipeline per asset:
+ *   1. Fetch image; resize to < 3.75 MB if needed (Rekognition base64 limit).
+ *   2. Ensure per-user Rekognition collection exists.
+ *   3. Call IndexFaces with DetectionAttributes:ALL — returns FaceId + full
+ *      FaceDetail (Pose, Quality, FaceOccluded, Landmarks).
+ *   4. VALIDATION LOOP — double-check every detected face against ALL criteria:
+ *        - confidence ≥ 0.6
+ *        - |Yaw| ≤ 15°, |Pitch| ≤ 10°  (frontal only)
+ *        - Sharpness ≥ 40, Brightness ≥ 25
+ *        - FaceOccluded = false
+ *      Faces that fail are immediately deleted from the collection so they
+ *      cannot pollute SearchFaces results. If a face fails we do NOT "try
+ *      again" on the same image — the face is genuinely bad. But the asset
+ *      stays eligible for re-scan so a better photo of the same person can
+ *      be processed later.
+ *   5. Dedup: SearchFaces at 98% to find near-identical faces already in the
+ *      collection (same physical face, different photo). Keep the NEW FaceId
+ *      and delete the old one — this progressively purges stale pre-reset IDs.
+ *   6. Crop each accepted face from the image and store as a 200×200 JPEG
+ *      base64 data-URL so the People page can display the exact face pixel
+ *      data instead of CSS-cropping a group-photo thumbnail.
  */
 import {
   ensureCollection,
@@ -22,97 +34,42 @@ import {
 } from "./rekognition.ts";
 import { isUsableFace } from "./face-quality.ts";
 
-// Rekognition accepts images up to 5 MB of base64, which is ~3.75 MB raw.
-const REKOGNITION_MAX_BYTES = 3_750_000;
-
-// Similarity (%) above which two Rekognition FaceIds are treated as the
-// same physical face when deduplicating a fresh IndexFaces batch.
-const DEDUP_SIMILARITY = 98;
+const REKOGNITION_MAX_BYTES = 3_750_000; // 5 MB base64 limit → ~3.75 MB raw
+const DEDUP_SIMILARITY = 98;             // same face, different photo
 
 export interface DetectedFace {
   bbox: { x: number; y: number; w: number; h: number } | null;
   description: string;
-  confidence: number;     // 0..1
+  confidence: number;   // 0..1
   embedding: number[] | null;
-  face_id: string | null; // AWS Rekognition FaceId
-  attributes: Record<string, unknown> | null; // Full Rekognition FaceDetail JSON
-  face_crop: string | null; // base64 data-URL of the cropped face (160×160 JPEG)
+  face_id: string | null;
+  attributes: Record<string, unknown> | null; // full Rekognition FaceDetail
+  face_crop: string | null; // base64 data-URL 200×200 JPEG
 }
 
-/**
- * Crop the face region from image bytes and return as a base64 JPEG data-URL.
- * Uses OffscreenCanvas — same API used for resizing. Falls back to null when
- * unavailable (unit tests, non-browser runtimes).
- */
-async function cropFace(
-  bytes: Uint8Array,
-  mime: string,
-  bbox: { x: number; y: number; w: number; h: number },
-): Promise<string | null> {
-  try {
-    const blob = new Blob([bytes], { type: mime });
-    const bitmap = await createImageBitmap(blob);
-    const W = bitmap.width;
-    const H = bitmap.height;
+// ---------------------------------------------------------------------------
+// Image utilities
+// ---------------------------------------------------------------------------
 
-    // Add a small uniform margin (10% of face size each side) so the crop has
-    // some context beyond the tight Rekognition box.
-    const margin = Math.max(bbox.w, bbox.h) * 0.10;
-    const sx = Math.max(0, (bbox.x - margin) * W);
-    const sy = Math.max(0, (bbox.y - margin) * H);
-    const sw = Math.min(W - sx, (bbox.w + margin * 2) * W);
-    const sh = Math.min(H - sy, (bbox.h + margin * 2) * H);
-
-    // Render into a square canvas (max 200px) for a consistent avatar size.
-    const size = Math.min(200, Math.max(sw, sh));
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
-    const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
-    const buf = await out.arrayBuffer();
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    return `data:image/jpeg;base64,${b64}`;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resize an image so its raw byte count fits within maxBytes.
- * Uses the Web platform OffscreenCanvas API available in Deno edge runtime.
- * Falls back to the original bytes when the API is unavailable (e.g. unit tests).
- */
 async function resizeToFit(bytes: Uint8Array, mime: string, maxBytes: number): Promise<Uint8Array> {
   if (bytes.byteLength <= maxBytes) return bytes;
-
-  // Scale area proportionally, then take 10% extra margin for encoder overhead.
   const scale = Math.sqrt(maxBytes / bytes.byteLength) * 0.90;
-
   try {
-    const blob = new Blob([bytes], { type: mime });
-    const bitmap = await createImageBitmap(blob);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
     const w = Math.max(1, Math.floor(bitmap.width * scale));
     const h = Math.max(1, Math.floor(bitmap.height * scale));
     const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("no 2d context");
+    const ctx = canvas.getContext("2d")!;
     ctx.drawImage(bitmap, 0, 0, w, h);
-    const resized = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.90 });
-    const out = new Uint8Array(await resized.arrayBuffer());
-    console.log(`face-detector: resized ${bytes.byteLength} → ${out.byteLength} bytes (scale ${scale.toFixed(2)})`);
-    // Recurse once in case JPEG encoder output still exceeds limit.
-    if (out.byteLength > maxBytes) return resizeToFit(out, "image/jpeg", maxBytes);
-    return out;
-  } catch (e: any) {
-    // OffscreenCanvas not available — send original; Rekognition will reject
-    // oversized images with an error we'll catch upstream.
-    console.warn("face-detector: canvas resize unavailable, sending original", String(e?.message ?? e));
-    return bytes;
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.90 });
+    const out = new Uint8Array(await blob.arrayBuffer());
+    return out.byteLength > maxBytes ? resizeToFit(out, "image/jpeg", maxBytes) : out;
+  } catch {
+    return bytes; // OffscreenCanvas unavailable — send original, let Rekognition reject if too large
   }
 }
 
-async function fetchAndPrepareImage(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
+async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`fetch image ${resp.status}`);
   const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
@@ -121,21 +78,55 @@ async function fetchAndPrepareImage(url: string): Promise<{ bytes: Uint8Array; m
   return { bytes, mime };
 }
 
+/**
+ * Crop the face bbox region from image bytes and return as a 200×200 JPEG
+ * base64 data-URL. Adds 10% margin on each side beyond the Rekognition bbox
+ * for natural framing. Falls back to null when OffscreenCanvas is unavailable.
+ */
+async function cropFace(
+  bytes: Uint8Array,
+  mime: string,
+  bbox: { x: number; y: number; w: number; h: number },
+): Promise<string | null> {
+  try {
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
+    const W = bitmap.width, H = bitmap.height;
+    const m = Math.max(bbox.w, bbox.h) * 0.10; // 10% margin
+    const sx = Math.max(0, (bbox.x - m) * W);
+    const sy = Math.max(0, (bbox.y - m) * H);
+    const sw = Math.min(W - sx, (bbox.w + m * 2) * W);
+    const sh = Math.min(H - sy, (bbox.h + m * 2) * H);
+    const size = Math.min(200, Math.max(Math.round(sw), Math.round(sh)));
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    return `data:image/jpeg;base64,${btoa(String.fromCharCode(...buf))}`;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main export
+// ---------------------------------------------------------------------------
+
 export async function detectFaces(opts: {
   imageUrl: string;
   userId: string;
   assetId: string;
 }): Promise<DetectedFace[]> {
   if (!rekognitionConfigured()) {
-    console.warn("face-detector: AWS Rekognition not configured — skipping");
+    console.warn("face-detector: Rekognition not configured — skipping");
     return [];
   }
 
-  let bytes: Uint8Array;
+  let bytes: Uint8Array, mime: string;
   try {
-    ({ bytes } = await fetchAndPrepareImage(opts.imageUrl));
+    ({ bytes, mime } = await fetchImage(opts.imageUrl));
   } catch (e: any) {
-    console.warn("face-detector: image fetch/prepare failed", String(e?.message ?? e));
+    console.warn("face-detector: image fetch failed", String(e?.message ?? e));
     return [];
   }
 
@@ -147,6 +138,7 @@ export async function detectFaces(opts: {
     return [];
   }
 
+  // Step 1: Index all faces Rekognition can find in this image.
   let records;
   try {
     records = await indexFaces({
@@ -161,56 +153,52 @@ export async function detectFaces(opts: {
     return [];
   }
 
-  // Filter only by the shared quality gate (occlusion, pose, sharpness, brightness).
-  // We trust Rekognition's BoundingBox and Confidence for all other face attributes
-  // — no custom area or side-length rejection here.
-  const rejectedFaceIds: string[] = [];
-  const acceptedRecords: typeof records = [];
-  for (const r of records) {
-    if (isUsableFace({ confidence: (r.confidence ?? 0) / 100, attributes: r.attributes ?? null })) {
-      acceptedRecords.push(r);
-    } else if (r.faceId) {
-      rejectedFaceIds.push(r.faceId);
-    }
-  }
-  if (rejectedFaceIds.length > 0) {
-    try {
-      await deleteFaces({ collectionId, faceIds: rejectedFaceIds });
-    } catch (e: any) {
-      console.warn("face-detector: deleteFaces (quality) failed", String(e?.message ?? e));
-    }
-  }
-  records = acceptedRecords;
+  // Step 2: VALIDATION LOOP — double-check every face against ALL criteria.
+  // Faces that fail are deleted from the collection immediately so they cannot
+  // corrupt SearchFaces results used for identity matching.
+  const rejected: string[] = [];
+  const accepted = records.filter((r) => {
+    const passes = isUsableFace({
+      confidence: r.confidence / 100,
+      attributes: r.attributes as Record<string, any> | null,
+    });
+    if (!passes && r.faceId) rejected.push(r.faceId);
+    return passes;
+  });
 
-  // De-duplicate: for each newly-indexed face, check whether a nearly-identical
-  // face already exists in the collection (same physical face, different photo).
-  // When found, reuse the existing FaceId so clusterPeople doesn't create a
-  // duplicate person row.
-  const dedupedFaceIds = new Set<string>();
+  if (rejected.length > 0) {
+    try {
+      await deleteFaces({ collectionId, faceIds: rejected });
+    } catch (e: any) {
+      console.warn("face-detector: deleteFaces (validation) failed", String(e?.message ?? e));
+    }
+  }
+
+  if (accepted.length === 0) return [];
+
+  // Step 3: Dedup — keep NEW FaceId, delete OLD. This purges stale pre-reset
+  // collection entries that would otherwise cause SearchFaces mismatches.
   const toDelete: string[] = [];
-  const finalRecords = await Promise.all(records.map(async (r) => {
+  const seen = new Set<string>();
+  const finalRecords = await Promise.all(accepted.map(async (r) => {
     try {
       const matches = await searchFaces({
-        collectionId,
-        faceId: r.faceId,
-        faceMatchThreshold: DEDUP_SIMILARITY,
-        maxFaces: 5,
+        collectionId, faceId: r.faceId,
+        faceMatchThreshold: DEDUP_SIMILARITY, maxFaces: 5,
       });
       const existing = matches
-        .filter((m) => m.faceId !== r.faceId && !dedupedFaceIds.has(m.faceId))
+        .filter((m) => m.faceId !== r.faceId && !seen.has(m.faceId))
         .sort((a, b) => b.similarity - a.similarity)[0];
       if (existing) {
-        // Delete the OLD matching face (may be a pre-reset stale ID) and keep
-        // the newly indexed one. This progressively purges stale collection
-        // entries so clusterPeople can map all FaceIds to current DB people.
-        toDelete.push(existing.faceId);
-        dedupedFaceIds.add(r.faceId);
-        return { ...r, deduped: true as const };
+        toDelete.push(existing.faceId); // delete OLD stale ID
+        seen.add(r.faceId);
+        return { ...r, deduped: true };
       }
     } catch (e: any) {
       console.warn("face-detector: dedup search failed", r.faceId, String(e?.message ?? e));
     }
-    return { ...r, deduped: false as const };
+    seen.add(r.faceId);
+    return { ...r, deduped: false };
   }));
 
   if (toDelete.length > 0) {
@@ -221,13 +209,12 @@ export async function detectFaces(opts: {
     }
   }
 
-  // Generate tight face crops for each accepted face. The image bytes are
-  // already in memory here — crop now so we never need to re-fetch the image.
+  // Step 4: Generate face crops while image bytes are still in memory.
   return await Promise.all(finalRecords.map(async (r) => ({
     bbox: r.bbox,
     description: "",
     confidence: r.confidence / 100,
-    embedding: null,
+    embedding: null, // Rekognition identity matching via SearchFaces — no text embedding needed
     face_id: r.faceId,
     attributes: r.attributes,
     face_crop: r.bbox ? await cropFace(bytes, mime, r.bbox) : null,

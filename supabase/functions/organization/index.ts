@@ -124,95 +124,49 @@ app.get("/people", async (c) => {
   if (!privacy?.face_processing_enabled) {
     return c.json({ people: [], face_processing_disabled: true });
   }
-  // Use the people_list_for_user RPC which projects a TRIMMED faces array
-  // (asset_id, bbox, confidence, Pose, Quality) — without the heavy
-  // face_vector embeddings, full rekognition_response blobs and base64
-  // face_crop data URLs that were blowing past the statement timeout.
-  const { data, error } = await supa.rpc("people_list_for_user", { _user_id: uid });
+  // Query people with Rekognition-pipeline cover fields.
+  // Face quality is already guaranteed at detection time (face-detector.ts gate),
+  // so we don't re-score here — we just use the stored cover_face_crop / cover_asset_id.
+  const { data, error } = await supa.from("people")
+    .select("id, display_name, is_child, is_elder, consent_required, auto_label, cover_face_crop, cover_asset_id, cover_bbox")
+    .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
-  const peopleRows = data ?? [];
+  const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
 
-  // Pre-pick the best face per person (frontal + sharp + bright) up front
-  // so we only fetch / sign one asset per person rather than the entire
-  // face history (which can be many hundreds of rows for popular people).
-  const scoreFaceQuality = (f: any): number => {
-    const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
-    if (!attrs) return -Infinity; // no attributes → worst score
-    const pose = attrs.Pose ?? {};
-    const q = attrs.Quality ?? {};
-    const yaw = Math.abs(Number(pose.Yaw ?? 0));
-    const pitch = Math.abs(Number(pose.Pitch ?? 0));
-    const sharp = Number(q.Sharpness ?? 50);
-    const bright = Number(q.Brightness ?? 50);
-    const conf = Number(f?.confidence ?? 0);
-    // Face prominence: larger bbox = face fills more of the frame = solo portrait.
-    // Selfie (bbox.w≈0.5) beats group-photo face (bbox.w≈0.08) by ~21 pts.
-    const bbox = f?.bbox as { w?: unknown; h?: unknown } | null;
-    const prominence = Math.max(Number(bbox?.w ?? 0), Number(bbox?.h ?? 0));
-    return conf * 100 - yaw * 1.2 - pitch * 1.0
-      + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2
-      + prominence * 50;
-  };
-  const isGoodFace = (f: any): boolean => {
-    const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
-    if (!attrs) return false;
-    const occ = attrs.FaceOccluded as Record<string, any> | null;
-    if (occ?.Value === true) return false;
-    const pose = attrs.Pose ?? {};
-    const q = attrs.Quality ?? {};
-    const yaw = Math.abs(Number(pose.Yaw ?? 0));
-    const pitch = Math.abs(Number(pose.Pitch ?? 0));
-    const sharp = Number(q.Sharpness ?? 100);
-    const bright = Number(q.Brightness ?? 100);
-    const conf = Number(f?.confidence ?? 0);
-    if (conf < 0.6) return false;
-    if (Number.isFinite(yaw) && yaw > 15) return false;
-    if (Number.isFinite(pitch) && pitch > 10) return false;
-    if (Number.isFinite(sharp) && sharp < 40) return false;
-    if (Number.isFinite(bright) && bright < 25) return false;
-    return true;
-  };
-  const bestFaceByPerson = new Map<string, { face: any; good_count: number }>();
-  for (const p of peopleRows as any[]) {
-    const faces = Array.isArray(p.faces) ? p.faces : [];
-    const good = faces.filter(isGoodFace);
-    const pool = good.length ? good : faces;
-    const best = pool.slice().sort((a: any, b: any) => scoreFaceQuality(b) - scoreFaceQuality(a))[0] ?? null;
-    bestFaceByPerson.set(p.id, { face: best, good_count: good.length });
+  const ids = peopleRows.map((p: any) => p.id);
+  const counts: Record<string, number> = {};
+  if (ids.length) {
+    const { data: pf } = await supa.from("person_faces")
+      .select("person_id, asset_id").in("person_id", ids);
+    const seen: Record<string, Set<string>> = {};
+    for (const f of pf ?? []) (seen[f.person_id] ??= new Set()).add(f.asset_id);
+    for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
   }
-  const coverIds = Array.from(new Set(
-    peopleRows.map((p: any) => bestFaceByPerson.get(p.id)?.face?.asset_id ?? p.cover_asset_id).filter(Boolean),
+
+  // Batch-resolve thumbnail URLs for people without a face_crop.
+  const coverAssetIds = Array.from(new Set(
+    peopleRows.filter((p: any) => p.cover_asset_id && !p.cover_face_crop).map((p: any) => p.cover_asset_id as string),
   ));
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
-  if (coverIds.length) {
+  if (coverAssetIds.length) {
     const { data: assets } = await supa.from("assets")
-      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height, capture_time")
-      .in("id", coverIds);
-    for (const asset of assets ?? []) coverAssets[asset.id] = asset;
+      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
+      .in("id", coverAssetIds);
+    for (const a of assets ?? []) coverAssets[a.id] = a;
     const { data: mm } = await supa.from("asset_media_metadata")
-      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path, blurhash, dominant_color")
-      .in("asset_id", coverIds);
+      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+      .in("asset_id", coverAssetIds);
     for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
 
-  // Batch-sign all storage paths up front to avoid N×4 sequential
-  // createSignedUrl calls (which were causing the /people endpoint to hit
-  // the 150s edge-function idle timeout once the library grew past a few
-  // hundred face clusters).
+  // Batch-sign storage paths to avoid sequential round-trips.
   const pathsToSign = new Set<string>();
-  for (const p of peopleRows as any[]) {
-    const cid: string | null =
-      (bestFaceByPerson.get(p.id)?.face?.asset_id as string | null) ?? (p.cover_asset_id as string | null) ?? null;
-    if (!cid) continue;
+  for (const cid of coverAssetIds) {
     const asset = coverAssets[cid] ?? null;
     const media = mediaMap[cid] ?? null;
-    const candidates = [
-      media?.thumbnail_url, media?.thumbnail_storage_path,
-      asset?.thumbnail_cache_key, media?.preview_url, media?.preview_storage_path,
-      asset?.proxy_cache_key,
-    ];
-    for (const ck of candidates) {
+    for (const ck of [media?.thumbnail_url, media?.thumbnail_storage_path, asset?.thumbnail_cache_key,
+      media?.preview_url, media?.preview_storage_path, asset?.proxy_cache_key]) {
       if (typeof ck === "string" && ck && !/^https?:\/\//.test(ck)) pathsToSign.add(ck);
     }
   }
@@ -231,77 +185,37 @@ app.get("/people", async (c) => {
       } catch (_) { /* try next bucket */ }
     }
   }
-  const resolve = (ck: string | null | undefined): string | null => {
+  const resolveKey = (ck: string | null | undefined): string | null => {
     if (!ck) return null;
     if (/^https?:\/\//.test(ck)) return ck;
     return signedMap.get(ck) ?? null;
   };
 
   const people = peopleRows.map((p: any) => {
-    const coverAssetId = p.cover_asset_id as string | null;
-    const asset = coverAssetId ? coverAssets[coverAssetId] ?? null : null;
-    const media = coverAssetId ? mediaMap[coverAssetId] ?? null : null;
-    // Pick the best face for the avatar: prefer frontal, sharp, well-lit
-    // detections so each tile shows a single recognisable face rather than
-    // a side-profile or back-of-head crop. Falls back to any face when no
-    // detection meets the quality bar.
-    const pick = bestFaceByPerson.get(p.id);
-    const topFace = pick?.face ?? null;
-    const goodFaceCount = pick?.good_count ?? 0;
-    // cover_face_crop is stored directly on the people row (set by clusterPeople
-    // when the cover face is chosen). It's a base64 JPEG of the exact face crop
-    // so we never need to CSS-crop a group photo thumbnail.
-    const faceCropDataUrl = (typeof (p as any).cover_face_crop === "string" ? (p as any).cover_face_crop : null)
-      ?? (typeof topFace?.face_crop === "string" ? topFace.face_crop : null);
-    const preferredBbox = topFace?.bbox ?? p.cover_bbox ?? null;
-    // bbox stored in DB is already sanitized by clusterPeople — do NOT run
-    // sanitizeFaceBox again or it double-expands the padding (1.18×1.18 = 1.39×).
-    const coverBbox = (preferredBbox && typeof preferredBbox === "object" &&
-      typeof (preferredBbox as any).x === "number") ? preferredBbox as FaceBox : null;
-    // Override cover asset to the chosen top face's asset when available.
-    const effectiveCoverId = (topFace?.asset_id as string | null) ?? coverAssetId;
-    const effectiveAsset = effectiveCoverId ? coverAssets[effectiveCoverId] ?? asset : asset;
-    const effectiveMedia = effectiveCoverId ? mediaMap[effectiveCoverId] ?? media : media;
-    const thumbUrl = faceCropDataUrl
-      ?? resolve(effectiveMedia?.thumbnail_url) ?? resolve(effectiveMedia?.thumbnail_storage_path)
-      ?? resolve(effectiveAsset?.thumbnail_cache_key) ?? resolve(effectiveMedia?.preview_url)
-      ?? resolve(effectiveMedia?.preview_storage_path) ?? resolve(effectiveAsset?.proxy_cache_key);
-    const cover = effectiveCoverId && effectiveAsset ? {
-      asset_id: effectiveCoverId,
-      thumbnail_url: thumbUrl,
-      blurhash: effectiveMedia?.blurhash ?? effectiveAsset.blurhash ?? null,
-      dominant_color: effectiveMedia?.dominant_color ?? effectiveAsset.dominant_color ?? null,
-      width: effectiveAsset.width ?? null,
-      height: effectiveAsset.height ?? null,
-      capture_time: effectiveAsset.capture_time ?? null,
-      media_type: effectiveAsset.media_type ?? "photo",
-      source_badge: null,
-      face_bbox: faceCropDataUrl ? null : coverBbox,
-      face_count: goodFaceCount || (p.face_count ?? 1),
-      hydration_status: (thumbUrl ? "ready" : "pending") as const,
-    } : null;
+    const faceCrop = typeof p.cover_face_crop === "string" ? p.cover_face_crop : null;
+    const coverBbox = (p.cover_bbox && typeof p.cover_bbox === "object" &&
+      typeof (p.cover_bbox as any).x === "number") ? p.cover_bbox : null;
+    let thumbUrl: string | null = null;
+    if (!faceCrop && p.cover_asset_id) {
+      const asset = coverAssets[p.cover_asset_id] ?? null;
+      const media = mediaMap[p.cover_asset_id] ?? null;
+      thumbUrl = resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
+        ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
+        ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key);
+    }
+    const cover = faceCrop
+      ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null }
+      : p.cover_asset_id && thumbUrl
+      ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: coverBbox }
+      : null;
     return {
       id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
       consent_required: p.consent_required, auto_label: p.auto_label,
-      asset_count: goodFaceCount || (p.face_count ?? 0), cover,
+      asset_count: counts[p.id] ?? 0, cover,
     };
-  }).filter((person: any) => {
-    if (person.auto_label === "auto:unclustered-faces") return false;
-    // Only show people where at least one face passed the quality gate.
-    // goodFaceCount=0 means every stored face failed pose/quality/attribute
-    // checks — this person row should not appear in the UI.
-    const pick = bestFaceByPerson.get(person.id);
-    if (!pick?.face) return false;
-    if (!isGoodFace(pick.face)) return false;
-    if (!(person.asset_count > 0)) return false;
-    if (!person.cover?.thumbnail_url) return false;
-    // Require a valid face crop bbox — without it, the tile shows a full photo
-    // (potentially a scene with no visible face or multiple people in frame).
-    if (!person.cover?.face_bbox) return false;
-    return true;
-  });
-  // Suppress quality scoring helper warnings (no longer used in this code path).
-  void faceQualityScore; void faceVisualSignature;
+  }).filter((person: any) => person.asset_count > 0 && person.cover !== null);
+  // Suppress unused import warnings.
+  void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
 });
 
