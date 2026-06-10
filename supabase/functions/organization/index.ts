@@ -486,7 +486,31 @@ app.post("/people/reset", async (c) => {
     .eq("user_id", uid)
     .not("face_scanned_at", "is", null);
 
-  return c.json({ ok: true, message: "Face pipeline reset. Assets will be re-scanned automatically." });
+  // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
+  const { data: assetRows } = await sb
+    .from("assets")
+    .select("id")
+    .eq("user_id", uid)
+    .eq("media_type", "photo")
+    .is("face_scanned_at", null);
+
+  const jobs = (assetRows ?? []).map((a: { id: string }) => ({
+    job_name: "enrichAI",
+    payload: { asset_id: a.id },
+    idempotency_key: `ai:${a.id}:face-reset`,
+    status: "pending",
+    user_id: uid,
+    priority: 5,
+  }));
+
+  if (jobs.length > 0) {
+    // Batch in chunks of 500 to stay within PostgREST limits.
+    for (let i = 0; i < jobs.length; i += 500) {
+      await sb.from("job_queue").upsert(jobs.slice(i, i + 500), { onConflict: "idempotency_key", ignoreDuplicates: true });
+    }
+  }
+
+  return c.json({ ok: true, queued: jobs.length, message: "Face pipeline reset. Assets will be re-scanned automatically." });
 });
 
 Deno.serve(app.fetch);

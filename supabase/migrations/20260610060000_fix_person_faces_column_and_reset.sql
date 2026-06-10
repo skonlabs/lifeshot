@@ -28,7 +28,23 @@ UPDATE public.assets
 SET face_scanned_at = NULL
 WHERE face_scanned_at IS NOT NULL;
 
+-- Re-enqueue enrichAI for all image assets so the fixed pipeline processes them.
+INSERT INTO public.job_queue (job_name, payload, idempotency_key, status, user_id, priority)
+SELECT
+  'enrichAI',
+  jsonb_build_object('asset_id', a.id),
+  'ai:' || a.id || ':face-reset-' || extract(epoch from now())::bigint,
+  'pending',
+  a.user_id,
+  5
+FROM public.assets a
+WHERE a.media_type = 'photo'
+  AND a.deleted_state = 'active'
+  AND a.face_scanned_at IS NULL
+ON CONFLICT (idempotency_key) DO NOTHING;
+
 SELECT
   (SELECT count(*) FROM public.people WHERE auto_label IS NULL)      AS manual_people_preserved,
   (SELECT count(*) FROM public.person_faces)                          AS person_faces_cleared,
-  (SELECT count(*) FROM public.assets WHERE face_scanned_at IS NULL) AS assets_queued;
+  (SELECT count(*) FROM public.assets WHERE face_scanned_at IS NULL) AS assets_queued,
+  (SELECT count(*) FROM public.job_queue WHERE job_name = 'enrichAI' AND status = 'pending') AS jobs_enqueued;

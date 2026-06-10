@@ -72,20 +72,38 @@ async function cropFace(
   try {
     const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
     const W = bitmap.width, H = bitmap.height;
-    // Rekognition bbox is tight around the face (ear-to-ear, forehead-to-chin).
-    // Add generous padding so the avatar shows full head with hair and chin.
-    // Use asymmetric vertical padding: more above (hair) than below (chin/neck).
-    const padH = bbox.h * 0.40;  // 40% of face height above and below
-    const padW = bbox.w * 0.30;  // 30% of face width on each side
-    const sx = Math.max(0, (bbox.x - padW) * W);
-    const sy = Math.max(0, (bbox.y - padH) * H);
-    const ex = Math.min(W, (bbox.x + bbox.w + padW) * W);
-    const ey = Math.min(H, (bbox.y + bbox.h + padH) * H);
+
+    // Industry-standard square crop: compute a square region centered on the
+    // face midpoint, sized to include forehead+hair above and chin below.
+    // Asymmetric vertical: +50% above (hair/forehead), +30% below (chin/neck).
+    // Horizontal: +30% each side. Then expand to a square from the center so
+    // the image is never stretched — exactly how Google Photos crops avatars.
+    const faceCx = (bbox.x + bbox.w / 2) * W;
+    const faceCy = (bbox.y + bbox.h / 2) * H;
+    const faceW  = bbox.w * W;
+    const faceH  = bbox.h * H;
+
+    const left   = faceCx - faceW  * (0.5 + 0.30);
+    const right  = faceCx + faceW  * (0.5 + 0.30);
+    const top    = faceCy - faceH  * (0.5 + 0.50); // extra for hair
+    const bottom = faceCy + faceH  * (0.5 + 0.30);
+
+    // Expand to a square from the center of the padded region.
+    const cx = (left + right) / 2;
+    const cy = (top + bottom) / 2;
+    const half = Math.max(right - left, bottom - top) / 2;
+
+    const sx = Math.max(0, cx - half);
+    const sy = Math.max(0, cy - half);
+    const ex = Math.min(W, cx + half);
+    const ey = Math.min(H, cy + half);
     const sw = ex - sx;
     const sh = ey - sy;
-    const size = Math.min(300, Math.max(Math.round(sw), Math.round(sh)));
+
+    const size = Math.min(300, Math.round(Math.max(sw, sh)));
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d")!;
+    // sw and sh are now equal (square region) — no stretching.
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
     const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     const buf = new Uint8Array(await blob.arrayBuffer());

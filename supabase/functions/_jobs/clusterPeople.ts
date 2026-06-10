@@ -210,10 +210,106 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
+  // Merge pass: find duplicate people created by parallel runs or prior
+  // fragmented scans. For every person updated this run, search their face IDs
+  // against the collection and merge any existing person that matches at
+  // PRIMARY_THRESHOLD. This is the industry-standard "consolidation pass"
+  // used by Google Photos / Apple Photos after initial clustering.
+  let peopleMerged = 0;
+  const { data: freshPeople } = await sb
+    .from("people")
+    .select("id, rekognition_face_ids, faces, face_count, cover_face_crop, cover_asset_id, cover_bbox")
+    .eq("user_id", uid)
+    .like("auto_label", "auto:person:%");
+
+  // Build id→person map for quick lookup.
+  const personById = new Map<string, typeof freshPeople extends (infer T)[] | null ? T : never>();
+  for (const p of freshPeople ?? []) personById.set((p as any).id, p as any);
+
+  // Track which person IDs have already been merged (absorbed) into another.
+  const absorbed = new Set<string>();
+
+  for (const [pid] of personFaceMap) {
+    if (absorbed.has(pid)) continue;
+    const person = personById.get(pid);
+    if (!person) continue;
+    const faceIds: string[] = Array.isArray((person as any).rekognition_face_ids)
+      ? (person as any).rekognition_face_ids : [];
+    if (faceIds.length === 0) continue;
+
+    // Search with first face_id to find matches across the collection.
+    let matchingPersonId: string | null = null;
+    try {
+      const matches = await searchFaces({
+        collectionId,
+        faceId: faceIds[0],
+        faceMatchThreshold: PRIMARY_THRESHOLD,
+        maxFaces: 10,
+      });
+      for (const m of matches) {
+        if (m.faceId === faceIds[0]) continue;
+        const otherId = faceIdToPersonId.get(m.faceId);
+        if (otherId && otherId !== pid && !absorbed.has(otherId)) {
+          matchingPersonId = otherId;
+          break;
+        }
+      }
+    } catch { /* ignore search errors in merge pass */ }
+
+    if (!matchingPersonId) continue;
+
+    // Merge matchingPersonId into pid (keep pid, absorb the other).
+    const other = personById.get(matchingPersonId);
+    if (!other) continue;
+
+    const otherFaces: any[] = Array.isArray((other as any).faces) ? (other as any).faces : [];
+    const otherFaceIds: string[] = Array.isArray((other as any).rekognition_face_ids)
+      ? (other as any).rekognition_face_ids : [];
+    const myFaces: any[] = Array.isArray((person as any).faces) ? (person as any).faces : [];
+    const myFaceIds: string[] = Array.isArray((person as any).rekognition_face_ids)
+      ? (person as any).rekognition_face_ids : [];
+
+    const mergedFaces = [...myFaces, ...otherFaces];
+    const mergedFaceIds = [...new Set([...myFaceIds, ...otherFaceIds])];
+
+    // Pick best cover from merged faces.
+    let mergedBestCover = (person as any).cover_face_crop ? person : null;
+    let mergedBestScore = mergedBestCover
+      ? coverScore({ attributes: null, confidence: (person as any).cover_face_crop ? 1 : 0 })
+      : -1;
+    for (const mface of mergedFaces) {
+      if (!mface.face_crop) continue;
+      const s = coverScore({ attributes: mface.attributes ?? null, confidence: mface.confidence ?? 0.5 });
+      if (s >= MIN_COVER_SCORE && s > mergedBestScore) {
+        mergedBestScore = s;
+        mergedBestCover = mface;
+      }
+    }
+
+    const mergeUpdate: Record<string, unknown> = {
+      faces: mergedFaces,
+      face_count: mergedFaces.length,
+      rekognition_face_ids: mergedFaceIds,
+    };
+    if (mergedBestCover && (mergedBestCover as any).face_crop) {
+      mergeUpdate.cover_face_crop = (mergedBestCover as any).face_crop;
+      mergeUpdate.cover_asset_id  = (mergedBestCover as any).asset_id ?? (mergedBestCover as any).cover_asset_id;
+      mergeUpdate.cover_bbox      = (mergedBestCover as any).bbox ?? (mergedBestCover as any).cover_bbox;
+    }
+
+    const { error: mergeErr } = await sb.from("people").update(mergeUpdate).eq("id", pid);
+    if (!mergeErr) {
+      await sb.from("people").delete().eq("id", matchingPersonId);
+      absorbed.add(matchingPersonId);
+      peopleMerged++;
+    }
+  }
+
   return {
     user_id: uid,
     people: personCounter,
     people_updated: peopleUpdated,
+    people_merged: peopleMerged,
     faces_processed: faceEntries.length,
   };
 }
