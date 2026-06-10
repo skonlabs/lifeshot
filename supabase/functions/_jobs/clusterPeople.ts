@@ -15,39 +15,18 @@ function coverScore(entry: { attributes: any; confidence: number }): number {
   const pose = a.Pose ?? {};
   const quality = a.Quality ?? {};
   const occluded = a.FaceOccluded?.Value === true || a.FaceOccluded?.Value === "true";
-  const yaw     = Math.abs(Number(pose.Yaw   ?? 90));
-  const pitch   = Math.abs(Number(pose.Pitch ?? 90));
-  const sharp   = Number(quality.Sharpness  ?? 0);
-  const bright  = Number(quality.Brightness ?? 0);
+  const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
+  const pitch = Math.abs(Number(pose.Pitch ?? 90));
+  const sharp = Number(quality.Sharpness  ?? 0);
+  const bright = Number(quality.Brightness ?? 0);
   if (occluded) return 0;
-  // Normalise: lower yaw/pitch = better; higher sharpness/brightness = better.
   const frontality = Math.max(0, (1 - yaw / 90)) * Math.max(0, (1 - pitch / 90));
   return frontality * 0.6 + (sharp / 100) * 0.3 + (bright / 100) * 0.1;
 }
 
-/**
- * clusterPeople — identifies people across detected faces using AWS Rekognition
- * SearchFaces for identity matching.
- *
- * Biometric consent gate: only runs when privacy_settings.face_processing_enabled = true.
- *
- * Algorithm:
- *  1. Collect all faces (with face_id) for the user (or specific asset).
- *  2. For each face, call SearchFaces at 75% threshold in the user's Rekognition collection.
- *  3. If a match is found, look up which person owns that matching face_id in person_faces.
- *  4. If similarity ≥ PRIMARY_THRESHOLD (75%), assign to that person.
- *     If similarity ≥ FALLBACK_THRESHOLD (65%) and no primary match, use fallback.
- *     Otherwise create a new person.
- *  5. Upsert person_faces with face_id, bbox, confidence.
- *  6. Set cover_face_crop on people when a high-quality face crop is available.
- *
- * Idempotent: upserts on (person_id, asset_id).
- */
-
-const PRIMARY_THRESHOLD = 75;  // Rekognition similarity 0-100
+const PRIMARY_THRESHOLD = 75;
 const FALLBACK_THRESHOLD = 65;
-// Minimum cover quality: score < this means side profile / occluded / blurry.
-// Approx: yaw<40°, pitch<40°, not occluded, some sharpness.
+// Only faces scoring >= this become cover avatars (blocks side profiles).
 const MIN_COVER_SCORE = 0.30;
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
@@ -56,7 +35,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const uid = user_id ?? ctx.userId;
   if (!uid) throw new Error("invalid: user_id");
 
-  // Consent gate — biometric processing requires explicit opt-in.
   const { data: privacy } = await sb
     .from("privacy_settings")
     .select("face_processing_enabled")
@@ -80,7 +58,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { data: enrichRows, error } = await enrichQuery;
   if (error) throw new Error(`clusterPeople fetch: ${error.message}`);
 
-  // Build flat list of faces that have Rekognition face_ids.
   interface FaceEntry {
     asset_id: string;
     face_id: string;
@@ -113,37 +90,32 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   const collectionId = collectionIdForUser(uid);
 
-  // Load existing people for this user.
+  // Load existing people — use rekognition_face_ids (array on people row) as
+  // the canonical lookup. This avoids depending on the person_faces table which
+  // is now secondary/legacy.
   const { data: existingPeople } = await sb
     .from("people")
-    .select("id, auto_label, display_name, cover_face_crop, cover_asset_id")
+    .select("id, auto_label, display_name, rekognition_face_ids")
     .eq("user_id", uid)
     .like("auto_label", "auto:person:%");
 
-  // Build a map from face_id → person_id using person_faces.
-  // This is how we look up who owns a matching FaceId after SearchFaces.
   const faceIdToPersonId = new Map<string, string>();
-  if (existingPeople?.length) {
-    const ids = existingPeople.map((p: any) => p.id);
-    const { data: pf } = await sb
-      .from("person_faces")
-      .select("person_id, rekognition_face_id")
-      .in("person_id", ids)
-      .not("rekognition_face_id", "is", null);
-    for (const row of pf ?? []) {
-      if (row.rekognition_face_id) faceIdToPersonId.set(row.rekognition_face_id, row.person_id);
+  for (const person of existingPeople ?? []) {
+    const ids: string[] = Array.isArray((person as any).rekognition_face_ids)
+      ? (person as any).rekognition_face_ids
+      : [];
+    for (const fid of ids) {
+      if (fid) faceIdToPersonId.set(fid, person.id);
     }
   }
 
   let personCounter = existingPeople?.length ?? 0;
-  let clusteredFaces = 0;
-  // Track people that need cover updates: person_id → best face entry
-  const coverCandidates = new Map<string, FaceEntry>();
+  // personFaceMap accumulates all faces assigned to each person this run.
+  const personFaceMap = new Map<string, FaceEntry[]>();
 
   for (const entry of faceEntries) {
     let personId: string | null = null;
 
-    // SearchFaces returns other faces in the collection that match this one.
     try {
       const matches = await searchFaces({
         collectionId,
@@ -152,26 +124,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         maxFaces: 10,
       });
 
-      // Find the best match above threshold, sorted by similarity desc.
       const sorted = matches
         .filter((m) => m.faceId !== entry.face_id)
         .sort((a, b) => b.similarity - a.similarity);
 
-      // Primary threshold first, then fallback.
-      const primary = sorted.find((m) => m.similarity >= PRIMARY_THRESHOLD && faceIdToPersonId.has(m.faceId));
+      const primary  = sorted.find((m) => m.similarity >= PRIMARY_THRESHOLD  && faceIdToPersonId.has(m.faceId));
       const fallback = sorted.find((m) => m.similarity >= FALLBACK_THRESHOLD && faceIdToPersonId.has(m.faceId));
       const match = primary ?? fallback ?? null;
 
-      if (match) {
-        personId = faceIdToPersonId.get(match.faceId)!;
-      }
+      if (match) personId = faceIdToPersonId.get(match.faceId)!;
     } catch (e: any) {
       console.warn("clusterPeople: SearchFaces failed", entry.face_id, String(e?.message ?? e));
-      // Continue — we'll create a new person rather than crashing.
     }
 
     if (!personId) {
-      // No match found — create a new person cluster.
       personCounter++;
       const autoLabel = `auto:person:${personCounter}`;
       const { data: newPerson, error: npErr } = await sb
@@ -188,51 +154,66 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       personId = newPerson.id;
     }
 
-    // Register this face_id as belonging to this person so future faces in
-    // this run can match against it without another SearchFaces round-trip.
+    // Register face_id → personId so subsequent faces in this run can match it.
     faceIdToPersonId.set(entry.face_id, personId);
 
-    const { error: fErr } = await sb.from("person_faces").upsert({
-      person_id: personId,
-      asset_id: entry.asset_id,
-      bbox: entry.bbox,
-      confidence: entry.confidence,
-      rekognition_face_id: entry.face_id,
-    }, { onConflict: "person_id,asset_id" });
-
-    if (fErr) {
-      console.error("clusterPeople: person_faces upsert failed", fErr.message);
-    } else {
-      clusteredFaces++;
-      // Track best-quality face crop for this person's cover avatar.
-      // Replace the current candidate if this face scores higher.
-      if (entry.face_crop) {
-        const score = coverScore({ attributes: entry.attributes, confidence: entry.confidence });
-        if (score >= MIN_COVER_SCORE) {
-          const current = coverCandidates.get(personId);
-          const currentScore = current ? coverScore({ attributes: current.attributes, confidence: current.confidence }) : -1;
-          if (score > currentScore) coverCandidates.set(personId, entry);
-        }
-      }
-    }
+    // Accumulate face entry for this person.
+    const arr = personFaceMap.get(personId) ?? [];
+    arr.push(entry);
+    personFaceMap.set(personId, arr);
   }
 
-  // Update cover_face_crop — always write the best-scored face found this run.
-  if (coverCandidates.size > 0) {
-    for (const [pid, entry] of coverCandidates) {
-      await sb.from("people").update({
-        cover_face_crop: entry.face_crop,
-        cover_asset_id: entry.asset_id,
-        cover_bbox: entry.bbox,
-      }).eq("id", pid);
+  // Persist results: update people.faces (canonical), people.face_count,
+  // people.rekognition_face_ids, and cover fields.
+  // people.faces is what the organization endpoint reads for asset_count.
+  let peopleUpdated = 0;
+  for (const [pid, entries] of personFaceMap) {
+    // Build the best cover face (highest score that meets minimum quality).
+    let bestCover: FaceEntry | null = null;
+    let bestScore = -1;
+    for (const e of entries) {
+      if (!e.face_crop) continue;
+      const s = coverScore({ attributes: e.attributes, confidence: e.confidence });
+      if (s >= MIN_COVER_SCORE && s > bestScore) {
+        bestScore = s;
+        bestCover = e;
+      }
+    }
+
+    // Build people.faces JSONB array (format expected by organization endpoint).
+    const facesJsonb = entries.map((e) => ({
+      asset_id: e.asset_id,
+      bbox: e.bbox,
+      confidence: e.confidence,
+      face_crop: e.face_crop,
+      rekognition_face_id: e.face_id,
+    }));
+
+    const faceIds = [...new Set(entries.map((e) => e.face_id).filter(Boolean))];
+
+    const update: Record<string, unknown> = {
+      faces: facesJsonb,
+      face_count: facesJsonb.length,
+      rekognition_face_ids: faceIds,
+    };
+    if (bestCover) {
+      update.cover_face_crop  = bestCover.face_crop;
+      update.cover_asset_id   = bestCover.asset_id;
+      update.cover_bbox       = bestCover.bbox;
+    }
+
+    const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
+    if (uErr) {
+      console.error("clusterPeople: people update failed", pid, uErr.message);
+    } else {
+      peopleUpdated++;
     }
   }
 
   return {
     user_id: uid,
     people: personCounter,
-    clustered: clusteredFaces,
+    people_updated: peopleUpdated,
     faces_processed: faceEntries.length,
-    covers_updated: coverCandidates.size,
   };
 }
