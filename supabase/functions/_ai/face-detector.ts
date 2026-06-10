@@ -36,6 +36,46 @@ export interface DetectedFace {
   embedding: number[] | null;
   face_id: string | null; // AWS Rekognition FaceId
   attributes: Record<string, unknown> | null; // Full Rekognition FaceDetail JSON
+  face_crop: string | null; // base64 data-URL of the cropped face (160×160 JPEG)
+}
+
+/**
+ * Crop the face region from image bytes and return as a base64 JPEG data-URL.
+ * Uses OffscreenCanvas — same API used for resizing. Falls back to null when
+ * unavailable (unit tests, non-browser runtimes).
+ */
+async function cropFace(
+  bytes: Uint8Array,
+  mime: string,
+  bbox: { x: number; y: number; w: number; h: number },
+): Promise<string | null> {
+  try {
+    const blob = new Blob([bytes], { type: mime });
+    const bitmap = await createImageBitmap(blob);
+    const W = bitmap.width;
+    const H = bitmap.height;
+
+    // Add a small uniform margin (10% of face size each side) so the crop has
+    // some context beyond the tight Rekognition box.
+    const margin = Math.max(bbox.w, bbox.h) * 0.10;
+    const sx = Math.max(0, (bbox.x - margin) * W);
+    const sy = Math.max(0, (bbox.y - margin) * H);
+    const sw = Math.min(W - sx, (bbox.w + margin * 2) * W);
+    const sh = Math.min(H - sy, (bbox.h + margin * 2) * H);
+
+    // Render into a square canvas (max 200px) for a consistent avatar size.
+    const size = Math.min(200, Math.max(sw, sh));
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
+    const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+    const buf = await out.arrayBuffer();
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    return `data:image/jpeg;base64,${b64}`;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -181,12 +221,15 @@ export async function detectFaces(opts: {
     }
   }
 
-  return finalRecords.map((r) => ({
+  // Generate tight face crops for each accepted face. The image bytes are
+  // already in memory here — crop now so we never need to re-fetch the image.
+  return await Promise.all(finalRecords.map(async (r) => ({
     bbox: r.bbox,
     description: "",
     confidence: r.confidence / 100,
     embedding: null,
     face_id: r.faceId,
     attributes: r.attributes,
-  }));
+    face_crop: r.bbox ? await cropFace(bytes, mime, r.bbox) : null,
+  })));
 }

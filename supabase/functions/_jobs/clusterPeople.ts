@@ -58,6 +58,7 @@ interface PersonRow {
   rekognition_face_ids: string[];
   cover_asset_id: string | null;
   cover_bbox: any;
+  cover_face_crop: string | null;
 }
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
@@ -118,7 +119,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const collectionId = collectionIdForUser(uid);
 
   const { data: existingPeopleData } = await sb.from("people")
-    .select("id, auto_label, faces, face_count, rekognition_face_ids, cover_asset_id, cover_bbox")
+    .select("id, auto_label, faces, face_count, rekognition_face_ids, cover_asset_id, cover_bbox, cover_face_crop")
     .eq("user_id", uid);
 
   const people: Map<string, PersonRow> = new Map();
@@ -131,6 +132,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       rekognition_face_ids: Array.isArray(p.rekognition_face_ids) ? p.rekognition_face_ids : [],
       cover_asset_id: p.cover_asset_id,
       cover_bbox: p.cover_bbox,
+      cover_face_crop: p.cover_face_crop ?? null,
     };
     people.set(p.id, row);
     for (const fid of row.rekognition_face_ids) faceIdToPerson.set(fid, p.id);
@@ -252,9 +254,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           (a.confidence ?? 0) >= (b.confidence ?? 0) ? a : b);
         otherRow.cover_asset_id = top.asset_id;
         otherRow.cover_bbox = top.bbox;
+        otherRow.cover_face_crop = typeof top.face_crop === "string" ? top.face_crop : null;
       } else {
         otherRow.cover_asset_id = null;
         otherRow.cover_bbox = null;
+        otherRow.cover_face_crop = null;
       }
       dirty.add(otherId);
     }
@@ -275,6 +279,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         (a.confidence ?? 0) >= (b.confidence ?? 0) ? a : b);
       row.cover_asset_id = top.asset_id;
       row.cover_bbox = top.bbox;
+      row.cover_face_crop = typeof top.face_crop === "string" ? top.face_crop : null;
       dirty.add(personId);
       clusteredFaces++;
     }
@@ -289,6 +294,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       rekognition_face_ids: row.rekognition_face_ids,
       cover_asset_id: row.cover_asset_id,
       cover_bbox: row.cover_bbox,
+      cover_face_crop: row.cover_face_crop,
     }).eq("id", pid);
     if (upErr) console.error("clusterPeople: people update failed", pid, upErr.message);
   }

@@ -184,7 +184,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         description: f.description,
         embedding: f.embedding,
         face_id: f.face_id,
-        face_crop: null,
+        face_crop: f.face_crop ?? null,
         attributes: f.attributes,
       }));
     }

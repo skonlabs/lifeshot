@@ -248,7 +248,11 @@ app.get("/people", async (c) => {
     const pick = bestFaceByPerson.get(p.id);
     const topFace = pick?.face ?? null;
     const goodFaceCount = pick?.good_count ?? 0;
-    const faceCropDataUrl = typeof topFace?.face_crop === "string" ? topFace.face_crop : null;
+    // cover_face_crop is stored directly on the people row (set by clusterPeople
+    // when the cover face is chosen). It's a base64 JPEG of the exact face crop
+    // so we never need to CSS-crop a group photo thumbnail.
+    const faceCropDataUrl = (typeof (p as any).cover_face_crop === "string" ? (p as any).cover_face_crop : null)
+      ?? (typeof topFace?.face_crop === "string" ? topFace.face_crop : null);
     const preferredBbox = topFace?.bbox ?? p.cover_bbox ?? null;
     // bbox stored in DB is already sanitized by clusterPeople — do NOT run
     // sanitizeFaceBox again or it double-expands the padding (1.18×1.18 = 1.39×).
