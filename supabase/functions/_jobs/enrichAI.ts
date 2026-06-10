@@ -159,10 +159,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .eq("id", asset_id);
 
     if (faces.length > 0) {
+      // Coalesce per user per hour — prevents concurrent per-asset jobs from
+      // racing on an empty person_faces table and creating duplicate persons.
+      const clusteringKey = new Date().toISOString().slice(0, 13);
       await enqueueJob("clusterPeople", {
         userId: ctx.userId,
-        payload: { user_id: asset.user_id, asset_id },
-        idempotencyKey: `cluster:${asset_id}`,
+        payload: { user_id: asset.user_id },
+        idempotencyKey: `people:${asset.user_id}:${clusteringKey}`,
       });
     }
   }

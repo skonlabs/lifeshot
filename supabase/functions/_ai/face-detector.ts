@@ -132,11 +132,16 @@ export async function detectFaces(opts: {
   if (records.length === 0) return [];
 
   // Dedup: when the same physical face already exists in the collection from a
-  // previous scan, keep the NEW FaceId and delete the OLD one. This prevents
-  // the collection from accumulating duplicate entries across re-scans.
+  // previous scan, keep the OLD (canonical) FaceId and delete the NEW duplicate.
+  // Keeping the old face_id preserves person_faces links in the DB —
+  // if we deleted the old id, clusterPeople's faceIdToPersonId map (built from
+  // person_faces) would lose the person link and fragment clustering.
   const toDelete: string[] = [];
   const seen = new Set<string>();
-  const finalRecords = await Promise.all(records.map(async (r) => {
+  // Map from new face_id → existing canonical face_id (when deduped).
+  const replacedBy = new Map<string, string>();
+
+  const deduped = await Promise.all(records.map(async (r) => {
     try {
       const matches = await searchFaces({
         collectionId, faceId: r.faceId,
@@ -146,15 +151,17 @@ export async function detectFaces(opts: {
         .filter((m) => m.faceId !== r.faceId && !seen.has(m.faceId))
         .sort((a, b) => b.similarity - a.similarity)[0];
       if (existing) {
-        toDelete.push(existing.faceId);
-        seen.add(r.faceId);
-        return { ...r, deduped: true };
+        // Keep existing (old) face_id; delete the newly indexed duplicate.
+        toDelete.push(r.faceId);
+        replacedBy.set(r.faceId, existing.faceId);
+        seen.add(existing.faceId);
+        return { ...r, canonicalFaceId: existing.faceId };
       }
     } catch (e: any) {
       console.warn("face-detector: dedup search failed", r.faceId, String(e?.message ?? e));
     }
     seen.add(r.faceId);
-    return { ...r, deduped: false };
+    return { ...r, canonicalFaceId: r.faceId };
   }));
 
   if (toDelete.length > 0) {
@@ -166,12 +173,12 @@ export async function detectFaces(opts: {
   }
 
   // Generate face crops while image bytes are still in memory.
-  return await Promise.all(finalRecords.map(async (r) => ({
+  return await Promise.all(deduped.map(async (r) => ({
     bbox: r.bbox,
     description: "",
     confidence: r.confidence / 100,
     embedding: null,
-    face_id: r.faceId,
+    face_id: r.canonicalFaceId,  // always use the stable canonical face_id
     attributes: r.attributes,
     face_crop: r.bbox ? await cropFace(bytes, mime, r.bbox) : null,
   })));

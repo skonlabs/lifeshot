@@ -46,6 +46,9 @@ function coverScore(entry: { attributes: any; confidence: number }): number {
 
 const PRIMARY_THRESHOLD = 75;  // Rekognition similarity 0-100
 const FALLBACK_THRESHOLD = 65;
+// Minimum cover quality: score < this means side profile / occluded / blurry.
+// Approx: yaw<40°, pitch<40°, not occluded, some sharpness.
+const MIN_COVER_SCORE = 0.30;
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -204,10 +207,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       // Track best-quality face crop for this person's cover avatar.
       // Replace the current candidate if this face scores higher.
       if (entry.face_crop) {
-        const current = coverCandidates.get(personId);
         const score = coverScore({ attributes: entry.attributes, confidence: entry.confidence });
-        const currentScore = current ? coverScore({ attributes: current.attributes, confidence: current.confidence }) : -1;
-        if (score > currentScore) coverCandidates.set(personId, entry);
+        if (score >= MIN_COVER_SCORE) {
+          const current = coverCandidates.get(personId);
+          const currentScore = current ? coverScore({ attributes: current.attributes, confidence: current.confidence }) : -1;
+          if (score > currentScore) coverCandidates.set(personId, entry);
+        }
       }
     }
   }
