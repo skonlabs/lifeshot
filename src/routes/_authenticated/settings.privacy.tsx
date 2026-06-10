@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { usePrivacySettings, useUpdatePrivacy } from "@/lib/api/hooks";
+import { useState } from "react";
+import { usePrivacySettings, useUpdatePrivacy, useResetFacePipeline } from "@/lib/api/hooks";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/settings/privacy")({ component: Privacy });
@@ -7,6 +8,8 @@ export const Route = createFileRoute("/_authenticated/settings/privacy")({ compo
 function Privacy() {
   const { data, isLoading } = usePrivacySettings();
   const update = useUpdatePrivacy();
+  const reset = useResetFacePipeline();
+  const [confirming, setConfirming] = useState(false);
   const s = data as { ai_enabled?: boolean; face_processing_enabled?: boolean; default_visibility?: "private" | "family" | "public" } | undefined;
 
   return (
@@ -44,6 +47,34 @@ function Privacy() {
             onChange={(v) => { update.mutate({ default_visibility: v }); toast.success("Saved"); }}
             options={["private", "family", "public"]}
           />
+          <div className="hairline mt-6 rounded-md border border-[color:var(--border)] bg-[color:var(--paper)] p-4">
+            <div className="font-medium text-[color:var(--ink)]">Reset face pipeline</div>
+            <div className="mt-1 text-xs text-[color:var(--umber)]">
+              Deletes all detected people, face groupings, and the AWS Rekognition collection. Faces will be re-detected on the next sync.
+            </div>
+            {confirming ? (
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  onClick={() => reset.mutate(undefined, {
+                    onSuccess: () => { toast.success("Face pipeline reset"); setConfirming(false); },
+                    onError: (e) => toast.error((e as Error).message),
+                  })}
+                  disabled={reset.isPending}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {reset.isPending ? "Resetting…" : "Yes, reset everything"}
+                </button>
+                <button onClick={() => setConfirming(false)} className="text-sm text-[color:var(--umber)] underline">Cancel</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirming(true)}
+                className="mt-3 rounded-md border border-red-600 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+              >
+                Reset face pipeline
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
