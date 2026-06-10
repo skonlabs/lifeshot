@@ -196,3 +196,28 @@ export async function deleteFaces(opts: {
     body: { CollectionId: opts.collectionId, FaceIds: opts.faceIds },
   });
 }
+
+export async function deleteCollection(collectionId: string): Promise<void> {
+  const { region, accessKeyId, secretAccessKey } = getCredentials();
+  try {
+    await signedRequest({
+      region, accessKeyId, secretAccessKey,
+      target: "RekognitionService.DeleteCollection",
+      body: { CollectionId: collectionId },
+    });
+  } catch (e: any) {
+    // Already gone — that's fine.
+    if (!String(e?.message ?? "").includes("ResourceNotFoundException")) throw e;
+  }
+}
+
+/** Drop and recreate a collection, giving it a clean slate. */
+export async function recreateCollection(collectionId: string): Promise<void> {
+  await deleteCollection(collectionId);
+  const { region, accessKeyId, secretAccessKey } = getCredentials();
+  await signedRequest({
+    region, accessKeyId, secretAccessKey,
+    target: "RekognitionService.CreateCollection",
+    body: { CollectionId: collectionId },
+  });
+}

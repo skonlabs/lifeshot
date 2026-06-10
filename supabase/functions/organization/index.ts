@@ -10,6 +10,7 @@ import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
 import { faceQualityScore, faceVisualSignature, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
+import { recreateCollection, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -430,6 +431,42 @@ app.post("/assets/bulk", async (c) => {
   });
   emitEvent(c, "organization.bulk_action", { action: body.action, count: body.asset_ids.length });
   return c.json({ affected, action: body.action });
+});
+
+/**
+ * POST /people/reset
+ * Full face pipeline reset for the authenticated user:
+ *   1. Drop + recreate their Rekognition collection (clean slate).
+ *   2. Clear person_faces, auto-clustered people, enrichment faces.
+ *   3. Reset face_scanned_at so all assets are re-queued.
+ * The pipeline will re-detect and re-cluster everything from scratch.
+ */
+app.post("/people/reset", async (c) => {
+  const supa = c.get("supabase");
+  const uid = c.get("userId") as string;
+
+  // 1. Nuke the Rekognition collection.
+  if (rekognitionConfigured()) {
+    await recreateCollection(collectionIdForUser(uid));
+  }
+
+  // 2. Clear all face / person data for this user.
+  const sb = getServiceClient();
+  await sb.from("person_faces").delete().in(
+    "person_id",
+    sb.from("people").select("id").eq("user_id", uid),
+  );
+  await sb.from("people").delete()
+    .eq("user_id", uid)
+    .not("auto_label", "is", null);
+  await sb.from("asset_ai_enrichment").update({ faces: [] })
+    .eq("user_id", uid)
+    .not("faces", "eq", "[]");
+  await sb.from("assets").update({ face_scanned_at: null })
+    .eq("user_id", uid)
+    .not("face_scanned_at", "is", null);
+
+  return c.json({ ok: true, message: "Face pipeline reset. Assets will be re-scanned automatically." });
 });
 
 Deno.serve(app.fetch);

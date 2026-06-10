@@ -638,6 +638,14 @@ export function useEvent(id: string | undefined) {
   });
 }
 
+export function useResetFacePipeline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.organization("/people/reset", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["people"] }),
+  });
+}
+
 export function useCorrection() {
   const qc = useQueryClient();
   return useMutation({

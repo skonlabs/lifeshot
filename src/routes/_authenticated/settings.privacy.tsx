@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { usePrivacySettings, useUpdatePrivacy } from "@/lib/api/hooks";
+import { usePrivacySettings, useUpdatePrivacy, useResetFacePipeline } from "@/lib/api/hooks";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/settings/privacy")({ component: Privacy });
@@ -7,7 +8,19 @@ export const Route = createFileRoute("/_authenticated/settings/privacy")({ compo
 function Privacy() {
   const { data, isLoading } = usePrivacySettings();
   const update = useUpdatePrivacy();
+  const reset = useResetFacePipeline();
+  const [confirming, setConfirming] = useState(false);
   const s = data as { ai_enabled?: boolean; face_processing_enabled?: boolean; default_visibility?: "private" | "family" | "public" } | undefined;
+
+  const handleReset = () => {
+    if (!confirming) { setConfirming(true); return; }
+    setConfirming(false);
+    reset.mutate(undefined, {
+      onSuccess: () => toast.success("Face pipeline reset. Photos will be re-scanned automatically."),
+      onError: (e) => toast.error((e as Error).message),
+    });
+  };
+
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-6 py-10">
       <header className="hairline-b pb-4">
@@ -43,6 +56,27 @@ function Privacy() {
             onChange={(v) => { update.mutate({ default_visibility: v }); toast.success("Saved"); }}
             options={["private", "family", "public"]}
           />
+          {s?.face_processing_enabled && (
+            <div className="hairline rounded-md border bg-[color:var(--paper)] p-4">
+              <div className="font-medium text-[color:var(--ink)]">Rebuild face index</div>
+              <div className="mt-0.5 text-xs text-[color:var(--umber)]">
+                Wipes all face data and re-detects from scratch. Use this if the People page shows wrong faces or duplicate people.
+              </div>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={reset.isPending}
+                className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+              >
+                {reset.isPending ? "Resetting…" : confirming ? "Confirm — this will erase all face data" : "Reset face pipeline"}
+              </button>
+              {confirming && (
+                <button type="button" onClick={() => setConfirming(false)} className="ml-2 mt-3 text-xs text-[color:var(--umber)] underline">
+                  Cancel
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
