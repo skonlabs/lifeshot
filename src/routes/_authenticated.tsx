@@ -34,7 +34,11 @@ function AuthenticatedLayout() {
   }
 
   if (!isAuthenticated) {
-    return null;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[color:var(--paper)] px-6 text-sm text-[color:var(--umber)]">
+        Redirecting to sign in…
+      </div>
+    );
   }
 
   return <AppShell />;
