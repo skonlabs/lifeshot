@@ -172,7 +172,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   const sidePx = clamp(longestFaceSide * 1.05, shortestImageSide * 0.08, shortestImageSide * 0.6);
 
   const cxPx = (bb!.x + bb!.w / 2) * W;
-  const cyPx = (bb!.y + Math.min(bb!.h * 0.44, bb!.h / 2)) * H;
+  // Use the exact center of the stored bbox. sanitizeFaceBox already centers
+  // and pads the box — no further vertical offset needed.
+  const cyPx = (bb!.y + bb!.h / 2) * H;
   let leftPx = cxPx - sidePx / 2;
   let topPx = cyPx - sidePx / 2;
   leftPx = Math.min(Math.max(leftPx, 0), Math.max(W - sidePx, 0));

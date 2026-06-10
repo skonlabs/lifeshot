@@ -145,8 +145,14 @@ app.get("/people", async (c) => {
     const sharp = Number(q.Sharpness ?? 50);
     const bright = Number(q.Brightness ?? 50);
     const conf = Number(f?.confidence ?? 0);
+    // Face prominence: larger bbox = face fills more of the frame = solo portrait.
+    // A selfie face (bbox w≈0.5) beats a group-photo face (bbox w≈0.08) by ~21 pts,
+    // ensuring solo portraits are always preferred as cover images.
+    const bbox = f?.bbox as { w?: unknown; h?: unknown } | null;
+    const prominence = Math.max(Number(bbox?.w ?? 0), Number(bbox?.h ?? 0));
     return conf * 100 - yaw * 1.2 - pitch * 1.0
-      + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2;
+      + Math.min(sharp, 100) * 0.4 + Math.min(bright, 100) * 0.2
+      + prominence * 50;
   };
   const isGoodFace = (f: any): boolean => {
     const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
