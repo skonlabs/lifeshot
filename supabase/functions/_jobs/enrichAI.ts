@@ -159,13 +159,14 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .eq("id", asset_id);
 
     if (faces.length > 0) {
-      // Coalesce per user per hour — prevents concurrent per-asset jobs from
-      // racing on an empty person_faces table and creating duplicate persons.
-      const clusteringKey = new Date().toISOString().slice(0, 13);
+      // Enqueue per-asset so every asset's faces get clustered immediately after
+      // detection. SearchFaces handles identity matching against the collection,
+      // so concurrent per-asset jobs are safe — each one looks up existing people
+      // by face_id match rather than relying on a shared in-memory counter.
       await enqueueJob("clusterPeople", {
         userId: ctx.userId,
-        payload: { user_id: asset.user_id },
-        idempotencyKey: `people:${asset.user_id}:${clusteringKey}`,
+        payload: { user_id: asset.user_id, asset_id },
+        idempotencyKey: `people-cluster:${asset_id}`,
       });
     }
   }

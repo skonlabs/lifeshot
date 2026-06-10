@@ -157,6 +157,18 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     // Register face_id → personId so subsequent faces in this run can match it.
     faceIdToPersonId.set(entry.face_id, personId);
 
+    // Write to person_faces immediately — the organization endpoint reads this
+    // table for asset_count. Upsert on (person_id, asset_id) is safe under concurrency.
+    const { error: pfErr } = await sb.from("person_faces").upsert({
+      person_id: personId,
+      asset_id: entry.asset_id,
+      rekognition_face_id: entry.face_id,
+      bbox: entry.bbox,
+      confidence: entry.confidence,
+      face_crop: entry.face_crop,
+    }, { onConflict: "person_id,asset_id" });
+    if (pfErr) console.error("clusterPeople: person_faces upsert failed", pfErr.message);
+
     // Accumulate face entry for this person.
     const arr = personFaceMap.get(personId) ?? [];
     arr.push(entry);

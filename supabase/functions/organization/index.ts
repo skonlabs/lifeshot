@@ -486,6 +486,14 @@ app.post("/people/reset", async (c) => {
     .eq("user_id", uid)
     .not("face_scanned_at", "is", null);
 
+  // Cancel any pending clusterPeople jobs for this user so stale coalesced
+  // jobs don't fire after the reset with incomplete data.
+  await sb.from("job_queue")
+    .delete()
+    .eq("job_name", "clusterPeople")
+    .eq("user_id", uid)
+    .eq("status", "pending");
+
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
   const { data: assetRows } = await sb
     .from("assets")
