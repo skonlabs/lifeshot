@@ -152,7 +152,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
           decoding="async"
           onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           onError={() => setImgFailed(true)}
-          className={`absolute inset-0 h-full w-full object-cover object-[center_25%] transition-opacity duration-200 ${hasUsableBbox && !dims ? "opacity-0" : "opacity-100"}`}
+          className="absolute inset-0 h-full w-full object-cover object-[center_25%]"
         />
       </div>
     );
@@ -169,11 +169,9 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   // Tight crop around the face. The previous 1.75x multiplier (with a 12%
   // minimum) often grew the crop large enough to include neighbouring faces
   // in group photos, which made each "person" tile look like a small group.
-  const sidePx = clamp(longestFaceSide * 1.05, shortestImageSide * 0.08, shortestImageSide * 0.6);
+  const sidePx = clamp(longestFaceSide, shortestImageSide * 0.08, shortestImageSide * 0.6);
 
   const cxPx = (bb!.x + bb!.w / 2) * W;
-  // Use the exact center of the stored bbox. sanitizeFaceBox already centers
-  // and pads the box — no further vertical offset needed.
   const cyPx = (bb!.y + bb!.h / 2) * H;
   let leftPx = cxPx - sidePx / 2;
   let topPx = cyPx - sidePx / 2;

@@ -146,8 +146,7 @@ app.get("/people", async (c) => {
     const bright = Number(q.Brightness ?? 50);
     const conf = Number(f?.confidence ?? 0);
     // Face prominence: larger bbox = face fills more of the frame = solo portrait.
-    // A selfie face (bbox w≈0.5) beats a group-photo face (bbox w≈0.08) by ~21 pts,
-    // ensuring solo portraits are always preferred as cover images.
+    // Selfie (bbox.w≈0.5) beats group-photo face (bbox.w≈0.08) by ~21 pts.
     const bbox = f?.bbox as { w?: unknown; h?: unknown } | null;
     const prominence = Math.max(Number(bbox?.w ?? 0), Number(bbox?.h ?? 0));
     return conf * 100 - yaw * 1.2 - pitch * 1.0
@@ -156,7 +155,6 @@ app.get("/people", async (c) => {
   };
   const isGoodFace = (f: any): boolean => {
     const attrs = (f?.rekognition_response ?? f?.attributes ?? null) as Record<string, any> | null;
-    // Reject faces stored without Rekognition attributes — pose/quality cannot be verified.
     if (!attrs) return false;
     const occ = attrs.FaceOccluded as Record<string, any> | null;
     if (occ?.Value === true) return false;
@@ -168,9 +166,9 @@ app.get("/people", async (c) => {
     const bright = Number(q.Brightness ?? 100);
     const conf = Number(f?.confidence ?? 0);
     if (conf < 0.6) return false;
-    if (Number.isFinite(yaw) && yaw > 30) return false;
-    if (Number.isFinite(pitch) && pitch > 25) return false;
-    if (Number.isFinite(sharp) && sharp < 35) return false;
+    if (Number.isFinite(yaw) && yaw > 20) return false;
+    if (Number.isFinite(pitch) && pitch > 15) return false;
+    if (Number.isFinite(sharp) && sharp < 40) return false;
     if (Number.isFinite(bright) && bright < 25) return false;
     return true;
   };
