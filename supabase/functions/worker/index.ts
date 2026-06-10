@@ -38,12 +38,54 @@ app.get("/", (c) => c.json({ ok: true, service: "lifeshot-worker" }));
  * concurrency reasonable. */
 app.post("/drain", async (c) => {
   const url = new URL(c.req.url);
-  const batch = Number(url.searchParams.get("batch") ?? "4");
+  // Default batch is 2: larger batches occasionally trip
+  // WORKER_RESOURCE_LIMIT on the Edge runtime, which kills the worker
+  // mid-job and leaves locks behind. Smaller batches + self-perpetuating
+  // drain keeps throughput high without crashing.
+  const batch = Number(url.searchParams.get("batch") ?? "2");
   const budgetMs = Number(url.searchParams.get("budget_ms") ?? "50000");
   const lanes = url.searchParams.getAll("lanes").flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+  // Self-heal: reclaim any job whose worker died (locked > 120s). Without
+  // this a crashed worker can leave a sync stuck waiting on jobs that no
+  // one is processing, until the every-minute cron sweep catches up.
+  try {
+    await serviceClient().rpc("sweep_stuck_jobs", { _stale_seconds: 120 });
+  } catch (err) {
+    console.warn("worker self-heal sweep failed:", String(err));
+  }
   const r = lanes.length
     ? await drainUntilEmptyForLanes(budgetMs, batch, lanes)
     : await drainUntilEmpty(budgetMs, batch);
+  // Self-perpetuating drain: if the budget was exhausted and there are
+  // still pending jobs ready to run, schedule another /drain invocation in
+  // the background. This makes the worker resilient to a dead pg_cron
+  // schedule — once anything kicks the worker, it keeps draining until
+  // the queue is empty.
+  try {
+    const sb = serviceClient();
+    const { count } = await sb
+      .from("job_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending")
+      .lte("next_attempt_at", new Date().toISOString());
+    if ((count ?? 0) > 0) {
+      const selfUrl = new URL(c.req.url);
+      const nextDrain = fetch(selfUrl.toString(), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-worker-secret": Deno.env.get("WORKER_SECRET") ?? "",
+          authorization: c.req.header("authorization") ?? "Bearer internal-worker",
+        },
+        body: "{}",
+      }).catch((err) => console.warn("worker self-drain failed:", String(err)));
+      // deno-lint-ignore no-explicit-any
+      const edge = (globalThis as any).EdgeRuntime;
+      if (edge?.waitUntil) edge.waitUntil(nextDrain);
+    }
+  } catch (err) {
+    console.warn("worker self-drain check failed:", String(err));
+  }
   return c.json(r);
 });
 
@@ -77,7 +119,8 @@ app.post("/cron/incremental-sync", async (c) => {
 /** Cron: sweep dead-letter and stuck jobs reports. */
 app.post("/cron/dead-letter-sweep", async (c) => {
   const sb = serviceClient();
-  const { count } = await sb.from("dead_letter_jobs").select("id", { count: "exact", head: true });
+  // dead_letter_jobs was dropped in B-NUKE; failed jobs now stay in job_queue.
+  const { count } = await sb.from("job_queue").select("id", { count: "exact", head: true }).eq("status", "failed");
   await sb.rpc("sweep_stuck_jobs", { _stale_seconds: 600 });
   logger.info("dead_letter_summary", { count });
   return c.json({ dead_letter: count ?? 0 });

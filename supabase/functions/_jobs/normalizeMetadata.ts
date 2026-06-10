@@ -14,10 +14,15 @@ import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { getConnector } from "../_sources/registry.ts";
-import { fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
-import { extractExifFromBytes } from "../_extractors/exif.ts";
+import { fetchAllBytes, fetchHeadBytes } from "../_extractors/fetch-bytes.ts";
+import { extractExifFromBytes, extractExifFromBytesRaw } from "../_extractors/exif.ts";
 
-const HEAD_BYTES = 384 * 1024;
+// Many JPEGs (esp. iPhone) place an embedded thumbnail BEFORE the GPS IFD,
+// pushing GPS past the first 384 KB. Bump to 2 MB so the first pass catches
+// GPS in the vast majority of files; if still missing we retry up to 8 MB.
+const HEAD_BYTES = 2 * 1024 * 1024;
+const HEAD_BYTES_RETRY = 8 * 1024 * 1024;
+const FULL_EXIF_FETCH_CAP = 32 * 1024 * 1024;
 
 async function nudgeWorkerDrain() {
   await wakeWorkerDrain({ batch: 4, budgetMs: 50_000 });
@@ -125,13 +130,22 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
-    .select("id, user_id, media_type, mime_type, capture_time, timezone, location_lat, location_lng, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
+    .select("id, user_id, media_type, mime_type, capture_time, timezone, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
     .eq("id", asset_id).single();
   if (error || !asset) throw new Error("not found: asset");
 
   const { data: ref } = await sb.from("asset_source_refs")
     .select("source_account_id, source_asset_id, source_relative_path, provider_url, source_modified_at, is_primary")
     .eq("asset_id", asset_id).order("is_primary", { ascending: false }).limit(1).maybeSingle();
+
+  // Canonical location store. syncSource writes here directly; we read it for
+  // backwards-compat with assets that already had a row.
+  const { data: gpsRow } = await sb.from("asset_gps")
+    .select("gps_latitude, gps_longitude")
+    .eq("asset_id", asset_id)
+    .maybeSingle();
+  const existingLat = gpsRow?.gps_latitude != null ? Number(gpsRow.gps_latitude) : null;
+  const existingLng = gpsRow?.gps_longitude != null ? Number(gpsRow.gps_longitude) : null;
 
   const mime = asset.mime_type ?? "";
   const { isImage, isVideo, isAudio, isDocument } = inferMediaFlags(mime, asset.media_type);
@@ -170,27 +184,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // file_metadata — always write, even if rel is a provider URL rather than a real path.
+  // file_metadata + organization_signals consolidated onto `assets` in B-NUKE.
   if (rel) {
-    await upsertLog(sb, "asset_file_metadata", {
-      asset_id, user_id: asset.user_id,
+    const orgSignals = inferOrganizationSignals(rel, filename);
+    await sb.from("assets").update({
+      filename,
       relative_path: rel,
       parent_folder_path: rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : null,
-      filename,
-      filename_without_extension: filename && dot > 0 ? filename.slice(0, dot) : filename,
-      extension: filename && dot > 0 ? filename.slice(dot + 1) : null,
-      normalized_extension: filename && dot > 0 ? filename.slice(dot + 1).toLowerCase() : null,
-      detected_file_type: asset.media_type ?? null,
-      modified_at_filesystem: ref?.source_modified_at ?? null,
-      scan_discovered_at: new Date().toISOString(),
-    }, { onConflict: "asset_id" }, "phase1");
-
-    const orgSignals = inferOrganizationSignals(rel, filename);
-    await upsertLog(sb, "asset_organization_signals", {
-      asset_id,
-      user_id: asset.user_id,
-      ...orgSignals,
-    }, { onConflict: "asset_id" }, "phase1");
+      folder_tokens: orgSignals.folder_tokens,
+      filename_tokens: orgSignals.filename_tokens,
+    }).eq("id", asset_id);
   }
 
   // asset_media_metadata — write whatever dimensions / flags we already know.
@@ -210,14 +213,18 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     ocr_possible: isImage || isDocument,
   }, { onConflict: "asset_id" }, "phase1");
 
-  await upsertLog(sb, "asset_preview_metadata", {
-    asset_id,
-    user_id: asset.user_id,
-    thumbnail_generated: Boolean(asset.thumbnail_cache_key),
-    preview_generated: Boolean(asset.proxy_cache_key),
-    thumbnail_cache_key: asset.thumbnail_cache_key ?? null,
-    preview_cache_key: asset.proxy_cache_key ?? null,
-  }, { onConflict: "asset_id" }, "phase1-preview");
+  // asset_preview_metadata dropped → cache keys persisted on asset_media_metadata.
+  {
+    const tk = asset.thumbnail_cache_key ?? null;
+    const pk = asset.proxy_cache_key ?? null;
+    await upsertLog(sb, "asset_media_metadata", {
+      asset_id, user_id: asset.user_id,
+      thumbnail_url: tk && /^https?:\/\//.test(tk) ? tk : null,
+      thumbnail_storage_path: tk && !/^https?:\/\//.test(tk) ? tk : null,
+      preview_url: pk && /^https?:\/\//.test(pk) ? pk : null,
+      preview_storage_path: pk && !/^https?:\/\//.test(pk) ? pk : null,
+    }, { onConflict: "asset_id" }, "phase1-preview");
+  }
 
   // For images: always write an asset_exif stub so phase 2 can upsert richer
   // data on top. Without this, assets lacking device_make/model still get a row.
@@ -233,15 +240,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }, { onConflict: "asset_id" }, "phase1");
   }
 
-  // For images/videos: write asset_gps if location came from the provider API.
-  if ((isImage || isVideo) && asset.location_lat != null && asset.location_lng != null) {
+  // For images/videos with provider-supplied GPS (already in asset_gps from
+  // syncSource), ensure geohash is set.
+  if ((isImage || isVideo) && existingLat != null && existingLng != null) {
     await upsertLog(sb, "asset_gps", {
       asset_id, user_id: asset.user_id,
-      gps_latitude: asset.location_lat,
-      gps_longitude: asset.location_lng,
+      gps_latitude: existingLat,
+      gps_longitude: existingLng,
       location_source: "provider_api",
       location_confidence: 0.9,
-      geohash: geohashEncode(Number(asset.location_lat), Number(asset.location_lng), 9),
+      geohash: geohashEncode(existingLat, existingLng, 9),
     }, { onConflict: "asset_id" }, "phase1");
   }
 
@@ -269,19 +277,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
     }, { onConflict: "asset_id" }, "phase1");
   }
 
-  // ai_ready_metadata — always write.
-  await upsertLog(sb, "asset_ai_ready_metadata", {
-    asset_id, user_id: asset.user_id,
-    ai_processing_possible: isImage || isVideo || isDocument,
-    ai_processing_consent: false,
-    ocr_possible: isImage || isDocument,
-    ocr_status: isImage || isDocument ? "pending" : "skipped",
-    caption_status: isImage || isVideo || isDocument ? "pending" : "skipped",
-    labels_status: isImage || isVideo || isDocument ? "pending" : "skipped",
-    embedding_status: "pending",
-    face_processing_possible: isImage || isVideo,
-    face_processing_consent: false,
-  }, { onConflict: "asset_id" }, "phase1");
+  // asset_ai_ready_metadata dropped — readiness derived live from
+  // privacy_settings + media flags by the AI jobs themselves.
 
   // Ensure assets.status reflects at least "normalized".
   await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id).eq("status", "ingested");
@@ -291,7 +288,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // phase 1 data (above) from being used by downstream jobs.
 
   let byteExtractionSuccess = false;
-  let hasGpsData = asset.location_lat != null && asset.location_lng != null;
+  let hasGpsData = existingLat != null && existingLng != null;
+  const phase2Diag: Record<string, unknown> = {};
 
   if (ref?.source_account_id && ref?.source_asset_id && isImage) {
     try {
@@ -308,9 +306,72 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           source_account_id: ref.source_account_id, user_id: asset.user_id, provider_kind: providerKind,
         }, sb);
 
-        const head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
+        let head = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES);
+        console.log("normalizeMetadata phase2 head fetched", { asset_id, bytes: head?.bytes?.byteLength ?? 0 });
+        phase2Diag.headBytes = head?.bytes?.byteLength ?? 0;
+        phase2Diag.totalSize = head?.totalSize ?? null;
+        phase2Diag.providerKind = providerKind;
         if (head?.bytes?.byteLength) {
-          const ex = await extractExifFromBytes(head.bytes);
+          let ex = await extractExifFromBytes(head.bytes);
+          phase2Diag.parsed1 = { exif: !!ex.exif, gps: !!ex.gps, media: !!ex.media };
+          phase2Diag.exExif = ex.exif ? {
+            iso: ex.exif.iso, fNumber: ex.exif.fNumber, aperture: ex.exif.aperture,
+            exposureTime: ex.exif.exposureTime, focalLength: ex.exif.focalLength,
+            cameraMake: ex.exif.cameraMake, exifCaptureTime: ex.exif.exifCaptureTime,
+          } : null;
+          // Capture the ACTUAL exifr key names (translated) so we can fix mapping.
+          try {
+            const exifr = (await import("npm:exifr@7.1.3")).default;
+            const translated = await exifr.parse(head.bytes, {
+              tiff: true, ifd0: true, exif: true, gps: true,
+              xmp: true, iptc: true, mergeOutput: true,
+              translateKeys: true, translateValues: true, sanitize: true, reviveValues: true,
+            });
+            phase2Diag.translatedKeys = translated ? Object.keys(translated).slice(0, 60) : null;
+            phase2Diag.translatedSample = translated ? {
+              ISO: (translated as any).ISO, FNumber: (translated as any).FNumber,
+              ExposureTime: (translated as any).ExposureTime, FocalLength: (translated as any).FocalLength,
+              Make: (translated as any).Make, Model: (translated as any).Model,
+            } : null;
+          } catch (e) { phase2Diag.translatedErr = String((e as Error)?.message ?? e); }
+          // GPS fallback: if no GPS yet and the file is larger than our first
+          // window, fetch up to HEAD_BYTES_RETRY and re-parse. This unblocks
+          // GPS extraction for Dropbox-hosted iPhone JPEGs where GPS sits
+          // beyond the embedded thumbnail.
+          if ((!ex.gps?.latitude || !ex.gps?.longitude) &&
+              (head.totalSize == null || head.totalSize > head.bytes.byteLength) &&
+              head.bytes.byteLength < HEAD_BYTES_RETRY) {
+            const bigger = await fetchHeadBytes(conn, ref.source_asset_id, HEAD_BYTES_RETRY);
+            if (bigger?.bytes?.byteLength && bigger.bytes.byteLength > head.bytes.byteLength) {
+              console.log("normalizeMetadata phase2 GPS retry with larger range", {
+                asset_id, first: head.bytes.byteLength, retry: bigger.bytes.byteLength,
+              });
+              head = bigger;
+              ex = await extractExifFromBytes(head.bytes);
+            }
+          }
+          if ((!ex.gps?.latitude || !ex.gps?.longitude) && providerKind === "dropbox") {
+            const token = await conn.getOriginalAccessToken(ref.source_asset_id).catch(() => null);
+            if (token?.url) {
+              const full = await fetchAllBytes(token.url, FULL_EXIF_FETCH_CAP);
+              if (full?.bytes?.byteLength && full.bytes.byteLength > head.bytes.byteLength) {
+                console.log("normalizeMetadata phase2 Dropbox full-file GPS fallback", {
+                  asset_id,
+                  headBytes: head.bytes.byteLength,
+                  fullBytes: full.bytes.byteLength,
+                });
+                head = full;
+                ex = await extractExifFromBytes(full.bytes);
+                phase2Diag.fullFetched = full.bytes.byteLength;
+                phase2Diag.parsed2 = { exif: !!ex.exif, gps: !!ex.gps };
+              }
+            }
+          }
+          console.log("normalizeMetadata phase2 exif parsed", {
+            asset_id,
+            hasExif: !!ex.exif, hasGps: !!ex.gps, hasMedia: !!ex.media,
+            gpsLat: ex.gps?.latitude ?? null, gpsLng: ex.gps?.longitude ?? null,
+          });
 
           if (ex.exif) {
             await upsertLog(sb, "asset_exif", {
@@ -321,7 +382,6 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               exif_model: ex.exif.exifModel ?? null,
               lens_make: ex.exif.lensMake ?? null,
               lens_model: ex.exif.lensModel ?? null,
-              lens: ex.exif.lensModel ?? null,
               iso: ex.exif.iso ?? null,
               aperture: ex.exif.aperture ?? null,
               f_number: ex.exif.fNumber ?? null,
@@ -362,6 +422,26 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
               geohash: geohashEncode(lat, lng, 9),
             }, { onConflict: "asset_id" }, "phase2-gps");
             byteExtractionSuccess = true;
+            console.log("normalizeMetadata phase2-gps OK", { asset_id, lat, lng });
+          } else {
+            // No GPS detected — log raw keys so we can see WHY.
+            try {
+              const raw = await extractExifFromBytesRaw(head.bytes);
+              const allKeys = raw ? Object.keys(raw) : [];
+              const gpsKeys = allKeys.filter((k) => /gps|latitude|longitude/i.test(k));
+              const sample: Record<string, unknown> = {};
+              for (const k of gpsKeys) sample[k] = (raw as any)[k];
+              console.warn("normalizeMetadata phase2-gps MISSING", {
+                asset_id, device: `${asset.device_make}/${asset.device_model}`,
+                totalKeys: allKeys.length, gpsKeysFound: gpsKeys, sample,
+              });
+              phase2Diag.rawTotalKeys = allKeys.length;
+              phase2Diag.rawSampleKeys = allKeys.slice(0, 30);
+              phase2Diag.rawGpsKeys = gpsKeys;
+            } catch (e) {
+              console.warn("normalizeMetadata phase2-gps diagnostic failed", String((e as Error)?.message ?? e));
+              phase2Diag.rawError = String((e as Error)?.message ?? e);
+            }
           }
 
           // Upgrade asset_media_metadata with EXIF-precise values.
@@ -406,8 +486,16 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           const assetUpdates: Record<string, unknown> = {};
           if (ex.exif?.exifCaptureTime && !asset.capture_time) assetUpdates.capture_time = ex.exif.exifCaptureTime;
           if (ex.gps?.latitude != null && ex.gps?.longitude != null) {
-            assetUpdates.location_lat = ex.gps.latitude;
-            assetUpdates.location_lng = ex.gps.longitude;
+            // GPS lives in asset_gps, not assets — upsert directly.
+            await sb.from("asset_gps").upsert({
+              asset_id, user_id: asset.user_id,
+              gps_latitude: ex.gps.latitude,
+              gps_longitude: ex.gps.longitude,
+              location_source: "exif",
+              location_confidence: 0.95,
+              geohash: geohashEncode(Number(ex.gps.latitude), Number(ex.gps.longitude), 9),
+            }, { onConflict: "asset_id" });
+            hasGpsData = true;
           }
           if (ex.media?.width && !asset.width) assetUpdates.width = ex.media.width;
           if (ex.media?.height && !asset.height) assetUpdates.height = ex.media.height;
@@ -432,16 +520,17 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
-  await enqueueJob("embedAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `embed:${asset_id}${forceSuffix}` });
-  await enqueueJob("indexSearchDocument", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `index:${asset_id}${forceSuffix}` });
-  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `people:${asset_id}${forceSuffix}` });
-  if (hasGpsData) {
-    await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id, asset_id }, idempotencyKey: `places:${asset_id}${forceSuffix}` });
-  }
-  // Trigger event detection so moments/stories update as assets are normalized.
-  // Daily bucket prevents duplicate runs while still re-clustering once per day.
-  const today = new Date().toISOString().slice(0, 10);
-  await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${today}` });
+  // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
+  // as a fallback) after enrichment data is available — see those handlers.
+  // clusterPeople / clusterPlaces / detectEvents are coalesced to one run per user
+  // per day instead of one run per asset.
+  const clusteringKey = sync_run_id ?? force_sync_run_id ?? new Date().toISOString().slice(0, 13);
+  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${clusteringKey}` });
+  // Always enqueue — clusterPlaces does its own cheap scan and exits early
+  // when there is nothing to geocode. The previous `if (hasGpsData)` guard
+  // missed cases where GPS arrived on a later asset in the same sync run.
+  await enqueueJob("clusterPlaces", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `places:${asset.user_id}:${clusteringKey}` });
+  await enqueueJob("detectEvents", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `events:${asset.user_id}:${clusteringKey}` });
 
   if (source_account_id) {
     try {
@@ -475,7 +564,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           ...stats,
           sync_run_id: sync_run_id ?? stats.sync_run_id,
           normalized: normalizedCount,
-          indexed: normalizedCount,
+          indexed: Math.max(Number(stats.indexed ?? 0), normalizedCount),
           stage: complete ? "completed" : "processing",
           ...(currentFolder ? { current_folder: currentFolder } : {}),
           current_file: filename ?? rel ?? asset_id,
@@ -509,5 +598,5 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
 
   await nudgeWorkerDrain();
 
-  return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess };
+  return { asset_id, normalized: true, byteExtraction: byteExtractionSuccess, phase2: phase2Diag };
 }

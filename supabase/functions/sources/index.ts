@@ -6,12 +6,12 @@ import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { LANES, laneFor } from "../_pipeline/lanes.ts";
-import { getWorkerWakeHeaders } from "../_pipeline/worker-wake.ts";
 import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { isStaleSyncQueueState } from "../../../src/lib/api/sync-status.logic.ts";
+import { nudgeWorkerDrain } from "../_pipeline/worker-wake.ts";
 
 // Batch helpers — PostgREST `?in.(...)` builds a single URL per query, so
 // passing hundreds of UUIDs at once blows past the proxy URL length limit and
@@ -35,51 +35,20 @@ async function collectRemainingAssetIds(svc: any, assetIds: string[]): Promise<S
   return remaining;
 }
 
-// Wake the worker so the job claims within a couple of seconds instead of
-// waiting for the next pg_cron tick (~15s). The request must go to the
-// Supabase Functions origin, not the public app URL; otherwise it 404s and
-// the job sits in `pending` until cron eventually picks it up.
-async function kickWorker(authHeader?: string | null, requestUrl?: string | null) {
-  // deno-lint-ignore no-explicit-any
-  const globalAny = globalThis as any;
-  const candidates = [requestUrl, ENV.SUPABASE_URL].filter(Boolean) as string[];
-  const base = candidates
-    .map((value) => {
-      try {
-        return new URL(value).origin;
-      } catch {
-        return "";
-      }
-    })
-    .find((origin) => origin.includes(".supabase.co"));
-  if (!base) return;
-  const workerUrl = `${base}/functions/v1/worker/drain`;
-  const nudge = fetch(workerUrl, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(authHeader),
-    body: JSON.stringify({}),
-  }).catch((err) => console.warn("kickWorker nudge failed:", String(err)));
-  if (globalAny.EdgeRuntime?.waitUntil) {
-    globalAny.EdgeRuntime.waitUntil(nudge);
-    return;
-  }
-  await nudge;
-}
-
-async function drainWorkerOnce(authHeader?: string | null) {
-  const workerBase = (() => {
-    try {
-      return new URL(ENV.SUPABASE_URL).origin;
-    } catch {
-      return null;
-    }
-  })();
-  if (!workerBase) return;
-  await fetch(`${workerBase}/functions/v1/worker/drain?batch=1&budget_ms=2000`, {
-    method: "POST",
-    headers: getWorkerWakeHeaders(authHeader),
-    body: JSON.stringify({}),
-  }).catch((err) => console.warn("kickWorker fallback drain failed:", String(err)));
+// Wake the worker immediately after queueing a sync job. Use the strict
+// pipeline helper so HTTP wake failures (401/403/5xx/404) do not get silently
+// swallowed; if the cross-function request fails, it falls back to draining in
+// process so the job can still be claimed during this request.
+async function wakeSyncWorker(authHeader?: string | null, requestUrl?: string | null) {
+  const syncLane = LANES[laneFor("syncSource")].name;
+  await nudgeWorkerDrain({
+    authHeader,
+    requestUrl,
+    supabaseUrl: ENV.SUPABASE_URL,
+    batch: 4,
+    budgetMs: 50_000,
+    lanes: [syncLane],
+  });
 }
 
 async function cancelExistingSyncRuns(
@@ -92,6 +61,11 @@ async function cancelExistingSyncRuns(
   await svc.from("job_queue").delete()
     .eq("status", "pending")
     .eq("job_name", "syncSource")
+    .contains("payload", { source_account_id: sourceAccountId });
+
+  await svc.from("job_queue").delete()
+    .eq("status", "pending")
+    .eq("job_name", "normalizeMetadata")
     .contains("payload", { source_account_id: sourceAccountId });
 
   await svc.from("job_queue")
@@ -346,12 +320,18 @@ app.use("/v1/*", (await import("../_shared/auth.ts")).withAuth);
 app.get("/v1/accounts", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
+  // Show every account the user has ever connected, EXCEPT ones they
+  // explicitly disconnected. A failed sync (status='error'), a transient
+  // auth blip (status='revoked'), or an in-flight reconnect (status=
+  // 'connecting'/'pending'/'syncing'/'paused') should NOT make the source
+  // vanish from the Connected list — the UI surfaces those states inline
+  // and lets the user re-auth or retry.
   const { data, error } = await supa.from("source_accounts").select(`
     id, user_id, provider_id, display_label, status, connected_at, disconnected_at, last_synced_at,
     provider:source_providers(kind)
-  `).in("status", ["active", "pending"]).order("connected_at", { ascending: false });
+  `).neq("status", "disconnected").order("connected_at", { ascending: false });
   if (error) throw new ApiError("internal", error.message);
-  const visibleAccounts = (data ?? []).filter((row: any) => row?.status === "active" || row?.status === "pending");
+  const visibleAccounts = (data ?? []).filter((row: any) => row?.status && row.status !== "disconnected");
   // Per-account counts, broken out by media_type so the UI can show
   // photos / videos / documents / other in addition to the total indexed.
   const ids = visibleAccounts.map((r: any) => r.id);
@@ -422,7 +402,14 @@ app.get("/v1/accounts", async (c) => {
       const cached = await cache.get<SourceSelectionStats>(c, cacheKey);
       if (cached) return [row.id, cached] as const;
 
-      const liveStats = await getSelectionStats(row.provider.kind, row.id, row.user_id ?? uid);
+      // Bound provider crawls so /v1/accounts can't hit the 150s edge
+      // function idle timeout when Dropbox/OneDrive are slow or a user has
+      // many selected containers. Fall back to indexed counts on timeout;
+      // the next request will re-attempt and populate the cache.
+      const liveStats = await Promise.race<SourceSelectionStats | null>([
+        getSelectionStats(row.provider.kind, row.id, row.user_id ?? uid).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
       const resolved = liveStats ?? fallback;
       if (liveStats) {
         await cache.set(c, cacheKey, liveStats, 300, row.user_id ?? uid);
@@ -506,11 +493,25 @@ app.get("/v1/:id/status", async (c) => {
   // Keep queue state and persisted sync-job state aligned to the same job when
   // possible. Previously we mixed the latest queued job status with a different
   // source_sync_jobs row, which could leave the UI stuck on stale stats.
+  const queuePayload = queueJob?.payload && typeof queueJob.payload === "object"
+    ? queueJob.payload as Record<string, unknown>
+    : {};
+  const queueSyncRunId = typeof queuePayload.sync_run_id === "string" ? queuePayload.sync_run_id : null;
   const queueMatchedPersistedJob = queueJob?.id
     ? await svc.from("source_sync_jobs").select("*").eq("id", queueJob.id).maybeSingle()
     : null;
   if (queueMatchedPersistedJob?.error) throw new ApiError("internal", queueMatchedPersistedJob.error.message);
-  const matchingPersistedJob = queueMatchedPersistedJob?.data ?? null;
+  const queueMatchedBySyncRun = !queueMatchedPersistedJob?.data && queueSyncRunId
+    ? await svc.from("source_sync_jobs")
+      .select("*")
+      .eq("source_account_id", id)
+      .contains("stats", { sync_run_id: queueSyncRunId })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    : null;
+  if (queueMatchedBySyncRun?.error) throw new ApiError("internal", queueMatchedBySyncRun.error.message);
+  const matchingPersistedJob = queueMatchedPersistedJob?.data ?? queueMatchedBySyncRun?.data ?? null;
   const statsSource = matchingPersistedJob ?? lastJob;
   const persistedJobStats = (statsSource?.stats && typeof statsSource.stats === "object")
     ? (statsSource.stats as Record<string, unknown>)
@@ -522,7 +523,6 @@ app.get("/v1/:id/status", async (c) => {
     /cancelled by user/i.test(queueJobError ?? "");
   const persistedIndexed = Number(persistedJobStats.indexed ?? 0);
   const persistedDiscovered = Math.max(Number(persistedJobStats.discovered ?? 0), queueJob ? 1 : 0);
-  const selectionDiscovered = Math.max(persistedDiscovered, indexed);
   const queueLooksStale = isStaleSyncQueueState({
     queueStatus: queueJob?.status ?? null,
     persistedStage: typeof persistedJobStats.stage === "string" ? persistedJobStats.stage : null,
@@ -536,10 +536,6 @@ app.get("/v1/:id/status", async (c) => {
     hasMore: persistedJobStats.has_more === true,
     hasQueueJob: !!queueJob,
   });
-  const processingOnly = !queueLooksStale && !activeJob && lastJob?.status === "running" && (persistedJobStats.stage === "processing");
-  const effectiveJobStatus = cancelled
-    ? "cancelled"
-    : (processingOnly ? "running" : (queueLooksStale ? (lastJob?.status ?? "completed") : (activeJob?.status ?? latestQueueJob?.status ?? lastJob?.status ?? null)));
   const effectiveJobKind = matchingPersistedJob?.kind ?? lastJob?.kind ?? (queueJob ? "syncSource" : null);
   const queueJobStats = queueJob && !queueLooksStale ? {
     stage: cancelled ? (persistedJobStats.stage ?? "cancelled") : (activeJob ? (persistedJobStats.stage ?? "listing") : (persistedJobStats.stage ?? "queued")),
@@ -548,8 +544,19 @@ app.get("/v1/:id/status", async (c) => {
     queue_attempts: Number(queueJob.attempts ?? 0),
     queue_error: cancelled ? null : (queueJob.last_error ?? null),
   } : {};
-  const jobStats = { ...persistedJobStats, ...queueJobStats };
-  const persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
+  let jobStats = { ...persistedJobStats, ...queueJobStats };
+  let persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
+  const syncRunId = typeof jobStats.sync_run_id === "string" ? jobStats.sync_run_id : queueSyncRunId;
+  const activeNormalizeRes = await svc.from("job_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("job_name", "normalizeMetadata")
+    .in("status", ["pending", "running"])
+    .contains("payload", {
+      source_account_id: id,
+      ...(syncRunId ? { sync_run_id: syncRunId } : {}),
+    });
+  if (activeNormalizeRes.error) throw new ApiError("internal", activeNormalizeRes.error.message);
+  const activeNormalizeCount = activeNormalizeRes.count ?? 0;
   const hasLiveQueueProgress = !!queueJob && !queueLooksStale;
   const discovered = hasLiveQueueProgress
     ? Math.max(Number(jobStats.discovered ?? 0), 1)
@@ -558,15 +565,66 @@ app.get("/v1/:id/status", async (c) => {
     ? Number(jobStats.indexed ?? 0)
     : indexed;
   const lastErrorMessage = cancelled || queueLooksStale ? null : (lastErr?.message ?? queueJob?.last_error ?? null);
-  const unauthorized = /unauthorized/i.test(lastErrorMessage ?? "");
-  const processingOnlyActive = !unauthorized && processingOnly;
+  const accountRevoked = acc.status === "revoked";
+  const unauthorized = accountRevoked || /unauthorized/i.test(lastErrorMessage ?? "");
+  const processingExhausted =
+    persistedStage === "processing" &&
+    !activeJob &&
+    activeNormalizeCount === 0 &&
+    lastJob?.status === "running";
+  if (processingExhausted && lastJob?.id) {
+    const now = new Date().toISOString();
+    jobStats = { ...jobStats, stage: "completed", normalized: Math.max(Number(jobStats.normalized ?? 0), Number(jobStats.processing_total ?? 0)) };
+    persistedStage = "completed";
+    await svc.from("source_sync_jobs").update({
+      status: "completed",
+      finished_at: lastJob.finished_at ?? now,
+      stats: jobStats,
+    }).eq("id", lastJob.id).eq("status", "running");
+    await svc.from("source_accounts").update({
+      status: "active",
+      last_synced_at: acc.last_synced_at ?? now,
+    }).eq("id", id).eq("status", "pending");
+  }
+  const awaitingMetadataProcessing =
+    persistedStage === "processing" &&
+    activeNormalizeCount > 0;
   // Only show syncing if there is actually an active (pending/running) job in
   // the queue. source_sync_jobs.status alone can show "running" stale if the
   // job failed and was never cleaned up by syncSource's own error handling.
-  const syncing = processingOnlyActive || (!unauthorized && !queueLooksStale && !!activeJob && (effectiveJobStatus === "pending" || effectiveJobStatus === "running"));
-  const accountStatus = unauthorized
+  const syncing = !unauthorized && (!!activeJob || awaitingMetadataProcessing);
+  const effectiveJobStatus = cancelled
+    ? "cancelled"
+    : (syncing
+      ? (activeJob?.status ?? "running")
+      : (processingExhausted
+        ? "completed"
+        : (queueLooksStale ? (lastJob?.status ?? "completed") : (latestQueueJob?.status ?? lastJob?.status ?? null))));
+  const accountStatus = accountRevoked
     ? "revoked"
     : (syncing ? "syncing" : (acc.status === "pending" ? "active" : acc.status));
+  // Self-healing drain nudge: if there's a pending/running syncSource job for
+  // this account, fire-and-forget a worker drain. The frontend polls this
+  // endpoint every 2s while syncing, so this keeps the queue moving even if
+  // pg_cron's scheduled drain stops firing (which we have seen in practice).
+  if (queueJob && (queueJob.status === "pending" || queueJob.status === "running")) {
+    const syncLane = LANES[laneFor("syncSource")].name;
+    await nudgeWorkerDrain({
+      authHeader: c.req.header("Authorization"),
+      requestUrl: c.req.url,
+      batch: 4,
+      budgetMs: 50_000,
+      lanes: [syncLane],
+    });
+  } else if (awaitingMetadataProcessing) {
+    await nudgeWorkerDrain({
+      authHeader: c.req.header("Authorization"),
+      requestUrl: c.req.url,
+      batch: 12,
+      budgetMs: 50_000,
+      lanes: [LANES[laneFor("normalizeMetadata")].name],
+    });
+  }
   return c.json({
     account_id: id,
     status: accountStatus,
@@ -579,7 +637,7 @@ app.get("/v1/:id/status", async (c) => {
       stats: jobStats,
     },
     cursor_age_seconds: cursor ? Math.floor((Date.now() - new Date(cursor.updated_at).getTime()) / 1000) : null,
-    last_error: unauthorized ? "Authorization expired. Please reconnect this source." : lastErrorMessage,
+    last_error: accountRevoked ? "Authorization expired. Please reconnect this source." : lastErrorMessage,
     progress: { discovered, indexed: progressIndexed },
   });
 });
@@ -963,8 +1021,7 @@ app.post("/v1/:id/sync/force", async (c) => {
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
 
   emitEvent(c, "sources.force_sync_enqueued", { id });
-  await kickWorker(c.req.header("Authorization"), c.req.url);
-  await drainWorkerOnce(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: jobId }, 202);
 });
 
@@ -1020,8 +1077,7 @@ app.post("/v1/:id/sync", async (c) => {
   }, { onConflict: "id" });
   if (syncJobError) throw new ApiError("internal", syncJobError.message);
   emitEvent(c, "sources.sync_enqueued", { id });
-  await kickWorker(c.req.header("Authorization"), c.req.url);
-  await drainWorkerOnce(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: jobId }, 202);
 });
 
@@ -1118,7 +1174,7 @@ app.post("/v1/:id/import-uploaded", async (c) => {
   }, { onConflict: "id" });
   if (uploadJobError) throw new ApiError("internal", uploadJobError.message);
   emitEvent(c, "sources.upload_import_enqueued", { id, file_count: fileCount });
-  await kickWorker(c.req.header("Authorization"));
+  await wakeSyncWorker(c.req.header("Authorization"), c.req.url);
   return c.json({ job_id: job.id, queued_files: fileCount }, 202);
 });
 

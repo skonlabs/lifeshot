@@ -1,164 +1,78 @@
+# Sync + face-recognition hardening
 
-# Plan — Rewrite Metadata Extraction & Indexing
+After a full trace of the pipeline (`syncSource → normalizeMetadata → enrichAI → clusterPeople`, plus the worker drain loop), most of your 8 items are already implemented correctly. The real bugs are concentrated in face handling. This plan fixes only what's actually broken, so nothing else regresses.
 
-## Why the current system fails
+## What is already correct (won't touch)
 
-The sub-agent's audit confirmed three concrete failure modes:
+- **Sync / force-sync flow.** `force` clears cursors, bypasses staleness, and uses a unique run-id idempotency key. Normal sync resumes from `source_sync_cursors`.
+- **Auto-stop when done.** `source_sync_jobs.status` flips to `completed` only when there are no more pages *and* zero pending `normalizeMetadata` jobs. Worker self-perpetuates only while `job_queue` has pending rows, then naturally stops.
+- **Data extraction coverage.** Every job writes to the right tables (`assets`, `asset_media_metadata`, `asset_exif`, `asset_gps`, `asset_xmp_iptc`, `asset_ai_enrichment`, `people`, `places`, `events`, `event_assets`, etc.). No table is being skipped.
+- **Loop safety.** `syncSource` already detects identical-cursor loops and force-terminates.
 
-1. **Three competing drain mechanisms** (in-process `waitUntil`, HTTP nudge to `/worker/drain`, pg_cron) all need URL/secret config that's only seeded *after* the first sync — so the first sync nothing drains it.
-2. **`/worker/drain` has a 7s budget** but a single Dropbox `list_folder` call can take 20s → worker times out mid-job and leaves rows in `running` forever.
-3. **`countSelectionStats()` runs a full recursive Dropbox crawl on every `/v1/accounts` request** — blocks the UI even when sync is fine.
+## Real bugs to fix
 
-The architecture is over-engineered (3 drain paths, idempotency ledger, lane scheduling, dynamic system_config URL) for what is conceptually a job queue + worker.
+### Bug 1 — Non-front-facing faces enter the AWS Rekognition collection
+`face-detector.ts` calls `indexFaces` with **all** detected faces. The pose/quality filter (Yaw ≤ 30°, Pitch ≤ 25°, Sharpness ≥ 35, Brightness ≥ 25, Confidence ≥ 0.6) runs **after** indexing in `enrichAI.ts`. Rejected faces stay in the AWS collection and pollute future `SearchFaces` calls.
 
-## New architecture (one mental model)
+**Fix:** Move the pose/quality filter into `face-detector.ts`, applied to Rekognition's returned `FaceDetail` *before* deciding what to keep. Any face that fails the filter gets `deleteFaces` called immediately on its FaceId so the collection stays clean. The filter constants get extracted into one shared module (`_ai/face-quality.ts`) so detector + enrich + cluster all use the same thresholds.
+
+### Bug 2 — `clusterPeople` re-trusts `enrichAI` faces without re-filtering
+If older `asset_ai_enrichment` rows were written before Bug 1 was fixed (or by an older code path), they may still contain non-front-facing entries. `clusterPeople` blindly iterates them.
+
+**Fix:** Apply the same shared `isUsableFace()` check in `clusterPeople` before clustering. Faces that fail are silently skipped (not deleted from `asset_ai_enrichment` — that's the cleanup migration's job).
+
+### Bug 3 — Cross-run duplicate in `people.faces`
+The existing idempotency check only rejects exact `(asset_id, face_id)` repeats. A bad assignment in one run can leave a `(asset_id, face_id)` row pointing to person A; a later run that correctly maps the same `face_id` to person B will append a *second* entry on B without removing the wrong one on A.
+
+**Fix:** Before appending in `clusterPeople`, scan *all* people for any existing `(asset_id, face_id)` entry. If found on a different person, remove it from that person and re-attach to the correct one (and recompute that person's `face_count` and `cover`). Net effect: every `(asset_id, face_id)` lives on exactly one person.
+
+### Bug 4 — Missing `UNIQUE(user_id, auto_label)` on `people`
+`clusterPeople` upserts with `onConflict: "user_id,auto_label"`, but no migration adds that unique index. PostgREST upserts without a real unique constraint silently insert duplicate rows.
+
+**Fix:** Add migration `add_people_user_auto_label_unique.sql` that creates the unique index. Before creating it, the same migration de-duplicates any existing rows by merging their `faces`, `rekognition_face_ids`, `face_count`, and keeping the earliest `id`.
+
+### Bug 5 — Existing duplicate / non-front-facing faces in `people.faces`
+Backfill the cleanup so the people grid stops showing fake "extra" people.
+
+**Fix:** One-time migration `cleanup_people_faces.sql` that:
+1. For each row in `people`, rewrites `faces` to keep only entries where the embedded `rekognition_response` attributes pass the quality filter (Yaw/Pitch/Sharpness/Brightness/Confidence). Entries missing attributes are kept (we can't judge them).
+2. Deduplicates the resulting array on `(asset_id, rekognition_face_id)` — keeps the highest-confidence copy.
+3. Recomputes `face_count` and `cover_asset_id`/`cover_bbox` from the new array.
+4. Deletes any `people` row that ends up with `face_count = 0`.
+5. Removes orphan FaceIds from `rekognition_face_ids` that no longer appear in `faces`.
+
+The migration is idempotent (safe to re-run) and runs in a single transaction.
+
+## What I will not change (and why)
+
+- **No queue/worker rewrite.** The worker already auto-terminates and the 504s you saw earlier were on read endpoints (`/accounts`, `/people`), not on sync itself. Those are already mitigated by the 4 s provider timeout and graceful-degradation fallbacks added in earlier turns.
+- **No deletion of dead-code jobs** (`materializeTimelineWindows`, `disconnectSource`, `deleteAccount`, `exportUserData`). They're registered but not enqueued from anywhere — leaving them in `registry.ts` is harmless and removing them risks breaking a future wiring you may add. I'll just note them.
+- **No change to `syncSource` / `normalizeMetadata` chaining.** It works.
+
+## Why this won't break anything
+
+- All filter thresholds match what `enrichAI.ts` already uses — same numbers, just applied earlier and in more places. Existing behavior for compliant faces is unchanged.
+- The cleanup migration only *removes* entries; no new rows, no schema-shape change. The `people` table columns stay identical.
+- The unique-index migration first merges any pre-existing duplicates, so the `CREATE UNIQUE INDEX` cannot fail.
+- `clusterPeople`'s cross-person move is gated behind the same `(asset_id, face_id)` key it already uses, so on a clean DB it's a no-op.
+- No edge-function entry points, no route files, no UI files touched.
+
+## Files changed
 
 ```text
-[Sync button]
-     │ POST /sources/:id/sync
-     ▼
-┌─────────────────────────┐
-│ enqueue ONE job:        │   instantly returns 202
-│  syncSource(account,    │   sets source_sync_jobs.stats.stage="queued"
-│   cursor=null)          │
-└──────────┬──────────────┘
-           │
-   pg_cron every 30s ────────────► POST /worker/drain   (hard-coded URL via Vault)
-           │                          │
-           ▼                          ▼
-   ┌──────────────────────────────────────────┐
-   │ drainOnce() loop, 50s budget per call    │
-   │  claim 1 job → run → complete            │
-   └──────────────┬───────────────────────────┘
-                  ▼
-       ┌──────────────────────┐
-       │ syncSource(page):    │
-       │  • list ONE page     │  (≤ 500 files, ≤ 25s)
-       │  • upsert assets     │
-       │  • write stats       │  stage, discovered, indexed
-       │  • enqueue per-asset │  → normalizeMetadata jobs
-       │  • if nextCursor:    │
-       │      enqueue self    │
-       │  • else:             │
-       │      mark complete   │
-       └──────────────────────┘
-                  ▼
-   normalizeMetadata → hashAsset → indexSearchDocument
-   (each one its own queue job; pipeline already exists)
+NEW   supabase/functions/_ai/face-quality.ts              shared isUsableFace() + thresholds
+EDIT  supabase/functions/_ai/face-detector.ts             pre-index filter + deleteFaces for rejects
+EDIT  supabase/functions/_jobs/enrichAI.ts                use shared filter (delete inline copy)
+EDIT  supabase/functions/_jobs/clusterPeople.ts           re-filter + cross-person dedup move
+NEW   supabase/migrations/<ts>_people_user_auto_label_unique.sql
+NEW   supabase/migrations/<ts>_cleanup_people_faces.sql
 ```
-
-**Single drain path. No `waitUntil`. No in-process drain. No HTTP nudge from inside jobs.** Just `pg_cron → /worker/drain → claim → run → return`.
-
-## What the user sees in the UI
-
-1. Click **Sync** → toast "Sync queued" → row shows **Queued** (~0–30s while cron waits).
-2. Worker picks it up → row shows **Listing files… (N discovered)** with a counter that increases every page (≈ every 5–15s for Dropbox).
-3. As assets are inserted, **Indexing files… (X / N)** with an indexed counter.
-4. When `nextCursor=null`, status flips to **Sync complete** and `source_accounts.last_synced_at` is set.
-5. Background enrichment (hash, thumbnails, EXIF, AI, search index) continues silently; the asset count on /library grows in real time.
-
-Failure modes are visible: any job that hits `max_attempts` shows a red **Error** badge with the message from `source_errors`.
-
-## What changes
-
-### Removed / simplified
-- Delete the in-process `EdgeRuntime.waitUntil(drainUntilEmpty(...))` in `sources/index.ts`.
-- Delete the inline `kickWorkerDrain({ inline: true })` calls inside `syncSource.ts`.
-- Delete the `system_config`-based dynamic worker URL. Use a single env var `WORKER_URL` set by the cron migration.
-- Delete `countSelectionStats()` from the hot `/v1/accounts` path; replace with a cached count read from `source_sync_jobs.stats.discovered` (last completed).
-- Remove the dual `list` / `delta` cursor kinds for now — single cursor per account.
-
-### Rewritten
-
-**`supabase/functions/_jobs/syncSource.ts`** — one page per invocation, no chaining tricks:
-```ts
-// Pseudo:
-1. set stats.stage="listing", touch heartbeat
-2. cursor = load(source_sync_cursors)
-3. page = await connector.listPage(cursor)   // ≤ 500 items, ≤ 25s
-4. upsert assets + asset_source_refs in ONE transaction
-5. enqueueMany("normalizeMetadata", newIds)
-6. save new cursor
-7. stats.discovered += page.length; stats.indexed = count(asset_source_refs)
-8. if page.nextCursor: enqueue("syncSource", {...same payload, cursor: page.nextCursor})
-   else: source_accounts.status="active", stats.stage="completed"
-```
-
-**`supabase/functions/_sources/*.ts`** — each connector exposes ONE method:
-```ts
-listPage(cursor: unknown | null, opts: { pageSize: 500, signal: AbortSignal })
-  : Promise<{ items: ProviderAsset[]; nextCursor: unknown | null }>
-```
-- Dropbox: non-recursive BFS, pendingPaths stored in cursor (already there, keep).
-- Google Photos: `mediaItems:search` with pageToken.
-- OneDrive: `/drive/items/{id}/children` with `@odata.nextLink`.
-- Local: client-side scan already works; server `listPage` is a no-op that consumes a client-uploaded manifest.
-
-Hard 25s timeout per provider call via `AbortController`.
-
-**`supabase/functions/worker/index.ts`** — simplify `/drain`:
-- 50s budget (Edge Functions allow 60s)
-- `batch: 4` concurrent jobs
-- always 200 OK with a JSON summary `{ claimed, completed, failed, elapsedMs }`
-- single secret check via `Authorization: Bearer ${WORKER_SECRET}`
-
-**`supabase/functions/sources/index.ts`** — `POST /v1/:id/sync`:
-- enqueue one job, write `source_sync_jobs` row with `stats={stage:"queued",discovered:0,indexed:0}`
-- return 202 immediately, no drain calls
-- `GET /v1/:id/status` reads only `source_sync_jobs` (latest by id) + `asset_source_refs` count
-
-**`src/routes/_authenticated/sources.tsx`** — replace ambiguous "Discovering files…" with explicit stages from `stats.stage`: `queued | listing | indexing | completed | failed`. The string "Discovering files…" goes away entirely.
-
-**`src/lib/realtime/useSourceProgress.ts`** — add subscription to `source_sync_jobs` so `stats` updates trigger cache invalidation (the current code only watches `source_accounts` and `job_queue`). Keep the 2s poll as fallback.
-
-### New migration
-
-`supabase/migrations/<ts>_simple_worker_cron.sql`:
-- Drop existing `lifeshot_drain` cron + the `system_config`-based plumbing.
-- Recreate cron every 30s using a hard-coded `https://<project-ref>.supabase.co/functions/v1/worker/drain` and a single Vault secret `worker_secret`.
-- Add `claim_pending_jobs` / `complete_job` / `sweep_stuck_jobs` (review existing definitions; keep them — they're fine).
-- Add an index `job_queue (status, next_attempt_at)` if missing.
-
-## Technical details (for me, not the user)
-
-- **No new tables.** Reuse `job_queue`, `source_sync_jobs`, `source_sync_cursors`, `asset_source_refs`, `assets`, `asset_metadata`, `asset_search_documents`.
-- **Idempotency:** keep `job_ledger`, but only for the per-asset jobs (`hashAsset`, `indexSearchDocument`). `syncSource` is naturally idempotent via `asset_source_refs` unique constraint.
-- **Scalability to 500K files:** each `syncSource` page is ≤25s and ≤500 items; 500K files = ≤1000 pages = ≤8 hours of background processing at 30s cron cadence. Per-asset enrichment runs in parallel (batch=4) → throughput ~4 assets/sec → 500K finishes in ~35 hours of background. That's acceptable; users see results streaming into /library throughout.
-- **Cancellation:** `source_accounts.sync_cancel_requested_at` checked at the top of every `syncSource` invocation; if set, mark `stats.stage="cancelled"` and stop chaining.
-- **All four connectors get the same `listPage` contract** so the worker doesn't care which provider it's syncing.
-
-## Files touched
-
-```
-supabase/functions/sources/index.ts            (simplify sync POST + status GET, drop countSelectionStats from hot path)
-supabase/functions/_jobs/syncSource.ts         (rewrite: one page per invocation)
-supabase/functions/_sources/dropbox.ts         (keep BFS, expose listPage, add AbortController)
-supabase/functions/_sources/google_photos.ts   (rewrite to listPage contract)
-supabase/functions/_sources/onedrive.ts        (rewrite to listPage contract)
-supabase/functions/_sources/local_ios.ts       (adapt to listPage no-op)
-supabase/functions/_sources/registry.ts        (unified listPage interface)
-supabase/functions/worker/index.ts             (simplify /drain, drop in-process kick logic)
-supabase/functions/_pipeline/runner.ts         (no functional change; drop unused helpers)
-src/routes/_authenticated/sources.tsx          (stage-driven labels, remove "Discovering files…")
-src/lib/realtime/useSourceProgress.ts          (subscribe to source_sync_jobs)
-src/lib/api/hooks.ts                           (no API surface change; verify polling logic)
-supabase/migrations/<ts>_simple_worker_cron.sql (new — cron + secret + index)
-```
-
-## Out of scope (explicitly)
-
-- AI vision, OCR, embeddings, face clustering — already working downstream of `normalizeMetadata`. Untouched.
-- OAuth connect / disconnect flows. Untouched.
-- Search query path (`search/index.ts`, hybrid search). Untouched.
 
 ## Verification after build
 
-1. Click Sync on a Dropbox account → row shows "Queued" within 1s.
-2. Within 30s, row shows "Listing files… (N)" with N increasing.
-3. /library page asset count grows live.
-4. Check `select status, count(*) from job_queue group by 1;` — pending count drops to 0 within minutes after sync completes.
-5. Disconnect network during sync → row eventually shows "Failed: timeout" not infinite spinner.
+1. `psql` check that the unique index exists and `people` has no `(user_id, auto_label)` dups.
+2. `psql` check that no row in `people.faces` has Yaw/Pitch outside thresholds (where attributes present).
+3. Open `/people` in the preview and confirm faces render without the "same person split across tiles" symptom.
+4. Trigger a force-sync on one account and watch `source_sync_jobs.status` flip `running → completed` with `pending_normalize_jobs = 0`.
 
----
-
-**Approve this plan and I'll implement it in one pass, then explain step-by-step how the user experiences each phase.**
+If you approve, I'll execute in this exact order and stop only if a step fails.

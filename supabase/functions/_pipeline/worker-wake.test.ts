@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getWorkerDrainUrl, getWorkerWakeHeaders } from "./worker-wake.ts";
+import { getWorkerDrainUrl, getWorkerWakeHeaders, shouldFallbackToInProcessDrain } from "./worker-wake.ts";
 
 describe("getWorkerWakeHeaders", () => {
   it("always includes an authorization header for internal worker nudges", () => {
@@ -26,6 +26,15 @@ describe("getWorkerWakeHeaders", () => {
     expect(url).toBe("https://vohevknnbvpaooletyts.supabase.co/functions/v1/worker/drain?batch=12&budget_ms=50000&lanes=ingest");
   });
 
+  it("supports nudging multiple lanes without dropping the ingest lane", () => {
+    const url = getWorkerDrainUrl({
+      supabaseUrl: "https://vohevknnbvpaooletyts.supabase.co",
+      lanes: ["user", "ingest"],
+    });
+
+    expect(url).toBe("https://vohevknnbvpaooletyts.supabase.co/functions/v1/worker/drain?batch=4&budget_ms=50000&lanes=user&lanes=ingest");
+  });
+
   it("ignores non-Supabase project URLs when building drain URLs", () => {
     const url = getWorkerDrainUrl({
       requestUrl: "https://lifeshot.lovable.app/sources",
@@ -33,5 +42,11 @@ describe("getWorkerWakeHeaders", () => {
     });
 
     expect(url).toBe("https://vohevknnbvpaooletyts.supabase.co/functions/v1/worker/drain?batch=4&budget_ms=50000");
+  });
+
+  it("falls back to in-process drain when the HTTP wake fails", () => {
+    expect(shouldFallbackToInProcessDrain(null)).toBe(true);
+    expect(shouldFallbackToInProcessDrain({ ok: false, status: 401 })).toBe(true);
+    expect(shouldFallbackToInProcessDrain({ ok: true, status: 200 })).toBe(false);
   });
 });

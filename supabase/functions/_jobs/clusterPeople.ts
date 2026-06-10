@@ -1,35 +1,29 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
+import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
- * clusterPeople — groups detected faces into people using cosine similarity
- * on 512-dim face description embeddings stored in asset_ai_enrichment.faces.
+ * clusterPeople — identifies people across detected faces using AWS Rekognition
+ * SearchFaces for identity matching.
  *
  * Biometric consent gate: only runs when privacy_settings.face_processing_enabled = true.
  *
  * Algorithm:
- *  1. Collect all faces (with embeddings) for the user (or specific asset).
- *  2. For each face, find the closest existing person by cosine similarity.
- *  3. If similarity ≥ CLUSTER_THRESHOLD, assign to that person.
- *     Otherwise create a new person with an auto-incrementing label.
- *  4. Write person_faces rows with real bbox and face_vector.
+ *  1. Collect all faces (with face_id) for the user (or specific asset).
+ *  2. For each face, call SearchFaces at 75% threshold in the user's Rekognition collection.
+ *  3. If a match is found, look up which person owns that matching face_id in person_faces.
+ *  4. If similarity ≥ PRIMARY_THRESHOLD (75%), assign to that person.
+ *     If similarity ≥ FALLBACK_THRESHOLD (65%) and no primary match, use fallback.
+ *     Otherwise create a new person.
+ *  5. Upsert person_faces with face_id, bbox, confidence.
+ *  6. Set cover_face_crop on people when a high-quality face crop is available.
  *
  * Idempotent: upserts on (person_id, asset_id).
  */
 
-const CLUSTER_THRESHOLD = 0.82; // cosine similarity; tune based on real data
-
-function cosineSim(a: number[], b: number[]): number {
-  if (!a.length || !b.length || a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
-}
+const PRIMARY_THRESHOLD = 75;  // Rekognition similarity 0-100
+const FALLBACK_THRESHOLD = 65;
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -47,6 +41,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "consent", clustered: 0 };
   }
 
+  if (!rekognitionConfigured()) {
+    return { user_id: uid, skipped: "rekognition_not_configured", clustered: 0 };
+  }
+
   // Fetch enrichment rows with face detections.
   let enrichQuery = sb
     .from("asset_ai_enrichment")
@@ -57,115 +55,98 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { data: enrichRows, error } = await enrichQuery;
   if (error) throw new Error(`clusterPeople fetch: ${error.message}`);
 
-  // Build flat list of faces that have real embeddings.
+  // Build flat list of faces that have Rekognition face_ids.
   interface FaceEntry {
     asset_id: string;
-    face_index: number;
+    face_id: string;
     bbox: any;
-    description: string;
     confidence: number;
-    embedding: number[];
+    face_crop: string | null;
+    attributes: any;
   }
 
   const faceEntries: FaceEntry[] = [];
-  const facesWithoutEmbedding: Array<{ asset_id: string; face: any }> = [];
-
   for (const row of enrichRows ?? []) {
     const faces = Array.isArray(row.faces) ? row.faces : [];
-    for (let i = 0; i < faces.length; i++) {
-      const f = faces[i];
-      const emb = Array.isArray(f.embedding) && f.embedding.length > 0 ? f.embedding as number[] : null;
-      if (emb) {
+    for (const f of faces) {
+      if (f.face_id) {
         faceEntries.push({
           asset_id: row.asset_id,
-          face_index: i,
+          face_id: f.face_id,
           bbox: f.bbox ?? null,
-          description: f.description ?? "",
           confidence: f.score ?? f.confidence ?? 0.5,
-          embedding: emb,
+          face_crop: f.face_crop ?? null,
+          attributes: f.attributes ?? null,
         });
-      } else if (f.score != null || f.confidence != null) {
-        // Face detected but no embedding — link to generic group.
-        facesWithoutEmbedding.push({ asset_id: row.asset_id, face: f });
-      }
-    }
-  }
-
-  // For faces without embeddings, upsert into a generic "unclustered" person.
-  let unclusteredLinked = 0;
-  if (facesWithoutEmbedding.length > 0) {
-    const { data: genericPerson, error: gpErr } = await sb
-      .from("people")
-      .upsert(
-        { user_id: uid, auto_label: "auto:unclustered-faces", display_name: "People in your photos", consent_required: true },
-        { onConflict: "user_id,auto_label" },
-      )
-      .select("id").single();
-    if (!gpErr && genericPerson) {
-      const rows = facesWithoutEmbedding.map(({ asset_id: aid, face }) => ({
-        person_id: genericPerson.id,
-        asset_id: aid,
-        bbox: face.bbox ?? null,
-        confidence: face.score ?? face.confidence ?? null,
-      }));
-      for (let i = 0; i < rows.length; i += 500) {
-        await sb.from("person_faces").upsert(rows.slice(i, i + 500), { onConflict: "person_id,asset_id" });
-        unclusteredLinked += Math.min(500, rows.length - i);
       }
     }
   }
 
   if (faceEntries.length === 0) {
-    return { user_id: uid, people: 0, clustered: unclusteredLinked, no_embeddings: facesWithoutEmbedding.length };
+    return { user_id: uid, people: 0, clustered: 0, reason: "no_faces_with_face_id" };
   }
 
-  // Load existing people with representative face vectors to match against.
-  // We use the first face_vector stored per person as the representative centroid.
+  const collectionId = collectionIdForUser(uid);
+
+  // Load existing people for this user.
   const { data: existingPeople } = await sb
     .from("people")
-    .select("id, auto_label, display_name")
+    .select("id, auto_label, display_name, cover_face_crop, cover_asset_id")
     .eq("user_id", uid)
     .like("auto_label", "auto:person:%");
 
-  // Load representative vectors for existing auto people.
-  const personVectors = new Map<string, { personId: string; autoLabel: string; centroid: number[] }>();
+  // Build a map from face_id → person_id using person_faces.
+  // This is how we look up who owns a matching FaceId after SearchFaces.
+  const faceIdToPersonId = new Map<string, string>();
   if (existingPeople?.length) {
-    const ids = existingPeople.map((p) => p.id);
+    const ids = existingPeople.map((p: any) => p.id);
     const { data: pf } = await sb
       .from("person_faces")
-      .select("person_id, face_vector")
+      .select("person_id, face_id")
       .in("person_id", ids)
-      .not("face_vector", "is", null)
-      .order("created_at", { ascending: true });
-
+      .not("face_id", "is", null);
     for (const row of pf ?? []) {
-      if (!personVectors.has(row.person_id) && Array.isArray(row.face_vector)) {
-        personVectors.set(row.person_id, {
-          personId: row.person_id,
-          autoLabel: existingPeople.find((p) => p.id === row.person_id)?.auto_label ?? "",
-          centroid: row.face_vector as number[],
-        });
-      }
+      if (row.face_id) faceIdToPersonId.set(row.face_id, row.person_id);
     }
   }
 
   let personCounter = existingPeople?.length ?? 0;
   let clusteredFaces = 0;
+  // Track people that need cover updates: person_id → best face entry
+  const coverCandidates = new Map<string, FaceEntry>();
 
   for (const entry of faceEntries) {
-    let matchedPersonId: string | null = null;
-    let bestSim = -1;
+    let personId: string | null = null;
 
-    for (const pv of personVectors.values()) {
-      const sim = cosineSim(entry.embedding, pv.centroid);
-      if (sim > bestSim) { bestSim = sim; matchedPersonId = pv.personId; }
+    // SearchFaces returns other faces in the collection that match this one.
+    try {
+      const matches = await searchFaces({
+        collectionId,
+        faceId: entry.face_id,
+        faceMatchThreshold: FALLBACK_THRESHOLD,
+        maxFaces: 10,
+      });
+
+      // Find the best match above threshold, sorted by similarity desc.
+      const sorted = matches
+        .filter((m) => m.faceId !== entry.face_id)
+        .sort((a, b) => b.similarity - a.similarity);
+
+      // Primary threshold first, then fallback.
+      const primary = sorted.find((m) => m.similarity >= PRIMARY_THRESHOLD && faceIdToPersonId.has(m.faceId));
+      const fallback = sorted.find((m) => m.similarity >= FALLBACK_THRESHOLD && faceIdToPersonId.has(m.faceId));
+      const match = primary ?? fallback ?? null;
+
+      if (match) {
+        personId = faceIdToPersonId.get(match.faceId)!;
+      }
+    } catch (e: any) {
+      console.warn("clusterPeople: SearchFaces failed", entry.face_id, String(e?.message ?? e));
+      // Continue — we'll create a new person rather than crashing.
     }
 
-    let personId: string;
-    if (matchedPersonId && bestSim >= CLUSTER_THRESHOLD) {
-      personId = matchedPersonId;
-    } else {
-      // Create a new person cluster.
+    if (!personId) {
+      // No match found — create a new person cluster.
       personCounter++;
       const autoLabel = `auto:person:${personCounter}`;
       const { data: newPerson, error: npErr } = await sb
@@ -180,26 +161,60 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         continue;
       }
       personId = newPerson.id;
-      // Register as representative for future faces in this run.
-      personVectors.set(personId, { personId, autoLabel, centroid: entry.embedding });
     }
+
+    // Register this face_id as belonging to this person so future faces in
+    // this run can match against it without another SearchFaces round-trip.
+    faceIdToPersonId.set(entry.face_id, personId);
 
     const { error: fErr } = await sb.from("person_faces").upsert({
       person_id: personId,
       asset_id: entry.asset_id,
       bbox: entry.bbox,
       confidence: entry.confidence,
-      face_vector: entry.embedding,
+      face_id: entry.face_id,
     }, { onConflict: "person_id,asset_id" });
-    if (fErr) console.error("clusterPeople: person_faces upsert failed", fErr.message);
-    else clusteredFaces++;
+
+    if (fErr) {
+      console.error("clusterPeople: person_faces upsert failed", fErr.message);
+    } else {
+      clusteredFaces++;
+      // Track the best face crop candidate for each person's cover.
+      if (entry.face_crop && !coverCandidates.has(personId)) {
+        coverCandidates.set(personId, entry);
+      }
+    }
+  }
+
+  // Update cover_face_crop for people that don't already have one.
+  if (coverCandidates.size > 0) {
+    const personIds = Array.from(coverCandidates.keys());
+    const { data: peopleWithCovers } = await sb
+      .from("people")
+      .select("id, cover_face_crop")
+      .in("id", personIds);
+
+    const needsCover = new Set(
+      (peopleWithCovers ?? [])
+        .filter((p: any) => !p.cover_face_crop)
+        .map((p: any) => p.id),
+    );
+
+    for (const [pid, entry] of coverCandidates) {
+      if (!needsCover.has(pid)) continue;
+      await sb.from("people").update({
+        cover_face_crop: entry.face_crop,
+        cover_asset_id: entry.asset_id,
+        cover_bbox: entry.bbox,
+      }).eq("id", pid);
+    }
   }
 
   return {
     user_id: uid,
-    people: personVectors.size,
-    clustered: clusteredFaces + unclusteredLinked,
-    faces_with_embedding: faceEntries.length,
-    faces_without_embedding: facesWithoutEmbedding.length,
+    people: personCounter,
+    clustered: clusteredFaces,
+    faces_processed: faceEntries.length,
+    covers_updated: coverCandidates.size,
   };
 }

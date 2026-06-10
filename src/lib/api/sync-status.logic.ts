@@ -20,17 +20,17 @@ export function shouldResyncAsset(input: {
   const baseMetadataMissing =
     !input.hasFileMetadata ||
     !input.hasMediaMetadata ||
-    !input.hasAiReadyMetadata ||
-    !input.hasOrganizationSignals;
+    input.hasAiReadyMetadata === false ||
+    input.hasOrganizationSignals === false;
 
   const needsPreview = input.mediaType === "photo" || input.mediaType === "video" || input.mediaType === "document";
-  const previewMissing = needsPreview && (!input.hasPreviewMetadata || !input.hasPreviewContent);
-  const aiEnrichmentMissing = needsPreview && !input.hasAiEnrichment;
-  const locationMissing = !input.hasLocationMetadata;
+  const previewMissing = needsPreview && (input.hasPreviewMetadata === false || input.hasPreviewContent === false);
+  const aiEnrichmentMissing = needsPreview && input.hasAiEnrichment === false;
+  const locationMissing = input.hasLocationMetadata === false;
   const typeSpecificMissing =
-    (input.mediaType === "video" && !input.hasVideoMetadata) ||
-    (input.mediaType === "document" && !input.hasDocumentMetadata) ||
-    (input.mediaType === "audio" && !input.hasAudioMetadata);
+    (input.mediaType === "video" && input.hasVideoMetadata === false) ||
+    (input.mediaType === "document" && input.hasDocumentMetadata === false) ||
+    (input.mediaType === "audio" && input.hasAudioMetadata === false);
 
   const missingMetadata = baseMetadataMissing || previewMissing || aiEnrichmentMissing || locationMissing || typeSpecificMissing;
   if (missingMetadata) return true;

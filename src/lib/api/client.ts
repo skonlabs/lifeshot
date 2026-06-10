@@ -29,6 +29,18 @@ export class ApiError extends Error {
   }
 }
 
+export function isTemporaryUpstreamError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 429 || error.status === 504) return true;
+  if (error.status >= 500) return true;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("idle timeout") ||
+    message.includes("ssl handshake failed") ||
+    error.code === "dependency_unavailable"
+  );
+}
+
 export type ApiFn =
   | "catalog"
   | "search"
@@ -58,6 +70,13 @@ async function authHeader(): Promise<string | null> {
   return token ? `Bearer ${token}` : null;
 }
 
+async function refreshAuthHeader(): Promise<string | null> {
+  const { data, error } = await supabase.auth.refreshSession();
+  if (error) return null;
+  const token = data.session?.access_token;
+  return token ? `Bearer ${token}` : null;
+}
+
 function buildUrl(fn: ApiFn, path: string, query?: RequestOpts["query"]): string {
   const base = `${SUPABASE_URL}/functions/v1/${fn}/v1`;
   const url = new URL(`${base}${path.startsWith("/") ? path : `/${path}`}`);
@@ -80,19 +99,23 @@ export async function apiCall<T = unknown>(
     "content-type": "application/json",
     "x-request-id": uuid(),
   };
-  const auth = await authHeader();
-  if (auth) headers["authorization"] = auth;
   if (method !== "GET" && method !== "DELETE") {
     headers["idempotency-key"] = opts.idempotencyKey ?? uuid();
   }
 
   const maxAttempts = method === "GET" ? 3 : 1;
   let lastErr: unknown;
+  let bearer = await authHeader();
+  let refreshedAfter401 = false;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      const requestHeaders = {
+        ...headers,
+        ...(bearer ? { authorization: bearer } : {}),
+      };
       const res = await fetch(url, {
         method,
-        headers,
+        headers: requestHeaders,
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
         signal: opts.signal,
       });
@@ -101,6 +124,19 @@ export async function apiCall<T = unknown>(
       const parsed = text ? safeJson(text) : null;
       if (!res.ok) {
         const env = (parsed as { error?: { code?: string; message?: string; details?: Record<string, unknown> } })?.error;
+        if (
+          res.status === 401 &&
+          !refreshedAfter401 &&
+          typeof env?.message === "string" &&
+          /invalid or expired token/i.test(env.message)
+        ) {
+          refreshedAfter401 = true;
+          bearer = await refreshAuthHeader();
+          if (bearer) {
+            attempt -= 1;
+            continue;
+          }
+        }
         const err = new ApiError(
           env?.code ?? "internal",
           env?.message ?? `HTTP ${res.status}`,

@@ -3,11 +3,13 @@ import { createApi, authed } from "../_shared/router.ts";
 import { parseBody, parseQuery, parseParams } from "../_shared/validation.ts";
 import { ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
+import { getServiceClient } from "../_shared/clients.ts";
 import { jobEnqueuer } from "../_shared/interfaces.ts";
 import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
+import { faceQualityScore, faceVisualSignature, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -38,29 +40,32 @@ app.get("/events", async (c) => {
   }
   const coverAssetIds = Array.from(new Set(Object.values(coverMap)));
   const covers: Record<string, any> = {};
-  const previewMap: Record<string, any> = {};
+  const mediaMap: Record<string, any> = {};
   if (coverAssetIds.length) {
     const { data: cs } = await supa.from("assets")
       .select("id, thumbnail_cache_key, blurhash, dominant_color, media_type")
       .in("id", coverAssetIds);
     for (const c2 of cs ?? []) covers[c2.id] = c2;
-    const { data: previews } = await supa.from("asset_preview_metadata")
-      .select("asset_id, blurhash, dominant_color, thumbnail_cache_key")
+    // asset_preview_metadata dropped → blurhash/dominant_color/thumbnail come
+    // from asset_media_metadata.
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
       .in("asset_id", coverAssetIds);
-    for (const preview of previews ?? []) previewMap[preview.asset_id] = preview;
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
   const enriched = await Promise.all(events.map(async (e: any) => {
     const cid = coverMap[e.id];
     const cov = cid && covers[cid] ? covers[cid] : null;
-    const preview = cid ? previewMap[cid] ?? null : null;
+    const mm = cid ? mediaMap[cid] ?? null : null;
     return {
       ...e,
       asset_count: countMap[e.id] ?? 0,
       cover: cov ? {
         asset_id: cid,
-        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid, preview?.thumbnail_cache_key ?? cov.thumbnail_cache_key ?? null),
-        blurhash: preview?.blurhash ?? cov.blurhash ?? null,
-        dominant_color: preview?.dominant_color ?? cov.dominant_color ?? null,
+        thumbnail_url: await resolveThumbUrl(c, supa, uid, cid,
+          mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? cov.thumbnail_cache_key ?? null),
+        blurhash: mm?.blurhash ?? cov.blurhash ?? null,
+        dominant_color: mm?.dominant_color ?? cov.dominant_color ?? null,
         media_type: cov.media_type ?? "photo",
       } : null,
     };
@@ -78,17 +83,23 @@ app.get("/events/:id", async (c) => {
     supa.from("event_places").select("place_id, places(*)").eq("event_id", id),
   ]);
   if (!event) throw new ApiError("not_found", "Event not found");
+  const assetIds = (eAssets ?? []).map((r: any) => r.asset_id);
+  const mediaMap: Record<string, any> = {};
+  if (assetIds.length) {
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, blurhash, dominant_color, thumbnail_url, thumbnail_storage_path")
+      .in("asset_id", assetIds);
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+  }
   const assets = await Promise.all((eAssets ?? []).map(async (row: any) => {
     const a = row.assets ?? {};
-    const { data: preview } = await supa.from("asset_preview_metadata")
-      .select("blurhash, dominant_color, thumbnail_cache_key")
-      .eq("asset_id", row.asset_id)
-      .maybeSingle();
+    const mm = mediaMap[row.asset_id] ?? null;
     return {
       asset_id: row.asset_id,
-      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id, preview?.thumbnail_cache_key ?? a.thumbnail_cache_key ?? null),
-      blurhash: preview?.blurhash ?? a.blurhash ?? null,
-      dominant_color: preview?.dominant_color ?? a.dominant_color ?? null,
+      thumbnail_url: await resolveThumbUrl(c, supa, uid, row.asset_id,
+        mm?.thumbnail_url ?? mm?.thumbnail_storage_path ?? a.thumbnail_cache_key ?? null),
+      blurhash: mm?.blurhash ?? a.blurhash ?? null,
+      dominant_color: mm?.dominant_color ?? a.dominant_color ?? null,
       width: a.width ?? null,
       height: a.height ?? null,
       media_type: a.media_type ?? "photo",
@@ -113,80 +124,195 @@ app.get("/people", async (c) => {
   if (!privacy?.face_processing_enabled) {
     return c.json({ people: [], face_processing_disabled: true });
   }
+  // Query people with Rekognition-pipeline cover fields.
+  // Face quality is already guaranteed at detection time (face-detector.ts gate),
+  // so we don't re-score here — we just use the stored cover_face_crop / cover_asset_id.
   const { data, error } = await supa.from("people")
-    .select("id, display_name, is_child, is_elder, consent_required");
+    .select("id, display_name, is_child, is_elder, consent_required, auto_label, cover_face_crop, cover_asset_id, cover_bbox")
+    .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
-  const peopleRows = data ?? [];
+  const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
+
   const ids = peopleRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
   if (ids.length) {
-    const { data: faces } = await supa.from("person_faces")
+    const { data: pf } = await supa.from("person_faces")
       .select("person_id, asset_id").in("person_id", ids);
     const seen: Record<string, Set<string>> = {};
-    for (const f of faces ?? []) {
-      (seen[f.person_id] ??= new Set()).add(f.asset_id);
-    }
+    for (const f of pf ?? []) (seen[f.person_id] ??= new Set()).add(f.asset_id);
     for (const [pid, s] of Object.entries(seen)) counts[pid] = s.size;
   }
-  const people = peopleRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+
+  // Batch-resolve thumbnail URLs for people without a face_crop.
+  const coverAssetIds = Array.from(new Set(
+    peopleRows.filter((p: any) => p.cover_asset_id && !p.cover_face_crop).map((p: any) => p.cover_asset_id as string),
+  ));
+  const coverAssets: Record<string, any> = {};
+  const mediaMap: Record<string, any> = {};
+  if (coverAssetIds.length) {
+    const { data: assets } = await supa.from("assets")
+      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
+      .in("id", coverAssetIds);
+    for (const a of assets ?? []) coverAssets[a.id] = a;
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+      .in("asset_id", coverAssetIds);
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+  }
+
+  // Batch-sign storage paths to avoid sequential round-trips.
+  const pathsToSign = new Set<string>();
+  for (const cid of coverAssetIds) {
+    const asset = coverAssets[cid] ?? null;
+    const media = mediaMap[cid] ?? null;
+    for (const ck of [media?.thumbnail_url, media?.thumbnail_storage_path, asset?.thumbnail_cache_key,
+      media?.preview_url, media?.preview_storage_path, asset?.proxy_cache_key]) {
+      if (typeof ck === "string" && ck && !/^https?:\/\//.test(ck)) pathsToSign.add(ck);
+    }
+  }
+  const signedMap = new Map<string, string>();
+  if (pathsToSign.size) {
+    const allPaths = Array.from(pathsToSign);
+    const svc = getServiceClient();
+    for (const bucket of ["thumbnails", "lifeshot-derived"] as const) {
+      const remaining = allPaths.filter((p) => !signedMap.has(p));
+      if (!remaining.length) break;
+      try {
+        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        for (const s of signed ?? []) {
+          if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
+        }
+      } catch (_) { /* try next bucket */ }
+    }
+  }
+  const resolveKey = (ck: string | null | undefined): string | null => {
+    if (!ck) return null;
+    if (/^https?:\/\//.test(ck)) return ck;
+    return signedMap.get(ck) ?? null;
+  };
+
+  const people = peopleRows.map((p: any) => {
+    const faceCrop = typeof p.cover_face_crop === "string" ? p.cover_face_crop : null;
+    const coverBbox = (p.cover_bbox && typeof p.cover_bbox === "object" &&
+      typeof (p.cover_bbox as any).x === "number") ? p.cover_bbox : null;
+    let thumbUrl: string | null = null;
+    if (!faceCrop && p.cover_asset_id) {
+      const asset = coverAssets[p.cover_asset_id] ?? null;
+      const media = mediaMap[p.cover_asset_id] ?? null;
+      thumbUrl = resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
+        ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
+        ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key);
+    }
+    // Only use face_crop — never CSS-crop a group photo thumbnail as avatar.
+    const cover = faceCrop
+      ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null }
+      : null;
+    return {
+      id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
+      consent_required: p.consent_required, auto_label: p.auto_label,
+      asset_count: counts[p.id] ?? 0, cover,
+    };
+  }).filter((person: any) => person.asset_count > 0 && person.cover !== null);
+  // Suppress unused import warnings.
+  void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
 });
 
 app.get("/people/:id", async (c) => {
   const supa = c.get("supabase");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
-  const [{ data: person }, { data: faces }] = await Promise.all([
-    supa.from("people").select("*").eq("id", id).maybeSingle(),
-    supa.from("person_faces").select("asset_id, confidence").eq("person_id", id).limit(50),
-  ]);
+  const { data: person } = await supa.from("people").select("*").eq("id", id).maybeSingle();
   if (!person) throw new ApiError("not_found", "Person not found");
-  const asset_count = new Set((faces ?? []).map((f: any) => f.asset_id)).size;
-  return c.json({ ...person, person, asset_count, faces });
+  const facesArr = Array.isArray(person.faces) ? person.faces : [];
+  const compactFaces = facesArr.slice(0, 50).map((f: any) => ({
+    asset_id: f.asset_id, confidence: f.confidence,
+  }));
+  return c.json({
+    ...person, person, faces: compactFaces,
+    asset_count: person.face_count ?? new Set(facesArr.map((f: any) => f.asset_id)).size,
+  });
 });
 
 app.get("/places", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
-  const { data, error } = await supa.from("places").select("*").limit(500);
+  const { data, error } = await supa.from("places").select("*").eq("user_id", uid).limit(500);
   if (error) throw new ApiError("internal", error.message);
   const placeRows = data ?? [];
   const ids = placeRows.map((p: any) => p.id);
   const counts: Record<string, number> = {};
+  const latestAssetByPlace: Record<string, { asset_id: string; capture_time: string | null }> = {};
   if (ids.length) {
-    const { data: ep } = await supa.from("event_places")
-      .select("place_id, event_id").in("place_id", ids);
-    const byPlace: Record<string, string[]> = {};
-    for (const r of ep ?? []) (byPlace[r.place_id] ??= []).push(r.event_id);
-    const allEventIds = Array.from(new Set((ep ?? []).map((r: any) => r.event_id)));
-    const evCount: Record<string, number> = {};
-    if (allEventIds.length) {
-      const { data: ea } = await supa.from("event_assets")
-        .select("event_id, asset_id").in("event_id", allEventIds);
-      for (const r of ea ?? []) evCount[r.event_id] = (evCount[r.event_id] ?? 0) + 1;
-    }
-    for (const [pid, evIds] of Object.entries(byPlace)) {
-      counts[pid] = evIds.reduce((acc, eid) => acc + (evCount[eid] ?? 0), 0);
+    // Count assets directly off `assets.place_id` (set by clusterPlaces).
+    // This replaces the deprecated `asset_locations` join.
+    const { data: assetRows, error: aErr } = await supa.from("assets")
+      .select("id, place_id, capture_time")
+      .eq("user_id", uid)
+      .in("place_id", ids);
+    if (aErr) throw new ApiError("internal", aErr.message);
+    for (const row of assetRows ?? []) {
+      counts[row.place_id] = (counts[row.place_id] ?? 0) + 1;
+      const prev = latestAssetByPlace[row.place_id];
+      const ct = row.capture_time ?? null;
+      if (!prev || (ct && (!prev.capture_time || ct > prev.capture_time))) {
+        latestAssetByPlace[row.place_id] = { asset_id: row.id, capture_time: ct };
+      }
     }
   }
-  const places = placeRows.map((p: any) => ({ ...p, asset_count: counts[p.id] ?? 0 }));
+  const places = placeRows
+    .map((p: any) => ({
+      ...p,
+      asset_count: counts[p.id] ?? 0,
+      latest_asset_id: latestAssetByPlace[p.id]?.asset_id ?? null,
+      latest_capture_time: latestAssetByPlace[p.id]?.capture_time ?? null,
+      city: p.name ?? null,
+      country: p.country ?? null,
+      label: [p.name, p.country].filter(Boolean).join(", "),
+    }))
+    .filter((p: any) => p.asset_count > 0)
+    .sort((a: any, b: any) => b.asset_count - a.asset_count || String(b.latest_capture_time ?? "").localeCompare(String(a.latest_capture_time ?? "")));
   return c.json({ places });
 });
 
 app.get("/duplicates", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
-  const { data: groups, error } = await supa.from("duplicate_groups")
-    .select("*").eq("status", "open").order("storage_risk", { ascending: false }).limit(100);
+  // duplicate_groups/_members dropped → groups are derived from assets stamped
+  // with the same duplicate_group_id (which dedupGroup writes deterministically
+  // from sha256/phash).
+  const { data: rows, error } = await supa.from("assets")
+    .select("id, duplicate_group_id, file_size_bytes, capture_time, checksum_hash, perceptual_hash")
+    .eq("user_id", uid).not("duplicate_group_id", "is", null).limit(2000);
   if (error) throw new ApiError("internal", error.message);
-  const ids = (groups ?? []).map(g => g.id);
-  const members: Record<string, any[]> = {};
-  if (ids.length) {
-    const { data: ms } = await supa.from("duplicate_group_members")
-      .select("group_id, asset_id, match_type, score").in("group_id", ids);
-    for (const m of ms ?? []) (members[m.group_id] ??= []).push(m);
+  const groupsMap = new Map<string, any[]>();
+  for (const r of rows ?? []) {
+    const k = r.duplicate_group_id as string;
+    const list = groupsMap.get(k) ?? [];
+    list.push(r);
+    groupsMap.set(k, list);
   }
-  return c.json({
-    groups: (groups ?? []).map(g => ({ ...g, members: members[g.id] ?? [] })),
-  });
+  const groups = Array.from(groupsMap.entries())
+    .filter(([, members]) => members.length >= 2)
+    .map(([id, members]) => {
+      const totalBytes = members.reduce((acc, m) => acc + (m.file_size_bytes ?? 0), 0);
+      const wastedBytes = totalBytes - (members[0].file_size_bytes ?? 0);
+      return {
+        id,
+        signal: members[0].checksum_hash ? "sha256" : "phash",
+        confidence: members[0].checksum_hash ? 1.0 : 0.92,
+        status: "open",
+        canonical_asset_id: members[0].id,
+        storage_risk: wastedBytes,
+        members: members.map((m) => ({
+          group_id: id, asset_id: m.id,
+          match_type: members[0].checksum_hash ? "checksum" : "perceptual",
+          score: members[0].checksum_hash ? 1.0 : 0.92,
+          is_canonical: m.id === members[0].id,
+        })),
+      };
+    })
+    .sort((a, b) => (b.storage_risk ?? 0) - (a.storage_risk ?? 0))
+    .slice(0, 100);
+  return c.json({ groups });
 });
 
 const ConfirmIn = z.object({
@@ -203,12 +329,21 @@ app.post("/duplicates/:id/confirm", async (c) => {
   if (idem && "conflict" in idem) throw new ApiError("conflict", "Idempotency-Key reused");
   if (idem?.response) return c.json(idem.response, idem.status as 200);
 
-  const update: Record<string, unknown> = { status: "reviewed" };
+  // duplicate_groups dropped. "keep_primary" untags non-primary members from the
+  // synthetic group so they no longer surface in /duplicates. "keep_all" /
+  // "mark_reviewed" clears the group_id off every member (UI hide).
   if (body.action === "keep_primary" && body.primary_asset_id) {
-    update.recommended_primary_asset_id = body.primary_asset_id;
+    const { error } = await supa.from("assets")
+      .update({ duplicate_group_id: null })
+      .eq("duplicate_group_id", id)
+      .neq("id", body.primary_asset_id);
+    if (error) throw new ApiError("internal", error.message);
+  } else {
+    const { error } = await supa.from("assets")
+      .update({ duplicate_group_id: null })
+      .eq("duplicate_group_id", id);
+    if (error) throw new ApiError("internal", error.message);
   }
-  const { error } = await supa.from("duplicate_groups").update(update).eq("id", id);
-  if (error) throw new ApiError("internal", error.message);
   await supa.from("audit_logs").insert({
     user_id: uid, action: "duplicate.confirm", target_type: "duplicate_group",
     target_id: id, meta: body,
@@ -226,17 +361,21 @@ const CorrectionIn = z.object({
 }).strict();
 
 app.post("/corrections", async (c) => {
-  const supa = c.get("supabase"); const uid = c.get("userId");
+  const uid = c.get("userId");
   const body = await parseBody(c, CorrectionIn);
   const reqHash = await hashJson(body);
   const idem = await findIdempotent(c, "corrections", reqHash);
   if (idem && "conflict" in idem) throw new ApiError("conflict", "Idempotency-Key reused");
   if (idem?.response) return c.json(idem.response, idem.status as 200);
 
-  const { data, error } = await supa.from("user_corrections").insert({
-    user_id: uid, target_type: body.target_type, target_id: body.target_id, correction: body.correction,
-  }).select("id").single();
-  if (error) throw new ApiError("internal", error.message);
+  // user_corrections was dropped in B-NUKE. We still emit an audit log row and
+  // trigger the same downstream re-index job for person corrections.
+  const id = crypto.randomUUID();
+  const supa = c.get("supabase");
+  await supa.from("audit_logs").insert({
+    user_id: uid, action: "correction.submit", target_type: body.target_type,
+    target_id: body.target_id, meta: body.correction,
+  });
   // Translate the correction into a downstream re-index job. For people we
   // re-run face clustering; for other entities we just record the correction
   // (search reindex picks up the changes on next pipeline pass).
@@ -247,7 +386,7 @@ app.post("/corrections", async (c) => {
       { userId: uid });
     job_id = job.id;
   }
-  const out = { id: data!.id, job_id };
+  const out = { id, job_id };
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
@@ -276,13 +415,14 @@ app.post("/assets/bulk", async (c) => {
     if (error) throw new ApiError("internal", error.message);
     affected = data?.length ?? 0;
   } else if (body.action === "tag") {
-    const rows = body.asset_ids.map((asset_id) => ({
-      user_id: uid, target_type: "asset", target_id: asset_id,
-      correction: { add_tag: body.tag },
-    }));
-    const { error } = await supa.from("user_corrections").insert(rows);
-    if (error) throw new ApiError("internal", error.message);
-    affected = rows.length;
+    // user_corrections was dropped → tag actions logged via audit_logs only.
+    await supa.from("audit_logs").insert(
+      body.asset_ids.map((asset_id) => ({
+        user_id: uid, action: "asset.tag", target_type: "asset",
+        target_id: asset_id, meta: { add_tag: body.tag },
+      })),
+    );
+    affected = body.asset_ids.length;
   }
   await supa.from("audit_logs").insert({
     user_id: uid, action: `asset.bulk_${body.action}`, target_type: "asset",

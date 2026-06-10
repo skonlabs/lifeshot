@@ -1,5 +1,6 @@
 import type { Context } from "./deps.ts";
 import { cache, keys } from "./cache.ts";
+import { getServiceClient } from "./clients.ts";
 
 const BUCKETS = ["thumbnails", "lifeshot-derived"] as const;
 
@@ -13,16 +14,20 @@ export async function resolveThumbUrl(
 ): Promise<string | null> {
   if (!cacheKey) return null;
   if (/^https?:\/\//.test(cacheKey)) return cacheKey;
-  const ck = keys.signedUrl(userId, assetId, size);
+  const ck = keys.signedUrl(userId, assetId, size, cacheKey);
   const cached = await cache.get<string>(c, ck);
   if (cached) return cached;
   let url: string | null = null;
-  for (const bucket of BUCKETS) {
-    const { data } = await supa.storage.from(bucket).createSignedUrl(cacheKey, 60 * 60);
-    if (data?.signedUrl) {
-      url = data.signedUrl;
-      break;
+  const clients = [supa, getServiceClient()];
+  for (const client of clients) {
+    for (const bucket of BUCKETS) {
+      const { data } = await client.storage.from(bucket).createSignedUrl(cacheKey, 60 * 60);
+      if (data?.signedUrl) {
+        url = data.signedUrl;
+        break;
+      }
     }
+    if (url) break;
   }
   if (url) await cache.set(c, ck, url, 55 * 60, userId);
   return url;

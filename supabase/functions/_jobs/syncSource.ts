@@ -3,6 +3,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob, enqueueMany } from "../_pipeline/enqueuer.ts";
 import { takeSourceToken } from "../_pipeline/ratelimit.ts";
 import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
+import { LANES, laneFor } from "../_pipeline/lanes.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -77,7 +78,16 @@ function normalizeJobIdempotencyKey(assetId: string, modifiedTime: string | null
 }
 
 async function nudgeWorkerDrain() {
-  await wakeWorkerDrain({ batch: 1, budgetMs: 50_000 });
+  await wakeWorkerDrain({
+    batch: 1,
+    budgetMs: 50_000,
+    lanes: [LANES[laneFor("syncSource")].name],
+    background: false,
+  });
+}
+
+async function nudgeIngestDrain() {
+  await wakeWorkerDrain({ batch: 12, budgetMs: 50_000, lanes: ["ingest"], background: false });
 }
 
 function isMissingColumnError(message?: string | null, column?: string) {
@@ -376,7 +386,10 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
   } catch (e) {
     if (e instanceof ConnectorAuthError) {
       await failSyncJob(sb, source_account_id, progressJobId, "source_connector_auth_failed", e.message, { stage: "list", provider_kind: providerKind, mode });
-      await sb.from("source_accounts").update({ status: "revoked" }).eq("id", source_account_id);
+      // Do NOT flip to 'revoked' on a single auth failure — that hides the
+      // source from the Connected list. failSyncJob already records the
+      // error and sets status='error' so the UI can prompt the user to
+      // re-authorize while keeping the source visible.
       throw new Error(e.message);
     }
     if (e instanceof ConnectorRateLimitError) {
@@ -424,77 +437,45 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     hasMediaMetadata: boolean;
     hasPreviewMetadata: boolean;
     hasPreviewContent: boolean;
-    hasAiReadyMetadata: boolean;
     hasAiEnrichment: boolean;
-    hasOrganizationSignals: boolean;
     hasLocationMetadata: boolean;
-    hasVideoMetadata: boolean;
-    hasDocumentMetadata: boolean;
-    hasAudioMetadata: boolean;
   }>();
   if (existingAssetIds.length > 0) {
+    // asset_file_metadata + asset_preview_metadata were dropped in B-NUKE.
+    // filename now lives on assets directly, and thumbnail/preview presence is
+    // derived from asset_media_metadata.thumbnail_*/preview_* columns.
     const [
-      { data: fileMetadataRows, error: fileMetadataError },
+      { data: assetsMetaRows, error: assetsMetaError },
       { data: mediaMetadataRows, error: mediaMetadataError },
-      { data: previewMetadataRows, error: previewMetadataError },
-      { data: aiReadyRows, error: aiReadyError },
       { data: aiEnrichmentRows, error: aiEnrichmentError },
-      { data: organizationRows, error: organizationError },
       { data: locationRows, error: locationError },
-      { data: videoRows, error: videoError },
-      { data: documentRows, error: documentError },
-      { data: audioRows, error: audioError },
     ] = await Promise.all([
-      sb.from("asset_file_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_media_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_preview_metadata").select("asset_id, thumbnail_generated, preview_generated, thumbnail_cache_key, preview_cache_key").in("asset_id", existingAssetIds),
-      sb.from("asset_ai_ready_metadata").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("assets").select("id, filename, thumbnail_cache_key, proxy_cache_key").in("id", existingAssetIds),
+      sb.from("asset_media_metadata").select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path").in("asset_id", existingAssetIds),
       sb.from("asset_ai_enrichment").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_organization_signals").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_locations").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_video_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_document_metadata").select("asset_id").in("asset_id", existingAssetIds),
-      sb.from("asset_audio_metadata").select("asset_id").in("asset_id", existingAssetIds),
+      sb.from("asset_gps").select("asset_id").in("asset_id", existingAssetIds),
     ]);
-    if (fileMetadataError) throw new Error(`load file metadata completeness: ${fileMetadataError.message}`);
+    if (assetsMetaError) throw new Error(`load asset metadata completeness: ${assetsMetaError.message}`);
     if (mediaMetadataError) throw new Error(`load media metadata completeness: ${mediaMetadataError.message}`);
-    if (previewMetadataError) throw new Error(`load preview metadata completeness: ${previewMetadataError.message}`);
-    if (aiReadyError) throw new Error(`load ai-ready metadata completeness: ${aiReadyError.message}`);
     if (aiEnrichmentError) throw new Error(`load ai enrichment completeness: ${aiEnrichmentError.message}`);
-    if (organizationError) throw new Error(`load organization metadata completeness: ${organizationError.message}`);
     if (locationError) throw new Error(`load location metadata completeness: ${locationError.message}`);
-    if (videoError) throw new Error(`load video metadata completeness: ${videoError.message}`);
-    if (documentError) throw new Error(`load document metadata completeness: ${documentError.message}`);
-    if (audioError) throw new Error(`load audio metadata completeness: ${audioError.message}`);
 
-    const fileIds = new Set((fileMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const fileIds = new Set((assetsMetaRows ?? []).filter((row: any) => !!row.filename).map((row: any) => row.id));
     const mediaIds = new Set((mediaMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const previewContentIds = new Set((previewMetadataRows ?? []).filter((row: any) => {
-      const thumbReady = row.thumbnail_generated === true || !!row.thumbnail_cache_key;
-      const previewReady = row.preview_generated === true || !!row.preview_cache_key;
-      return thumbReady || previewReady;
+    const previewContentIds = new Set((mediaMetadataRows ?? []).filter((row: any) => {
+      return !!(row.thumbnail_url || row.thumbnail_storage_path || row.preview_url || row.preview_storage_path);
     }).map((row: any) => row.asset_id).filter(Boolean));
-    const previewIds = new Set((previewMetadataRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const aiReadyIds = new Set((aiReadyRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
+    const previewIds = previewContentIds;
     const aiEnrichmentIds = new Set((aiEnrichmentRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const organizationIds = new Set((organizationRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     const locationIds = new Set((locationRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const videoIds = new Set((videoRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const documentIds = new Set((documentRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
-    const audioIds = new Set((audioRows ?? []).map((row: any) => row.asset_id).filter(Boolean));
     for (const assetId of existingAssetIds) {
       metadataCompleteness.set(assetId, {
         hasFileMetadata: fileIds.has(assetId),
         hasMediaMetadata: mediaIds.has(assetId),
         hasPreviewMetadata: previewIds.has(assetId),
         hasPreviewContent: previewContentIds.has(assetId),
-        hasAiReadyMetadata: aiReadyIds.has(assetId),
         hasAiEnrichment: aiEnrichmentIds.has(assetId),
-        hasOrganizationSignals: organizationIds.has(assetId),
         hasLocationMetadata: locationIds.has(assetId),
-        hasVideoMetadata: videoIds.has(assetId),
-        hasDocumentMetadata: documentIds.has(assetId),
-        hasAudioMetadata: audioIds.has(assetId),
       });
     }
   }
@@ -519,8 +500,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       file_size_bytes: a.file_size_bytes ?? null,
       checksum_hash: a.checksum_hex ?? null,
       perceptual_hash: a.perceptual_hash ?? null,
-      location_lat: a.location?.lat ?? null,
-      location_lng: a.location?.lng ?? null,
       device_make: a.device_make ?? null,
       device_model: a.device_model ?? null,
       thumbnail_cache_key: a.thumbnail_url ?? null,
@@ -534,6 +513,27 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     (inserted ?? []).forEach((row: any, i: number) => {
       newAssetMap.set(newItems[i].provider_asset_id, row.id);
     });
+
+    // Provider-supplied GPS goes to canonical asset_gps store, not assets.
+    const gpsRows = newItems
+      .map((a) => {
+        const aid = newAssetMap.get(a.provider_asset_id);
+        if (!aid || a.location?.lat == null || a.location?.lng == null) return null;
+        return {
+          asset_id: aid,
+          user_id: acct.user_id,
+          gps_latitude: a.location.lat,
+          gps_longitude: a.location.lng,
+          location_source: "provider_api",
+          location_confidence: 0.9,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+    if (gpsRows.length > 0) {
+      const { error: gpsErr } = await sb.from("asset_gps")
+        .upsert(gpsRows, { onConflict: "asset_id" });
+      if (gpsErr) console.warn("syncSource: bulk asset_gps upsert failed", gpsErr.message);
+    }
   }
 
   // 3) Bulk-upsert asset_source_refs.
@@ -562,10 +562,27 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   // Collect assets needing normalizeMetadata (new OR modified).
   const needsNormalize: Array<{ assetId: string; modifiedTime: string | null }> = [];
+  // Track existing assets that should have their canonical row backfilled
+  // with fields the connector now provides (e.g. GPS unlocked by enabling
+  // include_media_info on Dropbox).
+  const existingAssetUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const existingGpsUpdates: Array<{ assetId: string; lat: number; lng: number }> = [];
   for (const a of page.items) {
     const existing = refMap.get(a.provider_asset_id);
     const assetId = existing?.asset_id ?? newAssetMap.get(a.provider_asset_id);
     if (!assetId) continue;
+    if (existing) {
+      const patch: Record<string, unknown> = {};
+      if (a.location?.lat != null && a.location?.lng != null) {
+        existingGpsUpdates.push({ assetId, lat: a.location.lat, lng: a.location.lng });
+      }
+      if (a.capture_time) patch.capture_time = a.capture_time;
+      if (a.width) patch.width = a.width;
+      if (a.height) patch.height = a.height;
+      if (a.device_make) patch.device_make = a.device_make;
+      if (a.device_model) patch.device_model = a.device_model;
+      if (Object.keys(patch).length > 0) existingAssetUpdates.push({ id: assetId, patch });
+    }
     const providerModifiedAt = a.modified_time ?? a.created_time ?? null;
     const isNew = !existing;
     const currentMetadata = metadataCompleteness.get(assetId) ?? {
@@ -573,13 +590,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasMediaMetadata: false,
       hasPreviewMetadata: false,
       hasPreviewContent: false,
-      hasAiReadyMetadata: false,
       hasAiEnrichment: false,
-      hasOrganizationSignals: false,
       hasLocationMetadata: false,
-      hasVideoMetadata: false,
-      hasDocumentMetadata: false,
-      hasAudioMetadata: false,
     };
     if (force || shouldResyncAsset({
       isNew,
@@ -590,15 +602,47 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       hasMediaMetadata: currentMetadata.hasMediaMetadata,
       hasPreviewMetadata: currentMetadata.hasPreviewMetadata,
       hasPreviewContent: currentMetadata.hasPreviewContent,
-      hasAiReadyMetadata: currentMetadata.hasAiReadyMetadata,
       hasAiEnrichment: currentMetadata.hasAiEnrichment,
-      hasOrganizationSignals: currentMetadata.hasOrganizationSignals,
       hasLocationMetadata: currentMetadata.hasLocationMetadata,
-      hasVideoMetadata: currentMetadata.hasVideoMetadata,
-      hasDocumentMetadata: currentMetadata.hasDocumentMetadata,
-      hasAudioMetadata: currentMetadata.hasAudioMetadata,
     })) {
       needsNormalize.push({ assetId, modifiedTime: providerModifiedAt });
+    }
+  }
+
+  // Apply existing-asset backfill. Only writes columns the connector now
+  // supplies; never clobbers fields with nulls. Forces normalizeMetadata for
+  // any asset that gained GPS so asset_gps + clusterPlaces re-runs.
+  if (existingAssetUpdates.length > 0) {
+    for (const u of existingAssetUpdates) {
+      const { error: upErr } = await sb.from("assets").update(u.patch).eq("id", u.id);
+      if (upErr) {
+        console.warn("syncSource: existing-asset backfill failed", { id: u.id, error: upErr.message });
+        continue;
+      }
+    }
+  }
+
+  // Backfill GPS for existing assets via asset_gps (the canonical store).
+  if (existingGpsUpdates.length > 0) {
+    const gpsRows = existingGpsUpdates.map((u) => ({
+      asset_id: u.assetId,
+      user_id: acct.user_id,
+      gps_latitude: u.lat,
+      gps_longitude: u.lng,
+      location_source: "provider_api",
+      location_confidence: 0.9,
+    }));
+    const { error: gpsErr } = await sb.from("asset_gps")
+      .upsert(gpsRows, { onConflict: "asset_id" });
+    if (gpsErr) {
+      console.warn("syncSource: existing-asset asset_gps backfill failed", gpsErr.message);
+    } else {
+      // Force normalizeMetadata for any asset that gained GPS so clusterPlaces re-runs.
+      for (const u of existingGpsUpdates) {
+        if (!needsNormalize.some((n) => n.assetId === u.assetId)) {
+          needsNormalize.push({ assetId: u.assetId, modifiedTime: null });
+        }
+      }
     }
   }
 
@@ -701,7 +745,11 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
 
   const seenTotal = prevSeen + page.items.length;
   const indexedCount = indexedTotal ?? 0;
-  const progressIndexedCount = force ? seenTotal : indexedCount;
+  // For force sync, `indexed` must reflect files actually re-processed
+  // (normalizeMetadata completions), NOT files listed during paging.
+  // Otherwise the progress bar jumps to the size of the first listing page
+  // (e.g. 0 → 136 instantly) instead of counting file-by-file.
+  const progressIndexedCount = force ? prevNormalized : indexedCount;
   const discovered = force ? Math.max(seenTotal, 1) : Math.max(seenTotal, indexedCount, 1);
   const processingTotal = Math.max(prevProcessingTotal, prevNormalized) + normalizeQueueCount;
   const awaitingProcessing = !effectiveNextCursor && processingTotal > prevNormalized;
@@ -718,7 +766,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       seen_total: seenTotal,
       deleted: prevDeleted + deleted.length,
       discovered,
-      indexed: effectiveNextCursor ? progressIndexedCount : (awaitingProcessing ? prevNormalized : progressIndexedCount),
+      indexed: effectiveNextCursor ? progressIndexedCount : progressIndexedCount,
+      listed: progressIndexedCount,
       normalized: prevNormalized,
       processing_total: processingTotal,
       ...(currentFolder ? { current_folder: currentFolder } : {}),
@@ -743,7 +792,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       throw new Error(`source_errors resolve failed: ${resolveErrorsError.message}`);
     }
     if (awaitingProcessing) {
-      await nudgeWorkerDrain();
+      await nudgeIngestDrain();
     }
   }
 

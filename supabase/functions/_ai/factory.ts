@@ -13,6 +13,7 @@ import { detectFaces } from "./face-detector.ts";
 import { reverseGeocode } from "./geocoder.ts";
 import { aiConfig } from "./config.ts";
 import { logger } from "../_pipeline/logger.ts";
+import { rekognitionConfigured } from "./rekognition.ts";
 
 let installed = false;
 
@@ -34,11 +35,34 @@ export function installOpenAIProviders(): boolean {
     },
   });
 
+  // AWS Rekognition face detector is independent of OpenAI — install it
+  // whenever AWS credentials are configured, even when OpenAI is disabled.
+  if (rekognitionConfigured()) {
+    setProviders({
+      faceDetector: {
+        detectFaces: async ({ url, userId, assetId }) => {
+          return await detectFaces({ imageUrl: url, userId, assetId });
+        },
+      },
+    });
+    logger.info("ai_providers_installed", { provider: "aws_rekognition", scope: "face_detector" });
+  }
+
   const provider = envFlag("LIFESHOT_AI_PROVIDER");
   const key = envFlag("OPENAI_API_KEY");
-  if (provider !== "openai" || !key) {
+  // Activate OpenAI providers whenever an API key is present. The
+  // LIFESHOT_AI_PROVIDER toggle is only honored to *explicitly force-disable*
+  // OpenAI (set it to "mock" / "none" / "disabled" / "off"). Any other value
+  // — including stale opaque tokens left behind from previous configs — is
+  // ignored so the OPENAI_API_KEY presence remains the source of truth.
+  // Previously requiring provider === "openai" meant deploys silently fell
+  // back to the 38-char mock captions with zero faces / objects whenever
+  // the env var carried a non-"openai" value.
+  const disabledValues = new Set(["mock", "none", "disabled", "off", "false", "0"]);
+  const disabled = provider != null && disabledValues.has(provider.trim().toLowerCase());
+  if (disabled || !key) {
     installed = true;
-    logger.info("ai_providers_installed", { provider: "nominatim_only" });
+    logger.info("ai_providers_installed", { provider: "nominatim_only", reason: disabled ? "disabled" : "no_key" });
     return false;
   }
 
@@ -66,11 +90,6 @@ export function installOpenAIProviders(): boolean {
         if (!url) return { text: "" };
         const r = await ocrImage({ imageUrl: url });
         return { text: r.text, lang: r.lang ?? undefined };
-      },
-    },
-    faceDetector: {
-      detectFaces: async ({ url }) => {
-        return await detectFaces({ imageUrl: url });
       },
     },
   });

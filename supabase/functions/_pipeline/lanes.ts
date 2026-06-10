@@ -27,7 +27,6 @@ export function laneFor(jobName: string): LaneKey {
     case "generateDerived":             return "derived";
     case "indexSearchDocument":         return "search_index";
     case "materializeTimelineWindows":  return "search_index";
-    case "embedAsset":                  return "ai_deep";
     case "enrichAI":                    return "ai_deep";
     case "ocrAsset":                    return "ai_deep";
     case "dedupGroup":                  return "search_index";

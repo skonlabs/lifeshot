@@ -108,6 +108,7 @@ export const AssetDescriptor = z.object({
 export const ViewportOut = z.object({
   items: z.array(AssetDescriptor),
   next_cursor: z.string().nullable(),
+  total_count: z.number().int(),
   cache: z.object({ hit: z.boolean(), ttl_seconds: z.number().int() }),
 });
 

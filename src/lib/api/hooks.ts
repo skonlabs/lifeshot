@@ -22,7 +22,7 @@ import type {
   TDeleteDerivedIn,
   TSourceStatus,
 } from "@core/api";
-import { ApiError, api } from "./client";
+import { ApiError, api, isTemporaryUpstreamError } from "./client";
 import { supabase } from "@/lib/supabase";
 
 
@@ -44,16 +44,22 @@ type SourceAccountsResponse = {
 };
 
 function normalizeSourceAccounts(data: SourceAccountsResponse): SourceAccountsResponse {
-  const visible = data.accounts.filter((account) => account.status === "active" || account.status === "pending");
+  const visible = data.accounts.filter((account) => account.status !== "disconnected");
   const byProvider = new Map<string, SourceAccountsResponse["accounts"][number]>();
 
   const score = (account: SourceAccountsResponse["accounts"][number]) => {
+    const statusRank = account.status === "syncing"
+      ? 3
+      : account.status === "pending"
+        ? 2
+        : account.status === "active"
+          ? 1
+          : 0;
     const selectedCount = account.selected_container_count ?? account.selected_containers?.length ?? 0;
     const hasSyncHistory = account.last_sync_at ? 1 : 0;
-    const isActive = account.status === "active" ? 1 : 0;
     const connectedAt = account.connected_at ? new Date(account.connected_at).getTime() : 0;
 
-    return [selectedCount, account.asset_count ?? 0, hasSyncHistory, isActive, connectedAt] as const;
+    return [statusRank, selectedCount, account.asset_count ?? 0, hasSyncHistory, connectedAt] as const;
   };
 
   const compareScore = (
@@ -148,6 +154,21 @@ export function useViewport(filters: Partial<TViewportIn>) {
   });
 }
 
+export function useActiveAssetCount() {
+  return useQuery({
+    queryKey: ["active-asset-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("assets")
+        .select("id", { count: "exact", head: true })
+        .eq("deleted_state", "active");
+      if (error) throw error;
+      return { count: count ?? 0 };
+    },
+    staleTime: 30_000,
+  });
+}
+
 export function useTimeline(granularity: "year" | "month" | "day" | "event" = "month") {
   return useQuery({
     queryKey: ["timeline", granularity],
@@ -236,9 +257,19 @@ export function useProviders() {
 export function useSourceAccounts() {
   return useQuery({
     queryKey: ["source-accounts"],
-    queryFn: () => api.sources<SourceAccountsResponse>("/accounts"),
+    queryFn: async () => {
+      try {
+        return await api.sources<SourceAccountsResponse>("/accounts");
+      } catch (error) {
+        if (isTemporaryUpstreamError(error)) {
+          return { accounts: [] } satisfies SourceAccountsResponse;
+        }
+        throw error;
+      }
+    },
     select: normalizeSourceAccounts,
     staleTime: 30_000,
+    retry: false,
   });
 }
 
@@ -512,7 +543,10 @@ export function useSourceStatus(accountId: string | undefined) {
       try {
         return await api.sources<TSourceStatus | null>(`/${accountId}/status`, { signal });
       } catch (error) {
-        if (error instanceof ApiError && error.code === "not_found") {
+        if (
+          (error instanceof ApiError && error.code === "not_found") ||
+          isTemporaryUpstreamError(error)
+        ) {
           return null;
         }
         throw error;
@@ -536,7 +570,7 @@ export function useSourceStatus(accountId: string | undefined) {
 export function useDuplicates() {
   return useQuery({
     queryKey: ["duplicates"],
-    queryFn: () => api.organization<{ groups: Array<{ id: string; confidence: number | null; recommended_primary_asset_id: string | null; storage_risk: string | null; status: string; members: Array<{ asset_id: string; match_type: string; score: number | null }> }> }>("/duplicates"),
+    queryFn: () => api.organization<{ groups: Array<{ id: string; confidence: number | null; canonical_asset_id: string | null; storage_risk: string | null; status: string; members: Array<{ asset_id: string; match_type: string; score: number | null }> }> }>("/duplicates"),
   });
 }
 
@@ -552,7 +586,18 @@ export function useConfirmDuplicate() {
 export function usePeople() {
   return useQuery({
     queryKey: ["people"],
-    queryFn: () => api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean }> }>("/people"),
+    queryFn: async () => {
+      try {
+        return await api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people");
+      } catch (error) {
+        if (isTemporaryUpstreamError(error)) {
+          return { people: [], face_processing_disabled: false };
+        }
+        throw error;
+      }
+    },
+    staleTime: 30_000,
+    retry: false,
   });
 }
 
@@ -567,7 +612,8 @@ export function usePerson(id: string | undefined) {
 export function usePlaces() {
   return useQuery({
     queryKey: ["places"],
-    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; lat: number | null; lng: number | null; asset_count: number }> }>("/places"),
+    queryFn: () => api.organization<{ places: Array<{ id: string; name: string; city?: string | null; country?: string | null; label?: string | null; lat: number | null; lng: number | null; asset_count: number; latest_capture_time?: string | null }> }>("/places"),
+    staleTime: 60_000,
   });
 }
 

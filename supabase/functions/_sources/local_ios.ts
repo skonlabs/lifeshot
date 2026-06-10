@@ -19,24 +19,12 @@ const CAPS: SourceCapabilities = {
  * batches and emits AssetRecord items.
  */
 export const localIosFactory = (ctx: ConnectorContext, supabase: any): SourceConnector => {
-  async function readBatch(cursor: string | null): Promise<{ items: AssetRecord[]; nextCursor: string | null }> {
-    let q = supabase.from("ingest_uploads")
-      .select("id, payload, created_at")
-      .eq("source_account_id", ctx.source_account_id)
-      .eq("status", "pending").eq("kind", "device_batch")
-      .order("created_at", { ascending: true }).limit(50);
-    if (cursor) q = q.gt("created_at", cursor);
-    const { data, error } = await q;
-    if (error) throw new ConnectorPermanentError(error.message);
-    const items: AssetRecord[] = [];
-    let last: string | null = cursor;
-    for (const row of (data ?? [])) {
-      const assets = (row.payload?.assets ?? []) as AssetRecord[];
-      items.push(...assets);
-      last = row.created_at;
-      await supabase.from("ingest_uploads").update({ status: "processed" }).eq("id", row.id);
-    }
-    return { items, nextCursor: data && data.length ? last : null };
+  // ingest_uploads was dropped in the B-NUKE consolidation. The iOS device
+  // pipeline (which inserted device-side batches into that table) is offline
+  // until a replacement is built. The connector returns no items so the rest
+  // of the syncSource path stays no-op safe.
+  async function readBatch(_cursor: string | null): Promise<{ items: AssetRecord[]; nextCursor: string | null }> {
+    return { items: [], nextCursor: null };
   }
 
   return {

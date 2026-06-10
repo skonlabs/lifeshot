@@ -133,6 +133,21 @@ describe("shouldResyncAsset", () => {
       hasLocationMetadata: true,
     })).toBe(false);
   });
+
+  it("does not treat omitted optional legacy flags as missing metadata", () => {
+    expect(shouldResyncAsset({
+      isNew: false,
+      mediaType: "photo",
+      existingSourceModifiedAt: "2026-06-01T00:00:00Z",
+      providerModifiedAt: "2026-06-01T00:00:00Z",
+      hasFileMetadata: true,
+      hasMediaMetadata: true,
+      hasPreviewMetadata: true,
+      hasPreviewContent: true,
+      hasAiEnrichment: true,
+      hasLocationMetadata: true,
+    })).toBe(false);
+  });
 });
 
 describe("isStaleSyncQueueState", () => {
@@ -196,6 +211,17 @@ describe("isStaleSyncQueueState", () => {
       queueStatus: "running",
       persistedStage: "processing",
       indexed: 136,
+      discovered: 427,
+      hasMore: false,
+      hasQueueJob: true,
+    })).toBe(false);
+  });
+
+  it("treats queue rows marked completed as non-stale terminal state", () => {
+    expect(isStaleSyncQueueState({
+      queueStatus: "completed",
+      persistedStage: "completed",
+      indexed: 427,
       discovered: 427,
       hasMore: false,
       hasQueueJob: true,

@@ -22,19 +22,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+
+    void supabase.auth.getSession().then(({ data, error }) => {
       if (!mounted) return;
+      if (error) {
+        setLoading(false);
+        return;
+      }
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      router.invalidate();
-      qc.invalidateQueries();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      setSession(nextSession);
+      setLoading(false);
+
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
+        void router.invalidate();
+      }
+
+      if (event === "SIGNED_IN" || event === "USER_UPDATED") {
+        void qc.invalidateQueries();
+      }
     });
+
     return () => {
       mounted = false;
-      sub.subscription.unsubscribe();
+      subscription.unsubscribe();
     };
   }, [router, qc]);
 
@@ -46,7 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!session,
         loading,
         signOut: async () => {
-          await supabase.auth.signOut();
+          const { error } = await supabase.auth.signOut();
+          if (error) throw error;
         },
       }}
     >

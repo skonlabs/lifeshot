@@ -1,11 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient, STORAGE_BUCKETS } from "../_pipeline/clients.ts";
 import { providers } from "./mocks.ts";
-import { installOpenAIProviders } from "../_ai/factory.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
-// Safety net: ensure real providers are active when credentials are present.
-installOpenAIProviders();
+import { detectFaces } from "../_ai/face-detector.ts";
+import { rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
  * enrichAI — runs vision analysis + object detection on an asset's derived
@@ -93,32 +92,44 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let tags: string[] = [];
   let objects: Array<{ label: string; score: number }> = [];
   let error: string | null = null;
-  let detectedFaces: Array<{ bbox: { x: number; y: number; w: number; h: number } | null; description: string; confidence: number; embedding: number[] | null }> = [];
 
+  // Caption and object detection via configured AI provider.
   try {
-    const [capResult, objResult, faceResult] = await Promise.all([
+    const [capResult, objResult] = await Promise.all([
       providers.ai.caption({ url }),
       providers.ai.detectObjects({ url }),
-      providers.faceDetector.detectFaces({ url }),
     ]);
     caption = capResult.caption;
     tags = capResult.tags ?? [];
     objects = objResult ?? [];
-    detectedFaces = faceResult ?? [];
   } catch (e: any) {
     error = String(e?.message ?? e);
     console.error("enrichAI vision failed", { asset_id, error });
-    // Record the failure but do not throw — enrichment is best-effort.
   }
 
-  // Map detected faces to the storage format. Each face has a real bbox
-  // (from GPT-4o Vision) and a 512-dim embedding of its description text.
-  const faces = detectedFaces.map((f) => ({
-    bbox: f.bbox ?? null,
-    score: f.confidence ?? null,
-    description: f.description ?? null,
-    embedding: f.embedding ?? null,
-  }));
+  // Face detection via Rekognition (consent + configuration gated).
+  // Each returned face has already passed the full quality gate inside
+  // face-detector.ts (yaw ≤ 15°, pitch ≤ 10°, sharpness ≥ 40, not occluded).
+  let faces: Array<Record<string, unknown>> = [];
+  let faceDetectionAttempted = false;
+  const { data: privacy } = await sb.from("privacy_settings")
+    .select("face_processing_enabled").eq("user_id", asset.user_id).maybeSingle();
+  if (privacy?.face_processing_enabled && rekognitionConfigured()) {
+    faceDetectionAttempted = true;
+    try {
+      const detected = await detectFaces({ imageUrl: url, userId: asset.user_id, assetId: asset_id });
+      faces = detected.map((f) => ({
+        bbox: f.bbox,
+        score: f.confidence,
+        face_id: f.face_id,
+        face_crop: f.face_crop,
+        attributes: f.attributes, // full Rekognition FaceDetail (Pose, Quality, etc.)
+      }));
+    } catch (e: any) {
+      console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
+      faceDetectionAttempted = false;
+    }
+  }
 
   await sb.from("asset_ai_enrichment").upsert({
     asset_id,
@@ -130,34 +141,43 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
 
+  // Mirror the raw Rekognition face payload onto asset_media_metadata so the
+  // UI can read everything off one row per asset.
+  if (faceDetectionAttempted && faces.length > 0) {
+    const recognition = faces.map((f: any) => f.attributes).filter(Boolean);
+    await sb.from("asset_media_metadata").upsert({
+      asset_id, user_id: asset.user_id,
+      recognition: recognition.length ? recognition : [],
+    }, { onConflict: "asset_id" });
+  }
+
+  // Mark face scan complete only when detection was actually attempted.
+  // If Rekognition was not configured or consent was denied, leave face_scanned_at
+  // null so the asset remains eligible for face scanning later.
+  if (faceDetectionAttempted) {
+    await sb.from("assets").update({ face_scanned_at: new Date().toISOString() })
+      .eq("id", asset_id);
+
+    if (faces.length > 0) {
+      await enqueueJob("clusterPeople", {
+        userId: ctx.userId,
+        payload: { user_id: asset.user_id, asset_id },
+        idempotencyKey: `cluster:${asset_id}`,
+      });
+    }
+  }
+
   if (error) {
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${error}`);
   }
 
-  // Re-index search document now that caption/tags are available.
+  // Index the search document exactly once per asset, AFTER enrichment data
+  // is available. Idempotency key matches ocrAsset's fallback so whichever
+  // job finishes first wins and the other is deduplicated by the ledger.
   await enqueueJob("indexSearchDocument", {
     userId: ctx.userId,
     payload: { asset_id },
-    idempotencyKey: `index-post-ai:${asset_id}`,
-  });
-
-  // Cluster faces into people when this asset has face signals (consent-gated
-  // inside the job). Scoped to this asset so it runs incrementally.
-  if (faces.length) {
-    await enqueueJob("clusterPeople", {
-      userId: ctx.userId,
-      payload: { user_id: asset.user_id, asset_id },
-      idempotencyKey: `people-post-ai:${asset_id}`,
-    });
-  }
-
-  // Re-detect events for this user so new assets fold into moments/stories.
-  // Use a daily bucket so events are re-computed once per day, not once ever.
-  const today = new Date().toISOString().slice(0, 10);
-  await enqueueJob("detectEvents", {
-    userId: ctx.userId,
-    payload: { user_id: asset.user_id },
-    idempotencyKey: `events:${asset.user_id}:${today}`,
+    idempotencyKey: `index:${asset_id}`,
   });
 
   return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };

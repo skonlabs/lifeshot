@@ -127,52 +127,100 @@ export async function extractExifFromBytes(bytes: Uint8Array): Promise<FullExifR
   let parsed: any = null;
   try {
     parsed = await exifr.parse(bytes, {
-      tiff: true, ifd0: true, exif: true, gps: true, interop: true,
-      xmp: true, iptc: true, icc: false, jfif: true,
+      tiff: true, ifd0: true, exif: true, gps: true,
+      xmp: true, iptc: true,
       mergeOutput: true, sanitize: true, reviveValues: true,
       translateKeys: true, translateValues: true,
     });
   } catch {
     parsed = null;
   }
+  return buildResult(parsed);
+}
+
+/** Diagnostic: returns the raw merged exifr output. */
+export async function extractExifFromBytesRaw(bytes: Uint8Array): Promise<Record<string, unknown> | null> {
+  try {
+    return await exifr.parse(bytes, {
+      tiff: true, ifd0: true, exif: true, gps: true, interop: true,
+      xmp: true, iptc: true, icc: false, jfif: true,
+      mergeOutput: true, sanitize: true, reviveValues: true,
+      translateKeys: false, translateValues: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function buildResult(parsed: any): FullExifResult {
   if (!parsed || typeof parsed !== "object") {
     return { exif: null, gps: null, media: null, xmpIptc: null };
   }
 
+  // exifr in this config sometimes returns numeric tag IDs alongside, or only,
+  // the human-readable keys. Resolve a value by checking every alias plus the
+  // numeric tag id from the EXIF/TIFF spec.
+  const pick = (...keys: Array<string | number>): unknown => {
+    for (const k of keys) {
+      const v = (parsed as Record<string | number, unknown>)[k as never];
+      if (v != null && v !== "") return v;
+    }
+    return undefined;
+  };
   const exif: ExtractedExif = {
-    cameraMake: toStr(parsed.Make),
-    cameraModel: toStr(parsed.Model),
-    exifMake: toStr(parsed.Make),
-    exifModel: toStr(parsed.Model),
-    lensMake: toStr(parsed.LensMake),
-    lensModel: toStr(parsed.LensModel ?? parsed.Lens),
-    iso: toNum(parsed.ISO ?? parsed.ISOSpeedRatings),
-    aperture: toNum(parsed.ApertureValue ?? parsed.FNumber),
-    fNumber: toNum(parsed.FNumber),
-    shutterSpeed: toStr(parsed.ShutterSpeedValue ?? parsed.ShutterSpeed ?? parsed.ExposureTime),
-    exposureTime: toStr(parsed.ExposureTime),
-    exposureMode: toStr(parsed.ExposureMode ?? parsed.ExposureProgram),
-    focalLength: toNum(parsed.FocalLength),
-    focalLength35mm: toNum(parsed.FocalLengthIn35mmFormat),
-    flash: toStr(parsed.Flash),
-    whiteBalance: toStr(parsed.WhiteBalance),
-    meteringMode: toStr(parsed.MeteringMode),
-    software: toStr(parsed.Software),
-    imageUniqueId: toStr(parsed.ImageUniqueID),
-    orientation: toStr(parsed.Orientation),
-    exifCaptureTime: toIso(parsed.DateTimeOriginal ?? parsed.CreateDate ?? parsed.DateTime),
-    exifOriginalTime: toIso(parsed.DateTimeOriginal),
-    exifDigitizedTime: toIso(parsed.CreateDate),
-    timezoneOffset: toStr(parsed.OffsetTimeOriginal ?? parsed.OffsetTime),
-    artist: toStr(parsed.Artist),
-    copyright: toStr(parsed.Copyright),
-    imageDescription: toStr(parsed.ImageDescription ?? parsed.Description),
+    cameraMake: toStr(pick("Make", 271)),
+    cameraModel: toStr(pick("Model", 272)),
+    exifMake: toStr(pick("Make", 271)),
+    exifModel: toStr(pick("Model", 272)),
+    lensMake: toStr(pick("LensMake", 42035)),
+    lensModel: toStr(pick("LensModel", "Lens", 42036)),
+    iso: toNum(pick("ISO", "ISOSpeedRatings", "PhotographicSensitivity", 34855)),
+    aperture: toNum(pick("ApertureValue", "FNumber", 33437, 37378)),
+    fNumber: toNum(pick("FNumber", 33437)),
+    shutterSpeed: toStr(pick("ShutterSpeedValue", "ShutterSpeed", "ExposureTime", 33434, 37377)),
+    exposureTime: toStr(pick("ExposureTime", 33434)),
+    exposureMode: toStr(pick("ExposureMode", "ExposureProgram", 34850, 41986)),
+    focalLength: toNum(pick("FocalLength", 37386)),
+    focalLength35mm: toNum(pick("FocalLengthIn35mmFormat", 41989)),
+    flash: toStr(pick("Flash", 37385)),
+    whiteBalance: toStr(pick("WhiteBalance", 41987)),
+    meteringMode: toStr(pick("MeteringMode", 37383)),
+    software: toStr(pick("Software", 305)),
+    imageUniqueId: toStr(pick("ImageUniqueID", 42016)),
+    orientation: toStr(pick("Orientation", 274)),
+    exifCaptureTime: toIso(pick("DateTimeOriginal", "CreateDate", "DateTime", 36867, 36868, 306)),
+    exifOriginalTime: toIso(pick("DateTimeOriginal", 36867)),
+    exifDigitizedTime: toIso(pick("CreateDate", 36868)),
+    timezoneOffset: toStr(pick("OffsetTimeOriginal", "OffsetTime", 36881, 36880)),
+    artist: toStr(pick("Artist", 315)),
+    copyright: toStr(pick("Copyright", 33432)),
+    imageDescription: toStr(pick("ImageDescription", "Description", 270)),
   };
   const hasExif = Object.values(exif).some((v) => v != null);
 
+  // exifr normally synthesizes parsed.latitude / parsed.longitude as decimals
+  // when GPS is present. Some JPEGs (or older exifr code paths) leave only
+  // the raw IFD arrays — handle both.
+  const dms = (v: unknown): number | undefined => {
+    if (Array.isArray(v) && v.length >= 3) {
+      const d = Number(v[0]), m = Number(v[1]), s = Number(v[2]);
+      if (Number.isFinite(d) && Number.isFinite(m) && Number.isFinite(s)) return d + m / 60 + s / 3600;
+    }
+    return undefined;
+  };
+  let gpsLat = toNum(parsed.latitude);
+  let gpsLng = toNum(parsed.longitude);
+  if (gpsLat == null) {
+    gpsLat = toNum(parsed.GPSLatitude) ?? dms(parsed.GPSLatitude);
+    if (gpsLat != null && /S/i.test(String(parsed.GPSLatitudeRef ?? ""))) gpsLat = -gpsLat;
+  }
+  if (gpsLng == null) {
+    gpsLng = toNum(parsed.GPSLongitude) ?? dms(parsed.GPSLongitude);
+    if (gpsLng != null && /W/i.test(String(parsed.GPSLongitudeRef ?? ""))) gpsLng = -gpsLng;
+  }
   const gps: ExtractedGps = {
-    latitude: toNum(parsed.latitude ?? parsed.GPSLatitude),
-    longitude: toNum(parsed.longitude ?? parsed.GPSLongitude),
+    latitude: gpsLat,
+    longitude: gpsLng,
     altitude: toNum(parsed.GPSAltitude),
     gpsTimestamp: toIso(parsed.GPSDateStamp ?? parsed.GPSTimeStamp),
     direction: toNum(parsed.GPSImgDirection),

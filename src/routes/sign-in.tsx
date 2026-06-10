@@ -1,22 +1,29 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { useState, type FormEvent } from "react";
 import { supabase } from "@/lib/supabase";
+import { signInWithPasswordServer } from "@/lib/auth/password-auth.functions";
 import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: (s: Record<string, unknown>) => ({
-    redirect: typeof s.redirect === "string" ? s.redirect : "/library",
+    redirect: sanitizeRedirect(typeof s.redirect === "string" ? s.redirect : "/library"),
   }),
-  beforeLoad: async ({ search }) => {
-    const { data } = await supabase.auth.getSession();
-    if (data.session) throw redirect({ to: search.redirect });
-  },
   component: SignIn,
 });
 
+function sanitizeRedirect(value: string) {
+  if (!value.startsWith("/") || value.startsWith("//")) return "/library";
+  if (value.startsWith("/sign-in") || value.startsWith("/sign-up") || value.startsWith("/callback")) {
+    return "/library";
+  }
+  return value;
+}
+
 function SignIn() {
   const navigate = useNavigate();
+  const signInWithPassword = useServerFn(signInWithPasswordServer);
   const search = Route.useSearch();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,10 +32,40 @@ function SignIn() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) { toast.error(error.message); return; }
-    navigate({ to: search.redirect });
+
+    try {
+      const session = await signInWithPassword({
+        data: { email, password },
+      });
+
+      if (!session.ok) {
+        toast.error(session.message);
+        return;
+      }
+
+      const { error } = await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      const { data: refreshed } = await supabase.auth.getSession();
+      if (!refreshed.session) {
+        toast.error("Sign in failed");
+        return;
+      }
+
+      window.location.replace(search.redirect);
+      return;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Sign in failed");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function signInWithGoogle() {

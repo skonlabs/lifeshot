@@ -12,6 +12,7 @@ export interface WorkerDrainOptions {
   batch?: number;
   budgetMs?: number;
   lanes?: string[];
+  background?: boolean;
 }
 
 export function getWorkerWakeHeaders(authHeader?: string | null): HeadersInit {
@@ -53,15 +54,24 @@ export function getWorkerDrainUrl(opts: WorkerDrainOptions = {}): string | null 
   return url.toString();
 }
 
+export function shouldFallbackToInProcessDrain(response: Pick<Response, "ok" | "status"> | null | undefined): boolean {
+  if (!response) return true;
+  return !response.ok || response.status >= 400;
+}
+
 async function fallbackHttpDrain(opts: WorkerDrainOptions): Promise<void> {
   const workerUrl = getWorkerDrainUrl(opts);
-  if (!workerUrl) return;
+  if (!workerUrl) throw new Error("worker drain url unavailable");
 
-  await fetch(workerUrl, {
+  const response = await fetch(workerUrl, {
     method: "POST",
     headers: getWorkerWakeHeaders(opts.authHeader),
     body: JSON.stringify({}),
-  }).catch(() => undefined);
+  });
+
+  if (shouldFallbackToInProcessDrain(response)) {
+    throw new Error(`worker drain http failed: ${response.status}`);
+  }
 }
 
 async function fallbackInProcessDrain(opts: WorkerDrainOptions): Promise<void> {
@@ -81,15 +91,20 @@ export async function nudgeWorkerDrain(opts: WorkerDrainOptions = {}): Promise<v
   const task = (async () => {
     const workerUrl = getWorkerDrainUrl(opts);
     if (workerUrl) {
-      await fallbackHttpDrain(opts);
-      return;
+      try {
+        await fallbackHttpDrain(opts);
+        return;
+      } catch {
+        await fallbackInProcessDrain(opts);
+        return;
+      }
     }
 
     await fallbackInProcessDrain(opts);
   })();
 
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
-  if (edgeRuntime?.waitUntil) {
+  if (opts.background !== false && edgeRuntime?.waitUntil) {
     edgeRuntime.waitUntil(task);
     return;
   }

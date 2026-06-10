@@ -216,6 +216,9 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     const kind = inferFileKind(name, mimeType);
     const mediaTypeOut: "image" | "video" | "audio" | "document" =
       kind === "photo" ? "image" : kind === "video" ? "video" : kind === "audio" ? "audio" : "document";
+    const loc = media.location && typeof media.location === "object" ? media.location : null;
+    const lat = typeof loc?.latitude === "number" ? loc.latitude : undefined;
+    const lng = typeof loc?.longitude === "number" ? loc.longitude : undefined;
     return {
       provider_asset_id: entry.id,
       media_type: mediaTypeOut,
@@ -227,6 +230,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       width: media.dimensions?.width,
       height: media.dimensions?.height,
       file_size_bytes: entry.size,
+      location: lat != null && lng != null ? { lat, lng } : undefined,
       thumbnail_url: undefined, // fetched on-demand by generateDerived
       preview_url: undefined,   // fetched on-demand by generateDerived
       provider_url: entry.path_display ?? entry.path_lower,
@@ -293,7 +297,7 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
         path: currentPath,
         recursive: true,
         include_deleted: true,
-        include_media_info: false,
+        include_media_info: true,
         limit: 1000,
       });
 
