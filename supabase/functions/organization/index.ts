@@ -452,10 +452,11 @@ app.post("/people/reset", async (c) => {
 
   // 2. Clear all face / person data for this user.
   const sb = getServiceClient();
-  await sb.from("person_faces").delete().in(
-    "person_id",
-    sb.from("people").select("id").eq("user_id", uid),
-  );
+  const { data: peopleRows } = await sb.from("people").select("id").eq("user_id", uid);
+  const personIds = (peopleRows ?? []).map((r: { id: string }) => r.id);
+  if (personIds.length > 0) {
+    await sb.from("person_faces").delete().in("person_id", personIds);
+  }
   await sb.from("people").delete()
     .eq("user_id", uid)
     .not("auto_label", "is", null);
