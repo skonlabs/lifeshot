@@ -22,6 +22,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+    const loadingTimeout = window.setTimeout(() => {
+      if (!mounted) return;
+      setLoading(false);
+    }, 4000);
 
     void supabase.auth.getSession().then(({ data, error }) => {
       if (!mounted) return;
@@ -50,6 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       mounted = false;
+      window.clearTimeout(loadingTimeout);
       subscription.unsubscribe();
     };
   }, [router, qc]);
