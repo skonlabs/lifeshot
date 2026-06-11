@@ -10,7 +10,15 @@
  *      Quality is used ONLY for cover photo selection in clusterPeople.
  *   4. Dedup at 98%: keep NEW FaceId, delete OLD stale entries so the collection
  *      stays clean across re-scans.
- *   5. Crop each face to a 200×200 JPEG data-URL for avatar display.
+ *   5. Crop each face using Rekognition Landmarks (upperJawlineLeft/Right → chinBottom)
+ *      for precise hairline-to-chin framing. Falls back to BoundingBox if landmarks absent.
+ *
+ * Landmark-based crop (the correct approach):
+ *   - Top:    min(upperJawlineLeft.Y, upperJawlineRight.Y) — the actual top of the face.
+ *             Add 70% of face height upward for hair/forehead above the jawline.
+ *   - Bottom: chinBottom.Y — the actual chin tip. Add 15% padding below.
+ *   - Sides:  upperJawlineLeft.X / upperJawlineRight.X + 35% horizontal padding each side.
+ *   Then expand to a square from the crop center — no stretching.
  *
  * Quality filtering is intentionally NOT done here — filtering at detection
  * time causes missed faces. Quality is only applied when selecting which face
@@ -35,7 +43,7 @@ export interface DetectedFace {
   embedding: number[] | null;
   face_id: string | null;
   attributes: Record<string, unknown> | null;
-  face_crop: string | null; // 200×200 JPEG base64 data-URL
+  face_crop: string | null; // JPEG base64 data-URL, landmark-cropped
 }
 
 async function resizeToFit(bytes: Uint8Array, mime: string, maxBytes: number): Promise<Uint8Array> {
@@ -65,33 +73,64 @@ async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: strin
   return { bytes, mime };
 }
 
+function findLandmark(
+  landmarks: any[],
+  type: string,
+): { x: number; y: number } | null {
+  const lm = landmarks?.find((l: any) => l.Type === type);
+  return lm ? { x: Number(lm.X), y: Number(lm.Y) } : null;
+}
+
 async function cropFace(
   bytes: Uint8Array,
   mime: string,
   bbox: { x: number; y: number; w: number; h: number },
+  landmarks?: any[] | null,
 ): Promise<string | null> {
   try {
     const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
     const W = bitmap.width, H = bitmap.height;
 
-    // Industry-standard square crop: compute a square region centered on the
-    // face midpoint, sized to include forehead+hair above and chin below.
-    // Asymmetric vertical: +50% above (hair/forehead), +30% below (chin/neck).
-    // Horizontal: +30% each side. Then expand to a square from the center so
-    // the image is never stretched — exactly how Google Photos crops avatars.
-    const faceCx = (bbox.x + bbox.w / 2) * W;
-    const faceCy = (bbox.y + bbox.h / 2) * H;
-    const faceW  = bbox.w * W;
-    const faceH  = bbox.h * H;
+    let left: number, right: number, top: number, bottom: number;
 
-    const left   = faceCx - faceW  * (0.5 + 0.30);
-    const right  = faceCx + faceW  * (0.5 + 0.30);
-    const top    = faceCy - faceH  * (0.5 + 0.50); // extra for hair
-    const bottom = faceCy + faceH  * (0.5 + 0.30);
+    // Use Rekognition Landmarks for precise hairline-to-chin crop when available.
+    // upperJawlineLeft / upperJawlineRight mark the top corners of the face shape
+    // (near the hairline). chinBottom is the actual chin tip.
+    const upperLeft  = landmarks ? findLandmark(landmarks, "upperJawlineLeft")  : null;
+    const upperRight = landmarks ? findLandmark(landmarks, "upperJawlineRight") : null;
+    const chin       = landmarks ? findLandmark(landmarks, "chinBottom")        : null;
 
-    // Expand to a square from the center of the padded region.
-    const cx = (left + right) / 2;
-    const cy = (top + bottom) / 2;
+    if (upperLeft && upperRight && chin) {
+      const faceLeft   = Math.min(upperLeft.x, upperRight.x) * W;
+      const faceRight  = Math.max(upperLeft.x, upperRight.x) * W;
+      const faceTop    = Math.min(upperLeft.y, upperRight.y) * H;
+      const faceBottom = chin.y * H;
+      const faceW      = faceRight - faceLeft;
+      const faceH      = faceBottom - faceTop;
+
+      // 35% side padding, 70% above (hair grows above the jawline reference point),
+      // 15% below chin.
+      left   = faceLeft   - faceW * 0.35;
+      right  = faceRight  + faceW * 0.35;
+      top    = faceTop    - faceH * 0.70;
+      bottom = faceBottom + faceH * 0.15;
+    } else {
+      // Fallback: BoundingBox-based crop with asymmetric padding.
+      // +50% above for hair/forehead, +30% sides and below.
+      const faceCx = (bbox.x + bbox.w / 2) * W;
+      const faceCy = (bbox.y + bbox.h / 2) * H;
+      const faceW  = bbox.w * W;
+      const faceH  = bbox.h * H;
+
+      left   = faceCx - faceW * (0.5 + 0.30);
+      right  = faceCx + faceW * (0.5 + 0.30);
+      top    = faceCy - faceH * (0.5 + 0.50);
+      bottom = faceCy + faceH * (0.5 + 0.30);
+    }
+
+    // Expand to a square from the center so the image is never stretched.
+    const cx   = (left + right) / 2;
+    const cy   = (top  + bottom) / 2;
     const half = Math.max(right - left, bottom - top) / 2;
 
     const sx = Math.max(0, cx - half);
@@ -104,7 +143,6 @@ async function cropFace(
     const size = Math.min(300, Math.round(Math.max(sw, sh)));
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d")!;
-    // sw and sh are now equal (square region) — no stretching.
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
     const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     const buf = new Uint8Array(await blob.arrayBuffer());
@@ -200,13 +238,18 @@ export async function detectFaces(opts: {
   }
 
   // Generate face crops while image bytes are still in memory.
-  return await Promise.all(deduped.map(async (r) => ({
-    bbox: r.bbox,
-    description: "",
-    confidence: r.confidence / 100,
-    embedding: null,
-    face_id: r.canonicalFaceId,  // always use the stable canonical face_id
-    attributes: r.attributes,
-    face_crop: r.bbox ? await cropFace(bytes, mime, r.bbox) : null,
-  })));
+  // Pass Landmarks from FaceDetail (attributes) so cropFace can use precise
+  // hairline/chin coordinates instead of BoundingBox guesses.
+  return await Promise.all(deduped.map(async (r) => {
+    const landmarks = (r.attributes as any)?.Landmarks ?? null;
+    return {
+      bbox: r.bbox,
+      description: "",
+      confidence: r.confidence / 100,
+      embedding: null,
+      face_id: r.canonicalFaceId,  // always use the stable canonical face_id
+      attributes: r.attributes,
+      face_crop: r.bbox ? await cropFace(bytes, mime, r.bbox, landmarks) : null,
+    };
+  }));
 }
