@@ -130,7 +130,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { data: asset, error } = await sb.from("assets")
-    .select("id, user_id, media_type, mime_type, capture_time, timezone, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
+    .select("id, user_id, media_type, mime_type, capture_time, timezone, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key")
     .eq("id", asset_id).single();
   // Asset row may not be visible yet right after sync enqueues us (commit
   // race). Treat as retryable so the runner uses short backoff, not 24h.
@@ -282,8 +282,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   // asset_ai_ready_metadata dropped — readiness derived live from
   // privacy_settings + media flags by the AI jobs themselves.
 
-  // Ensure assets.status reflects at least "normalized".
-  await sb.from("assets").update({ status: "normalized" }).eq("id", asset_id).eq("status", "ingested");
+  // assets.status was dropped in the schema cleanup — no status write needed.
 
   // ── Phase 2: Byte-level EXIF/GPS/XMP extraction ───────────────────────────
   // Isolated in its own try-catch so any connector/network error never prevents
