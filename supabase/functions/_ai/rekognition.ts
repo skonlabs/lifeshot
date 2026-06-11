@@ -10,9 +10,19 @@
  */
 
 function getCredentials() {
-  const region = Deno.env.get("AWS_REGION") ?? "us-east-1";
-  const accessKeyId = Deno.env.get("AWS_ACCESS_KEY_ID") ?? "";
-  const secretAccessKey = Deno.env.get("AWS_SECRET_ACCESS_KEY") ?? "";
+  // Prefer AWS_REKOGNITION_* (project-scoped names), fall back to bare AWS_*.
+  const region =
+    Deno.env.get("AWS_REKOGNITION_REGION") ??
+    Deno.env.get("AWS_REGION") ??
+    "us-east-1";
+  const accessKeyId =
+    Deno.env.get("AWS_REKOGNITION_ACCESS_KEY_ID") ??
+    Deno.env.get("AWS_ACCESS_KEY_ID") ??
+    "";
+  const secretAccessKey =
+    Deno.env.get("AWS_REKOGNITION_SECRET_ACCESS_KEY") ??
+    Deno.env.get("AWS_SECRET_ACCESS_KEY") ??
+    "";
   return { region, accessKeyId, secretAccessKey };
 }
 
