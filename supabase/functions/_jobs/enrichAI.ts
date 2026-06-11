@@ -7,17 +7,22 @@ import { detectFaces } from "../_ai/face-detector.ts";
 import { rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
- * enrichAI — runs vision analysis + object detection on an asset's derived
- * preview/thumbnail and persists the result to asset_ai_enrichment.
+ * enrichAI — runs vision analysis + face detection on an asset's derived
+ * preview/thumbnail and persists the result to:
+ *
+ *   asset_ai_enrichment  — caption, tags, objects, faces (summary), rekognition_response
+ *   asset_faces          — one row per detected face, with full FaceDetail attributes
+ *
+ * Face pipeline:
+ *   All detected faces are written to asset_faces regardless of quality.
+ *   clusterPeople then reads asset_faces and applies its own quality gate
+ *   (FaceOccluded=false AND confidence≥90%) before writing to people.
  *
  * Requires:
  *  - User ai_processing_enabled consent (skips gracefully when false)
  *  - A signed preview/thumb URL (from asset_derivatives or cache key)
  *  - OPENAI_API_KEY + LIFESHOT_AI_PROVIDER=openai for real inference;
  *    falls back to mock providers otherwise.
- *
- * After writing AI enrichment, re-enqueues indexSearchDocument so the
- * new caption/tags are incorporated into the FTS index immediately.
  */
 export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -42,10 +47,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   if (!asset) throw new Error("not found: asset");
 
   // Resolve a publicly-accessible URL for the asset image.
-  // proxy_cache_key / thumbnail_cache_key may be either an https:// URL (from
-  // the source provider, before generateDerived uploads to storage) or a
-  // storage path (after generateDerived runs). We must create a signed URL for
-  // the latter — passing a bare storage path to the AI provider will fail.
   let url: string | null = null;
 
   const rawKey = asset.proxy_cache_key ?? asset.thumbnail_cache_key ?? null;
@@ -54,7 +55,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   }
 
   if (!url) {
-    // Try stored derivatives (preview first, then thumb).
     for (const kind of ["preview", "thumb"]) {
       const { data: deriv } = await sb
         .from("asset_derivatives")
@@ -71,7 +71,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // If keys exist but aren't http URLs, try signing the storage path directly.
   if (!url && rawKey && !/^https?:\/\//.test(rawKey)) {
     const { data: signed } = await sb.storage
       .from(STORAGE_BUCKETS.derived)
@@ -93,7 +92,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   let objects: Array<{ label: string; score: number }> = [];
   let error: string | null = null;
 
-  // Caption and object detection via configured AI provider.
   try {
     const [capResult, objResult] = await Promise.all([
       providers.ai.caption({ url }),
@@ -107,30 +105,51 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     console.error("enrichAI vision failed", { asset_id, error });
   }
 
-  // Face detection via Rekognition IndexFaces (consent + configuration gated).
-  // All detected faces are returned (qualityFilter: NONE) — attributes include
-  // Pose, Quality, FaceOccluded which clusterPeople uses to pick cover photos.
+  // ── Face detection ─────────────────────────────────────────────────────────
+  // All detected faces are stored in asset_faces (no quality filter here).
+  // clusterPeople applies the quality gate (FaceOccluded=false, confidence≥90%)
+  // before writing to the people table.
   let faces: Array<Record<string, unknown>> = [];
   let faceDetectionAttempted = false;
   const { data: privacy } = await sb.from("privacy_settings")
     .select("face_processing_enabled").eq("user_id", asset.user_id).maybeSingle();
+
   if (privacy?.face_processing_enabled && rekognitionConfigured()) {
     faceDetectionAttempted = true;
     try {
       const detected = await detectFaces({ imageUrl: url, userId: asset.user_id, assetId: asset_id });
       faces = detected.map((f) => ({
-        bbox: f.bbox,
-        score: f.confidence,
-        face_id: f.face_id,
-        face_crop: f.face_crop,
-        attributes: f.attributes, // full Rekognition FaceDetail (Pose, Quality, etc.)
+        bbox:       f.bbox,
+        score:      f.confidence,   // 0-1
+        face_id:    f.face_id,
+        face_crop:  f.face_crop,
+        attributes: f.attributes,   // full FaceDetail (Pose, Quality, Landmarks, Emotions, etc.)
       }));
+
+      // Write ALL detected faces to asset_faces with no quality filter.
+      // Delete stale rows from a prior scan first so re-scans are idempotent.
+      await sb.from("asset_faces").delete().eq("asset_id", asset_id);
+      if (detected.length > 0) {
+        await sb.from("asset_faces").insert(
+          detected.map((f) => ({
+            asset_id,
+            user_id:    asset.user_id,
+            face_id:    f.face_id ?? null,
+            bbox:       f.bbox ?? null,
+            confidence: f.confidence ?? null,   // 0-1
+            face_crop:  f.face_crop ?? null,
+            attributes: f.attributes ?? null,   // full Rekognition FaceDetail JSON
+          })),
+        );
+      }
     } catch (e: any) {
       console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
       faceDetectionAttempted = false;
     }
   }
 
+  // Persist AI enrichment. rekognition_response stores the full face attributes
+  // array so the raw Rekognition data is always available from this table.
   await sb.from("asset_ai_enrichment").upsert({
     asset_id,
     user_id: asset.user_id,
@@ -138,31 +157,16 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     tags,
     objects,
     faces,
+    rekognition_response: faceDetectionAttempted && faces.length > 0 ? faces : null,
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
 
-  // Mirror the raw Rekognition face payload onto asset_media_metadata so the
-  // UI can read everything off one row per asset.
-  if (faceDetectionAttempted && faces.length > 0) {
-    const recognition = faces.map((f: any) => f.attributes).filter(Boolean);
-    await sb.from("asset_media_metadata").upsert({
-      asset_id, user_id: asset.user_id,
-      recognition: recognition.length ? recognition : [],
-    }, { onConflict: "asset_id" });
-  }
-
   // Mark face scan complete only when detection was actually attempted.
-  // If Rekognition was not configured or consent was denied, leave face_scanned_at
-  // null so the asset remains eligible for face scanning later.
   if (faceDetectionAttempted) {
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() })
       .eq("id", asset_id);
 
     if (faces.length > 0) {
-      // Enqueue per-asset so every asset's faces get clustered immediately after
-      // detection. SearchFaces handles identity matching against the collection,
-      // so concurrent per-asset jobs are safe — each one looks up existing people
-      // by face_id match rather than relying on a shared in-memory counter.
       await enqueueJob("clusterPeople", {
         userId: ctx.userId,
         payload: { user_id: asset.user_id, asset_id },
@@ -175,14 +179,18 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${error}`);
   }
 
-  // Index the search document exactly once per asset, AFTER enrichment data
-  // is available. Idempotency key matches ocrAsset's fallback so whichever
-  // job finishes first wins and the other is deduplicated by the ledger.
   await enqueueJob("indexSearchDocument", {
     userId: ctx.userId,
     payload: { asset_id },
     idempotencyKey: `index:${asset_id}`,
   });
 
-  return { asset_id, caption_len: caption.length, tags: tags.length, objects: objects.length, faces: faces.length, error };
+  return {
+    asset_id,
+    caption_len: caption.length,
+    tags: tags.length,
+    objects: objects.length,
+    faces: faces.length,
+    error,
+  };
 }

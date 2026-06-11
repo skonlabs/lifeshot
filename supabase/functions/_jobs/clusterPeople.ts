@@ -5,28 +5,31 @@ import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/
 
 /**
  * Score a face for cover selection. Higher = better avatar quality.
- * Prioritises: frontal pose > sharpness > non-occluded.
- * All faces are clustered regardless of score — score only controls which
- * face is chosen as the person's display avatar.
+ * Prioritises: frontal pose > sharpness > non-occluded > bright.
+ * All qualifying faces are clustered; score only controls which face
+ * is chosen as the person's display avatar.
  */
-function coverScore(entry: { attributes: any; confidence: number }): number {
-  const a = entry.attributes;
-  if (!a) return 0;
-  const pose = a.Pose ?? {};
-  const quality = a.Quality ?? {};
-  const occluded = a.FaceOccluded?.Value === true || a.FaceOccluded?.Value === "true";
-  const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
-  const pitch = Math.abs(Number(pose.Pitch ?? 90));
-  const sharp = Number(quality.Sharpness  ?? 0);
+function coverScore(attributes: any): number {
+  if (!attributes) return 0;
+  const pose    = attributes.Pose    ?? {};
+  const quality = attributes.Quality ?? {};
+  // FaceOccluded already filtered out before reaching this function.
+  const yaw    = Math.abs(Number(pose.Yaw   ?? 90));
+  const pitch  = Math.abs(Number(pose.Pitch ?? 90));
+  const sharp  = Number(quality.Sharpness  ?? 0);
   const bright = Number(quality.Brightness ?? 0);
-  if (occluded) return 0;
+  // EyeDirection: prefer direct gaze (low yaw/pitch on eyes)
+  const eyeYaw   = Math.abs(Number((attributes.EyeDirection?.Yaw   ?? 90)));
+  const eyePitch = Math.abs(Number((attributes.EyeDirection?.Pitch ?? 90)));
+  const gazeScore = Math.max(0, (1 - eyeYaw / 90)) * Math.max(0, (1 - eyePitch / 90));
+
   const frontality = Math.max(0, (1 - yaw / 90)) * Math.max(0, (1 - pitch / 90));
-  return frontality * 0.6 + (sharp / 100) * 0.3 + (bright / 100) * 0.1;
+  return frontality * 0.50 + (sharp / 100) * 0.25 + (bright / 100) * 0.10 + gazeScore * 0.15;
 }
 
-const PRIMARY_THRESHOLD = 75;
+const PRIMARY_THRESHOLD  = 75;
 const FALLBACK_THRESHOLD = 65;
-// Only faces scoring >= this become cover avatars (blocks side profiles).
+// Only faces scoring >= this are used as cover avatars.
 const MIN_COVER_SCORE = 0.30;
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
@@ -48,14 +51,19 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "rekognition_not_configured", clustered: 0 };
   }
 
-  // Fetch enrichment rows with face detections.
-  let enrichQuery = sb
-    .from("asset_ai_enrichment")
-    .select("asset_id, faces")
-    .eq("user_id", uid);
-  if (asset_id) enrichQuery = enrichQuery.eq("asset_id", asset_id);
+  // ── Read from asset_faces (canonical source of detected faces) ─────────────
+  // Quality gate applied here:
+  //   • FaceOccluded = false  (occluded faces are not reliable for identity)
+  //   • confidence  ≥ 0.90   (90% detection confidence)
+  // Only faces passing both gates are clustered into the people table.
+  let facesQuery = sb
+    .from("asset_faces")
+    .select("asset_id, face_id, bbox, confidence, face_crop, attributes")
+    .eq("user_id", uid)
+    .not("face_id", "is", null);
+  if (asset_id) facesQuery = facesQuery.eq("asset_id", asset_id);
 
-  const { data: enrichRows, error } = await enrichQuery;
+  const { data: faceRows, error } = await facesQuery;
   if (error) throw new Error(`clusterPeople fetch: ${error.message}`);
 
   interface FaceEntry {
@@ -68,31 +76,32 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const faceEntries: FaceEntry[] = [];
-  for (const row of enrichRows ?? []) {
-    const faces = Array.isArray(row.faces) ? row.faces : [];
-    for (const f of faces) {
-      if (f.face_id) {
-        faceEntries.push({
-          asset_id: row.asset_id,
-          face_id: f.face_id,
-          bbox: f.bbox ?? null,
-          confidence: f.score ?? f.confidence ?? 0.5,
-          face_crop: f.face_crop ?? null,
-          attributes: f.attributes ?? null,
-        });
-      }
-    }
+  for (const f of faceRows ?? []) {
+    if (!f.face_id) continue;
+
+    // Quality gate: skip occluded faces and low-confidence detections.
+    const occluded   = (f.attributes as any)?.FaceOccluded?.Value === true;
+    const confidence = Number(f.confidence ?? 0);
+    if (occluded || confidence < 0.90) continue;
+
+    faceEntries.push({
+      asset_id:   f.asset_id,
+      face_id:    f.face_id,
+      bbox:       f.bbox ?? null,
+      confidence,
+      face_crop:  f.face_crop ?? null,
+      attributes: f.attributes ?? null,
+    });
   }
 
   if (faceEntries.length === 0) {
-    return { user_id: uid, people: 0, clustered: 0, reason: "no_faces_with_face_id" };
+    return { user_id: uid, people: 0, clustered: 0, reason: "no_qualifying_faces" };
   }
 
   const collectionId = collectionIdForUser(uid);
 
-  // Load existing people — use rekognition_face_ids (array on people row) as
-  // the canonical lookup. This avoids depending on the person_faces table which
-  // is now secondary/legacy.
+  // Load existing people — rekognition_face_ids (array on people row) is the
+  // canonical lookup so we can match new faces to existing persons.
   const { data: existingPeople } = await sb
     .from("people")
     .select("id, auto_label, display_name, rekognition_face_ids")
@@ -110,7 +119,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   let personCounter = existingPeople?.length ?? 0;
-  // personFaceMap accumulates all faces assigned to each person this run.
   const personFaceMap = new Map<string, FaceEntry[]>();
 
   for (const entry of faceEntries) {
@@ -157,61 +165,47 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     // Register face_id → personId so subsequent faces in this run can match it.
     faceIdToPersonId.set(entry.face_id, personId);
 
-    // Write to person_faces immediately — the organization endpoint reads this
-    // table for asset_count. Upsert on (person_id, asset_id) is safe under concurrency.
-    const { error: pfErr } = await sb.from("person_faces").upsert({
-      person_id: personId,
-      asset_id: entry.asset_id,
-      rekognition_face_id: entry.face_id,
-      bbox: entry.bbox,
-      confidence: entry.confidence,
-      face_crop: entry.face_crop,
-    }, { onConflict: "person_id,asset_id" });
-    if (pfErr) console.error("clusterPeople: person_faces upsert failed", pfErr.message);
-
-    // Accumulate face entry for this person.
     const arr = personFaceMap.get(personId) ?? [];
     arr.push(entry);
     personFaceMap.set(personId, arr);
   }
 
-  // Persist results: update people.faces (canonical), people.face_count,
-  // people.rekognition_face_ids, and cover fields.
-  // people.faces is what the organization endpoint reads for asset_count.
+  // ── Persist to people table ────────────────────────────────────────────────
+  // people.faces JSONB stores all qualifying face occurrences for this person.
+  // This is the source of truth the People page reads — person_faces table no
+  // longer exists.
   let peopleUpdated = 0;
   for (const [pid, entries] of personFaceMap) {
-    // Build the best cover face (highest score that meets minimum quality).
     let bestCover: FaceEntry | null = null;
     let bestScore = -1;
     for (const e of entries) {
       if (!e.face_crop) continue;
-      const s = coverScore({ attributes: e.attributes, confidence: e.confidence });
+      const s = coverScore(e.attributes);
       if (s >= MIN_COVER_SCORE && s > bestScore) {
         bestScore = s;
         bestCover = e;
       }
     }
 
-    // Build people.faces JSONB array (format expected by organization endpoint).
     const facesJsonb = entries.map((e) => ({
-      asset_id: e.asset_id,
-      bbox: e.bbox,
-      confidence: e.confidence,
-      face_crop: e.face_crop,
+      asset_id:            e.asset_id,
+      bbox:                e.bbox,
+      confidence:          e.confidence,
+      face_crop:           e.face_crop,
       rekognition_face_id: e.face_id,
     }));
 
     const faceIds = [...new Set(entries.map((e) => e.face_id).filter(Boolean))];
 
     const update: Record<string, unknown> = {
-      faces: facesJsonb,
-      face_count: facesJsonb.length,
+      faces:                facesJsonb,
+      face_count:           facesJsonb.length,
       rekognition_face_ids: faceIds,
     };
     if (bestCover) {
-      update.cover_face_crop  = bestCover.face_crop;
-      update.cover_asset_id   = bestCover.asset_id;
-      update.cover_bbox       = bestCover.bbox;
+      update.cover_face_crop = bestCover.face_crop;
+      update.cover_asset_id  = bestCover.asset_id;
+      update.cover_bbox      = bestCover.bbox;
     }
 
     const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
@@ -222,11 +216,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // Merge pass: find duplicate people created by parallel runs or prior
-  // fragmented scans. For every person updated this run, search their face IDs
-  // against the collection and merge any existing person that matches at
-  // PRIMARY_THRESHOLD. This is the industry-standard "consolidation pass"
-  // used by Google Photos / Apple Photos after initial clustering.
+  // ── Merge pass ────────────────────────────────────────────────────────────
+  // Consolidate duplicate person records created by parallel runs or prior
+  // fragmented scans.
   let peopleMerged = 0;
   const { data: freshPeople } = await sb
     .from("people")
@@ -234,22 +226,19 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     .eq("user_id", uid)
     .like("auto_label", "auto:person:%");
 
-  // Build id→person map for quick lookup.
-  const personById = new Map<string, typeof freshPeople extends (infer T)[] | null ? T : never>();
-  for (const p of freshPeople ?? []) personById.set((p as any).id, p as any);
+  const personById = new Map<string, any>();
+  for (const p of freshPeople ?? []) personById.set((p as any).id, p);
 
-  // Track which person IDs have already been merged (absorbed) into another.
   const absorbed = new Set<string>();
 
   for (const [pid] of personFaceMap) {
     if (absorbed.has(pid)) continue;
     const person = personById.get(pid);
     if (!person) continue;
-    const faceIds: string[] = Array.isArray((person as any).rekognition_face_ids)
-      ? (person as any).rekognition_face_ids : [];
+    const faceIds: string[] = Array.isArray(person.rekognition_face_ids)
+      ? person.rekognition_face_ids : [];
     if (faceIds.length === 0) continue;
 
-    // Search with first face_id to find matches across the collection.
     let matchingPersonId: string | null = null;
     try {
       const matches = await searchFaces({
@@ -270,28 +259,24 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
     if (!matchingPersonId) continue;
 
-    // Merge matchingPersonId into pid (keep pid, absorb the other).
     const other = personById.get(matchingPersonId);
     if (!other) continue;
 
-    const otherFaces: any[] = Array.isArray((other as any).faces) ? (other as any).faces : [];
-    const otherFaceIds: string[] = Array.isArray((other as any).rekognition_face_ids)
-      ? (other as any).rekognition_face_ids : [];
-    const myFaces: any[] = Array.isArray((person as any).faces) ? (person as any).faces : [];
-    const myFaceIds: string[] = Array.isArray((person as any).rekognition_face_ids)
-      ? (person as any).rekognition_face_ids : [];
+    const otherFaces: any[] = Array.isArray(other.faces) ? other.faces : [];
+    const otherFaceIds: string[] = Array.isArray(other.rekognition_face_ids)
+      ? other.rekognition_face_ids : [];
+    const myFaces: any[] = Array.isArray(person.faces) ? person.faces : [];
+    const myFaceIds: string[] = Array.isArray(person.rekognition_face_ids)
+      ? person.rekognition_face_ids : [];
 
-    const mergedFaces = [...myFaces, ...otherFaces];
+    const mergedFaces   = [...myFaces, ...otherFaces];
     const mergedFaceIds = [...new Set([...myFaceIds, ...otherFaceIds])];
 
-    // Pick best cover from merged faces.
-    let mergedBestCover = (person as any).cover_face_crop ? person : null;
-    let mergedBestScore = mergedBestCover
-      ? coverScore({ attributes: null, confidence: (person as any).cover_face_crop ? 1 : 0 })
-      : -1;
+    let mergedBestCover: any = person.cover_face_crop ? person : null;
+    let mergedBestScore = mergedBestCover ? coverScore(null) : -1;
     for (const mface of mergedFaces) {
       if (!mface.face_crop) continue;
-      const s = coverScore({ attributes: mface.attributes ?? null, confidence: mface.confidence ?? 0.5 });
+      const s = coverScore(mface.attributes ?? null);
       if (s >= MIN_COVER_SCORE && s > mergedBestScore) {
         mergedBestScore = s;
         mergedBestCover = mface;
@@ -299,14 +284,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
 
     const mergeUpdate: Record<string, unknown> = {
-      faces: mergedFaces,
-      face_count: mergedFaces.length,
+      faces:                mergedFaces,
+      face_count:           mergedFaces.length,
       rekognition_face_ids: mergedFaceIds,
     };
-    if (mergedBestCover && (mergedBestCover as any).face_crop) {
-      mergeUpdate.cover_face_crop = (mergedBestCover as any).face_crop;
-      mergeUpdate.cover_asset_id  = (mergedBestCover as any).asset_id ?? (mergedBestCover as any).cover_asset_id;
-      mergeUpdate.cover_bbox      = (mergedBestCover as any).bbox ?? (mergedBestCover as any).cover_bbox;
+    if (mergedBestCover?.face_crop) {
+      mergeUpdate.cover_face_crop = mergedBestCover.face_crop;
+      mergeUpdate.cover_asset_id  = mergedBestCover.asset_id ?? mergedBestCover.cover_asset_id;
+      mergeUpdate.cover_bbox      = mergedBestCover.bbox ?? mergedBestCover.cover_bbox;
     }
 
     const { error: mergeErr } = await sb.from("people").update(mergeUpdate).eq("id", pid);
