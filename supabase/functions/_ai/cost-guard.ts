@@ -92,9 +92,7 @@ export async function logUsage(rec: UsageRecord): Promise<void> {
   }
 }
 
-/** Best vision model the user's tier + remaining budget can afford. */
-export async function pickVisionModel(userId?: string | null, tier?: Tier): Promise<string> {
-  const t = tier ?? (await tierForUser(userId));
-  if (t === "premium") return aiConfig.visionModelHigh;
+/** Vision model — single tier (gpt-4o-mini). */
+export async function pickVisionModel(_userId?: string | null, _tier?: Tier): Promise<string> {
   return aiConfig.visionModel;
 }
