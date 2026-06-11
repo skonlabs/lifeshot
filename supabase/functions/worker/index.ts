@@ -31,6 +31,107 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.json({ ok: true, service: "lifeshot-worker" }));
 
+/** TEMP: diagnostic snapshot for sync/enrichment stalls. Remove after debug. */
+app.get("/debug/stats", async (c) => {
+  const sb = serviceClient();
+  const url = new URL(c.req.url);
+  const uid = url.searchParams.get("user_id");
+
+  const out: Record<string, unknown> = {};
+
+  // Job queue breakdown by name + status.
+  const { data: jobs } = await sb.from("job_queue")
+    .select("name, status, attempts, max_attempts, dead_letter, last_error, next_attempt_at, locked_by, locked_at, payload")
+    .order("created_at", { ascending: false })
+    .limit(2000);
+  const byStatus: Record<string, number> = {};
+  const byNameStatus: Record<string, number> = {};
+  const errors: Record<string, number> = {};
+  const sampleErrors: Array<{ name: string; status: string; attempts: number; err: string }> = [];
+  for (const j of jobs ?? []) {
+    byStatus[j.status] = (byStatus[j.status] ?? 0) + 1;
+    const k = `${j.name}:${j.status}`;
+    byNameStatus[k] = (byNameStatus[k] ?? 0) + 1;
+    if (j.last_error) {
+      const sig = String(j.last_error).slice(0, 120);
+      errors[sig] = (errors[sig] ?? 0) + 1;
+      if (sampleErrors.length < 20) sampleErrors.push({ name: j.name, status: j.status, attempts: j.attempts, err: String(j.last_error).slice(0, 400) });
+    }
+  }
+  out.jobs_total = jobs?.length ?? 0;
+  out.jobs_by_status = byStatus;
+  out.jobs_by_name_status = byNameStatus;
+  out.error_signatures = errors;
+  out.sample_errors = sampleErrors;
+
+  // Locked / running jobs (potential stuck).
+  const { data: locked } = await sb.from("job_queue")
+    .select("id, name, status, locked_by, locked_at, attempts, payload")
+    .not("locked_at", "is", null)
+    .order("locked_at", { ascending: true }).limit(20);
+  out.locked_sample = locked ?? [];
+
+  // Enrichment + faces + people counts.
+  let enrichQ = sb.from("asset_ai_enrichment").select("asset_id, faces, processed_at", { count: "exact" });
+  if (uid) enrichQ = enrichQ.eq("user_id", uid);
+  const { count: enrichCount } = await enrichQ.range(0, 0);
+  out.asset_ai_enrichment_count = enrichCount ?? 0;
+
+  const { data: enrichRows } = await (uid
+    ? sb.from("asset_ai_enrichment").select("asset_id, faces").eq("user_id", uid).limit(2000)
+    : sb.from("asset_ai_enrichment").select("asset_id, faces").limit(2000));
+  let withFaces = 0, withoutFaces = 0;
+  for (const r of enrichRows ?? []) {
+    const f = (r as any).faces;
+    if (Array.isArray(f) && f.length > 0) withFaces++; else withoutFaces++;
+  }
+  out.enrichment_with_faces = withFaces;
+  out.enrichment_without_faces = withoutFaces;
+
+  let facesQ = sb.from("asset_faces").select("asset_id", { count: "exact", head: true });
+  if (uid) facesQ = facesQ.eq("user_id", uid);
+  const { count: faceCount } = await facesQ;
+  out.asset_faces_count = faceCount ?? 0;
+
+  let peopleQ = sb.from("people").select("id, display_name, auto_label, cover_face_crop, cover_asset_id, face_count, faces");
+  if (uid) peopleQ = peopleQ.eq("user_id", uid);
+  const { data: people } = await peopleQ.limit(500);
+  let pWithFaces = 0, pWithCover = 0, pWithCoverCrop = 0;
+  const peopleSample: Array<Record<string, unknown>> = [];
+  for (const p of people ?? []) {
+    const arr = Array.isArray((p as any).faces) ? (p as any).faces : [];
+    if (arr.length > 0) pWithFaces++;
+    if ((p as any).cover_asset_id) pWithCover++;
+    if ((p as any).cover_face_crop) pWithCoverCrop++;
+    if (peopleSample.length < 10) {
+      peopleSample.push({
+        id: (p as any).id,
+        display_name: (p as any).display_name,
+        auto_label: (p as any).auto_label,
+        has_cover_face_crop: !!(p as any).cover_face_crop,
+        cover_asset_id: (p as any).cover_asset_id,
+        face_count: (p as any).face_count,
+        faces_len: arr.length,
+      });
+    }
+  }
+  out.people_total = people?.length ?? 0;
+  out.people_with_faces_jsonb = pWithFaces;
+  out.people_with_cover_asset = pWithCover;
+  out.people_with_cover_face_crop = pWithCoverCrop;
+  out.people_sample = peopleSample;
+
+  // privacy flag per user if asked.
+  if (uid) {
+    const { data: pr } = await sb.from("privacy_settings").select("face_processing_enabled").eq("user_id", uid).maybeSingle();
+    out.privacy = pr ?? null;
+    const { data: srcs } = await sb.from("source_accounts").select("id, provider, status").eq("user_id", uid);
+    out.sources = srcs ?? [];
+  }
+
+  return c.json(out);
+});
+
 /** Drain pending jobs. Called by pg_cron every 15s and as a nudge from
  * /sources/.../sync. Budget is generous (50s of the 60s Edge Function limit)
  * so a single Dropbox list_folder call (~20s timeout) plus DB writes fits
