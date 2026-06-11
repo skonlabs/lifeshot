@@ -11,7 +11,6 @@ export interface AIConfig {
   embeddingModel: string;
   embeddingDim: number;
   visionModel: string;
-  visionModelHigh: string;
   parserModel: string;
   explainModel: string;
   summaryModel: string;
@@ -50,7 +49,6 @@ export const aiConfig: AIConfig = {
   embeddingModel: env("AI_EMBED_MODEL", "text-embedding-3-small")!,
   embeddingDim:   Number(env("AI_EMBED_DIM", "1536")),
   visionModel:    env("AI_VISION_MODEL", "gpt-4o-mini")!,
-  visionModelHigh:env("AI_VISION_MODEL_HIGH", "gpt-4o")!,
   parserModel:    env("AI_PARSER_MODEL", "gpt-4o-mini")!,
   explainModel:   env("AI_EXPLAIN_MODEL", "gpt-4o-mini")!,
   summaryModel:   env("AI_SUMMARY_MODEL", "gpt-4o-mini")!,
@@ -70,7 +68,6 @@ export const aiConfig: AIConfig = {
   // Public pricing snapshot (USD/1K tokens). Update via env override as prices change.
   costPerKToken: {
     "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
-    "gpt-4o":      { input: 0.0025,  output: 0.01   },
   },
   costPerKTokenEmbed: {
     "text-embedding-3-small": 0.00002,
