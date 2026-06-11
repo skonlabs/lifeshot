@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Aperture } from "lucide-react";
 
 export const Route = createFileRoute("/sign-in")({
-  validateSearch: (s: Record<string, unknown>) => ({
+  validateSearch: (s: Record<string, unknown>): { redirect?: string } => ({
     redirect: sanitizeRedirect(typeof s.redirect === "string" ? s.redirect : "/library"),
   }),
   component: SignIn,
@@ -59,7 +59,7 @@ function SignIn() {
         return;
       }
 
-      window.location.replace(search.redirect);
+      window.location.replace(search.redirect ?? "/library");
       return;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Sign in failed");

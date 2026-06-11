@@ -5,7 +5,8 @@ import { AssetCell } from "@/components/app/AssetCell";
 import { Search as SearchIcon, Sparkles, X } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/search")({
-  validateSearch: (s: Record<string, unknown>) => ({ q: typeof s.q === "string" ? s.q : "" }),
+  validateSearch: (s: Record<string, unknown>): { q?: string } =>
+    ({ q: typeof s.q === "string" ? s.q : "" }),
   component: SearchPage,
 });
 
