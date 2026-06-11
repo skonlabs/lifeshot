@@ -176,6 +176,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // longer exists.
   let peopleUpdated = 0;
   for (const [pid, entries] of personFaceMap) {
+    // Pick the best cover: prefer a face with a baked face_crop and a strong
+    // quality score; otherwise fall back to the highest-confidence face with
+    // a usable bbox so the People page can render a thumbnail+bbox crop.
     let bestCover: FaceEntry | null = null;
     let bestScore = -1;
     for (const e of entries) {
@@ -184,6 +187,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       if (s >= MIN_COVER_SCORE && s > bestScore) {
         bestScore = s;
         bestCover = e;
+      }
+    }
+    let bboxFallback: FaceEntry | null = null;
+    if (!bestCover) {
+      for (const e of entries) {
+        if (!e.bbox) continue;
+        if (!bboxFallback || e.confidence > bboxFallback.confidence) bboxFallback = e;
       }
     }
 
@@ -206,6 +216,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       update.cover_face_crop = bestCover.face_crop;
       update.cover_asset_id  = bestCover.asset_id;
       update.cover_bbox      = bestCover.bbox;
+    } else if (bboxFallback) {
+      // No face_crop available (e.g. cropFace failed in Deno); set the asset+bbox
+      // so the People page falls back to a CSS thumbnail crop.
+      update.cover_asset_id = bboxFallback.asset_id;
+      update.cover_bbox     = bboxFallback.bbox;
     }
 
     const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
