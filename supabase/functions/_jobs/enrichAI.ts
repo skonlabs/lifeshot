@@ -172,6 +172,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   });
 
   if (visionError) {
+    // Permanent vision failures (unsupported/corrupt image formats, persistent
+    // circuit-breaker trips) must NOT spin forever — mark non-retryable.
+    const permanent = /invalid_image_format|unsupported image|image_parse_error|invalid image|circuit breaker open/i.test(visionError);
+    if (permanent) {
+      console.warn("enrichAI: permanent vision failure — not retrying", { asset_id, visionError });
+      return { asset_id, caption_len: 0, tags: 0, objects: 0, faces: faces.length, vision_skipped: visionError.slice(0, 200) };
+    }
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${visionError}`);
   }
 
