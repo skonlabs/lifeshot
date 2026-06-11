@@ -113,9 +113,10 @@ app.get("/timeline", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   const { granularity } = parseQuery(c, TimelineIn);
   await enforceRateLimit(uid, "general");
-  const { data, error } = await supa.from("timeline_windows")
-    .select("bucket, asset_count, start_time, end_time, asset_ids")
-    .eq("granularity", granularity).order("bucket", { ascending: false }).limit(120);
+  // Live aggregation — the old timeline_windows materialized table was never
+  // populated (its refresh job was never enqueued), so buckets are computed
+  // directly from assets here.
+  const { data, error } = await supa.rpc("timeline_buckets", { _granularity: granularity });
   if (error) throw new ApiError("internal", error.message);
   // hydrate first asset of each bucket as cover
   const coverIds = (data ?? []).map(b => b.asset_ids?.[0]).filter(Boolean);

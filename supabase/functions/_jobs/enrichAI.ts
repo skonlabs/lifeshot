@@ -13,14 +13,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
 
   const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
 
-  // Consent gate — respect user's AI processing preference.
-  const { data: prof } = await sb
-    .from("user_profiles")
-    .select("ai_processing_enabled")
-    .eq("user_id", ctx.userId!)
-    .maybeSingle();
-  if (prof && prof.ai_processing_enabled === false) return { skipped: "consent" };
-
   const { data: asset } = await sb
     .from("assets")
     .select("id, user_id, thumbnail_cache_key, proxy_cache_key, mime_type, media_type")

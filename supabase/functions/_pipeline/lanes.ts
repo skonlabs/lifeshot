@@ -26,15 +26,12 @@ export function laneFor(jobName: string): LaneKey {
     case "hashAsset":                   return "metadata";
     case "generateDerived":             return "derived";
     case "indexSearchDocument":         return "search_index";
-    case "materializeTimelineWindows":  return "search_index";
     case "enrichAI":                    return "ai_deep";
     case "ocrAsset":                    return "ai_deep";
     case "dedupGroup":                  return "search_index";
     case "detectEvents":
     case "clusterPlaces":
     case "clusterPeople":               return "ai_deep";
-    case "disconnectSource":
-    case "deleteAccount":
     case "exportUserData":              return "cascade";
     case "sendInvitationEmail":         return "email";
     default:                            return "metadata";

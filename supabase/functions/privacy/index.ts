@@ -32,11 +32,12 @@ app.post("/consent", async (c) => {
     revoked_at: !body.granted ? new Date().toISOString() : null,
   });
   if (error) throw new ApiError("internal", error.message);
-  // If revoking AI/face consent, enqueue derived-data deletion
+  // Revoking AI/face consent deletes derived AI data immediately.
   if (!body.granted && (body.scope === "ai_processing" || body.scope === "face_recognition")) {
-    await jobEnqueuer.enqueue("derived.delete",
-      { scope: body.source_account_id ? "source" : "all", target_id: body.source_account_id, reason: `consent_revoked:${body.scope}` },
-      { userId: uid, priority: 2 });
+    const svc = getServiceClient();
+    await svc.from("asset_ai_enrichment").delete().eq("user_id", uid);
+    await svc.from("asset_faces").delete().eq("user_id", uid);
+    await svc.from("people").delete().eq("user_id", uid).like("auto_label", "auto:person:%");
   }
   emitEvent(c, "privacy.consent", { scope: body.scope, granted: body.granted });
   return c.json({ ok: true });
@@ -46,20 +47,20 @@ app.delete("/derived-data", async (c) => {
   const uid = c.get("userId");
   await enforceRateLimit(uid, "delete");
   const body = await parseBody(c, DeleteDerivedIn);
-  // service-role cascade
+  // Delete derived AI artifacts inline (service-role).
   const svc = getServiceClient();
-  const job = await jobEnqueuer.enqueue("derived.delete",
-    { user_id: uid, ...body }, { userId: uid, priority: 2 });
-  // Inline immediate delete for derived artifacts when scope=all.
+  let q = svc.from("asset_ai_enrichment").delete().eq("user_id", uid);
+  if (body.scope === "asset" && body.target_id) q = q.eq("asset_id", body.target_id);
+  await q;
+  let fq = svc.from("asset_faces").delete().eq("user_id", uid);
+  if (body.scope === "asset" && body.target_id) fq = fq.eq("asset_id", body.target_id);
+  await fq;
   if (body.scope === "all") {
-    await svc.rpc("cache_invalidate_user", {});
-    // asset_ocr merged into asset_ai_enrichment; one delete clears both.
-    const ids = (await svc.from("assets").select("id").eq("user_id", uid)).data?.map((r: any) => r.id) ?? [];
-    if (ids.length) await svc.from("asset_ai_enrichment").delete().in("asset_id", ids);
+    await svc.from("people").delete().eq("user_id", uid).like("auto_label", "auto:person:%");
   }
   await cache.invalidateUser(uid);
   emitEvent(c, "privacy.derived_delete", body);
-  return c.json({ job_id: job.id, status: "accepted" }, 202);
+  return c.json({ status: "completed" }, 202);
 });
 
 app.post("/export", async (c) => {
@@ -68,7 +69,7 @@ app.post("/export", async (c) => {
   // service-role read for full export
   const svc = getServiceClient();
   // Run export RPC as a job (large payloads). Return job id; download link later.
-  const job = await jobEnqueuer.enqueue("export.user_data",
+  const job = await jobEnqueuer.enqueue("exportUserData",
     { user_id: uid }, { userId: uid, priority: 4 });
   // Also produce a small synchronous preview using export_user_data RPC
   const { data } = await svc.rpc("export_user_data");
