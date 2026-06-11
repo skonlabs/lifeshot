@@ -654,7 +654,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       .in("source_asset_id", deleted);
     const goneIds = (gone ?? []).map((r: any) => r.asset_id);
     if (goneIds.length) {
-      await sb.from("assets").update({ deleted_state: "deleted", status: "deleted" }).in("id", goneIds);
+      await sb.from("assets").update({ deleted_state: "deleted" }).in("id", goneIds);
     }
     await sb.from("asset_source_refs").delete()
       .eq("source_account_id", source_account_id).in("source_asset_id", deleted);
