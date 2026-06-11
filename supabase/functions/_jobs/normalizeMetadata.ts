@@ -132,7 +132,9 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   const { data: asset, error } = await sb.from("assets")
     .select("id, user_id, media_type, mime_type, capture_time, timezone, width, height, duration_ms, device_make, device_model, thumbnail_cache_key, proxy_cache_key, status")
     .eq("id", asset_id).single();
-  if (error || !asset) throw new Error("not found: asset");
+  // Asset row may not be visible yet right after sync enqueues us (commit
+  // race). Treat as retryable so the runner uses short backoff, not 24h.
+  if (error || !asset) throw new Error("retryable: asset row not visible yet");
 
   const { data: ref } = await sb.from("asset_source_refs")
     .select("source_account_id, source_asset_id, source_relative_path, provider_url, source_modified_at, is_primary")
