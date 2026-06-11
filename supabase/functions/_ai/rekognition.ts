@@ -128,7 +128,7 @@ export async function indexFaces(opts: {
   imageBytes: Uint8Array;
   externalImageId: string;
   maxFaces: number;
-  qualityFilter: "AUTO" | "LOW" | "MEDIUM" | "HIGH";
+  qualityFilter: "NONE" | "AUTO" | "LOW" | "MEDIUM" | "HIGH";
 }): Promise<RekFaceRecord[]> {
   const { region, accessKeyId, secretAccessKey } = getCredentials();
   // btoa(String.fromCharCode(...bytes)) overflows the stack for large images.

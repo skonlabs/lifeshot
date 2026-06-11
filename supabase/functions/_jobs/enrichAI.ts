@@ -7,22 +7,17 @@ import { detectFaces } from "../_ai/face-detector.ts";
 import { rekognitionConfigured } from "../_ai/rekognition.ts";
 
 /**
- * enrichAI — runs vision analysis + face detection on an asset's derived
- * preview/thumbnail and persists the result to:
- *
- *   asset_ai_enrichment  — caption, tags, objects, faces (summary), rekognition_response
- *   asset_faces          — one row per detected face, with full FaceDetail attributes
+ * enrichAI — vision analysis + face detection for one asset.
  *
  * Face pipeline:
- *   All detected faces are written to asset_faces regardless of quality.
- *   clusterPeople then reads asset_faces and applies its own quality gate
- *   (FaceOccluded=false AND confidence≥90%) before writing to people.
+ *   1. detectFaces() → IndexFaces (qualityFilter=NONE) → all faces detected by Rekognition
+ *   2. Every detected face is written to asset_faces (no quality filter — raw data)
+ *   3. Full attributes JSON stored in asset_ai_enrichment.rekognition_response
+ *   4. clusterPeople job is enqueued → applies quality gate (FaceOccluded=false, confidence≥90%)
+ *      and writes qualifying faces to the people table
  *
- * Requires:
- *  - User ai_processing_enabled consent (skips gracefully when false)
- *  - A signed preview/thumb URL (from asset_derivatives or cache key)
- *  - OPENAI_API_KEY + LIFESHOT_AI_PROVIDER=openai for real inference;
- *    falls back to mock providers otherwise.
+ * Gate: face detection only runs when privacy_settings.face_processing_enabled = true
+ * AND AWS Rekognition is configured. Both conditions must be true.
  */
 export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -105,52 +100,85 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     console.error("enrichAI vision failed", { asset_id, error });
   }
 
-  // ── Face detection ─────────────────────────────────────────────────────────
-  // All detected faces are stored in asset_faces (no quality filter here).
-  // clusterPeople applies the quality gate (FaceOccluded=false, confidence≥90%)
-  // before writing to the people table.
+  // ── Face detection ────────────────────────────────────────────────────────
+  // Requires face_processing_enabled = true in privacy_settings AND AWS creds.
+  // All detected faces → asset_faces (no quality filter here).
+  // clusterPeople applies quality gate before writing to people.
   let faces: Array<Record<string, unknown>> = [];
   let faceDetectionAttempted = false;
-  const { data: privacy } = await sb.from("privacy_settings")
-    .select("face_processing_enabled").eq("user_id", asset.user_id).maybeSingle();
 
-  if (privacy?.face_processing_enabled && rekognitionConfigured()) {
-    faceDetectionAttempted = true;
-    try {
-      const detected = await detectFaces({ imageUrl: url, userId: asset.user_id, assetId: asset_id });
-      faces = detected.map((f) => ({
-        bbox:       f.bbox,
-        score:      f.confidence,   // 0-1
-        face_id:    f.face_id,
-        face_crop:  f.face_crop,
-        attributes: f.attributes,   // full FaceDetail (Pose, Quality, Landmarks, Emotions, etc.)
-      }));
+  if (!rekognitionConfigured()) {
+    console.warn("enrichAI: Rekognition not configured — face detection skipped", { asset_id });
+  } else {
+    const { data: privacy, error: privacyErr } = await sb
+      .from("privacy_settings")
+      .select("face_processing_enabled")
+      .eq("user_id", asset.user_id)
+      .maybeSingle();
 
-      // Write ALL detected faces to asset_faces with no quality filter.
-      // Delete stale rows from a prior scan first so re-scans are idempotent.
-      await sb.from("asset_faces").delete().eq("asset_id", asset_id);
-      if (detected.length > 0) {
-        await sb.from("asset_faces").insert(
-          detected.map((f) => ({
-            asset_id,
-            user_id:    asset.user_id,
-            face_id:    f.face_id ?? null,
-            bbox:       f.bbox ?? null,
-            confidence: f.confidence ?? null,   // 0-1
-            face_crop:  f.face_crop ?? null,
-            attributes: f.attributes ?? null,   // full Rekognition FaceDetail JSON
-          })),
-        );
+    if (privacyErr) {
+      console.error("enrichAI: privacy_settings query failed", { asset_id, error: privacyErr.message });
+    } else if (!privacy) {
+      console.warn("enrichAI: no privacy_settings row for user — face detection skipped. " +
+        "Run migration to enable face processing or set face_processing_enabled=true.", { asset_id, user_id: asset.user_id });
+    } else if (!privacy.face_processing_enabled) {
+      console.warn("enrichAI: face_processing_enabled=false for user — face detection skipped", { asset_id, user_id: asset.user_id });
+    } else {
+      // ── Face detection enabled ──────────────────────────────────────────
+      faceDetectionAttempted = true;
+      let detected: Awaited<ReturnType<typeof detectFaces>> = [];
+
+      try {
+        detected = await detectFaces({ imageUrl: url, userId: asset.user_id, assetId: asset_id });
+        console.log(`enrichAI: detected ${detected.length} face(s)`, { asset_id });
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        console.error("enrichAI: detectFaces threw", { asset_id, error: msg });
+        faceDetectionAttempted = false;
       }
-    } catch (e: any) {
-      console.warn("enrichAI face detection failed", { asset_id, error: String(e?.message ?? e) });
-      faceDetectionAttempted = false;
+
+      if (faceDetectionAttempted) {
+        faces = detected.map((f) => ({
+          bbox:       f.bbox,
+          score:      f.confidence,   // 0-1
+          face_id:    f.face_id,
+          face_crop:  f.face_crop,
+          attributes: f.attributes,   // full FaceDetail JSON
+        }));
+
+        // Write ALL detected faces to asset_faces. Errors here are FATAL
+        // (not swallowed) so missing data surfaces immediately.
+        const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", asset_id);
+        if (delErr) {
+          console.error("enrichAI: asset_faces delete failed — is the migration applied?", { asset_id, error: delErr.message });
+          // Throw so the job retries after the migration is applied.
+          throw new Error(`asset_faces delete failed: ${delErr.message}`);
+        }
+
+        if (detected.length > 0) {
+          const { error: insErr } = await sb.from("asset_faces").insert(
+            detected.map((f) => ({
+              asset_id,
+              user_id:    asset.user_id,
+              face_id:    f.face_id ?? null,
+              bbox:       f.bbox ?? null,
+              confidence: f.confidence ?? null,   // 0-1
+              face_crop:  f.face_crop ?? null,
+              attributes: f.attributes ?? null,
+            })),
+          );
+          if (insErr) {
+            console.error("enrichAI: asset_faces insert failed", { asset_id, error: insErr.message });
+            throw new Error(`asset_faces insert failed: ${insErr.message}`);
+          }
+          console.log(`enrichAI: wrote ${detected.length} row(s) to asset_faces`, { asset_id });
+        }
+      }
     }
   }
 
-  // Persist AI enrichment. rekognition_response stores the full face attributes
-  // array so the raw Rekognition data is always available from this table.
-  await sb.from("asset_ai_enrichment").upsert({
+  // Persist AI enrichment.
+  const { error: upsertErr } = await sb.from("asset_ai_enrichment").upsert({
     asset_id,
     user_id: asset.user_id,
     caption,
@@ -160,11 +188,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     rekognition_response: faceDetectionAttempted && faces.length > 0 ? faces : null,
     enriched_at: !error ? new Date().toISOString() : null,
   }, { onConflict: "asset_id" });
+  if (upsertErr) {
+    console.error("enrichAI: asset_ai_enrichment upsert failed", { asset_id, error: upsertErr.message });
+  }
 
-  // Mark face scan complete only when detection was actually attempted.
   if (faceDetectionAttempted) {
-    await sb.from("assets").update({ face_scanned_at: new Date().toISOString() })
-      .eq("id", asset_id);
+    await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
 
     if (faces.length > 0) {
       await enqueueJob("clusterPeople", {
@@ -191,6 +220,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     tags: tags.length,
     objects: objects.length,
     faces: faces.length,
+    face_detection_attempted: faceDetectionAttempted,
     error,
   };
 }
