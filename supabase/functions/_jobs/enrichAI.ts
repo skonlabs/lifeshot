@@ -107,9 +107,9 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     console.error("enrichAI vision failed", { asset_id, error });
   }
 
-  // Face detection via Rekognition (consent + configuration gated).
-  // Each returned face has already passed the full quality gate inside
-  // face-detector.ts (yaw ≤ 15°, pitch ≤ 10°, sharpness ≥ 40, not occluded).
+  // Face detection via Rekognition IndexFaces (consent + configuration gated).
+  // All detected faces are returned (qualityFilter: NONE) — attributes include
+  // Pose, Quality, FaceOccluded which clusterPeople uses to pick cover photos.
   let faces: Array<Record<string, unknown>> = [];
   let faceDetectionAttempted = false;
   const { data: privacy } = await sb.from("privacy_settings")

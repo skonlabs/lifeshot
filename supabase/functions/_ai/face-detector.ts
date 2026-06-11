@@ -5,8 +5,9 @@
  * Industry-standard pipeline:
  *   1. Fetch image; resize to < 3.75 MB if needed (Rekognition base64 limit).
  *   2. Ensure per-user Rekognition collection exists.
- *   3. Call IndexFaces (qualityFilter AUTO, DetectionAttributes ALL).
- *      AUTO lets Rekognition decide what's indexable — no manual pre-filtering.
+ *   3. Call IndexFaces (qualityFilter NONE, DetectionAttributes ALL).
+ *      NONE indexes ALL detected faces — same set as DetectFaces returns.
+ *      Quality is used ONLY for cover photo selection in clusterPeople.
  *   4. Dedup at 98%: keep NEW FaceId, delete OLD stale entries so the collection
  *      stays clean across re-scans.
  *   5. Crop each face to a 200×200 JPEG data-URL for avatar display.
@@ -107,7 +108,9 @@ async function cropFace(
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
     const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     const buf = new Uint8Array(await blob.arrayBuffer());
-    return `data:image/jpeg;base64,${btoa(String.fromCharCode(...buf))}`;
+    let b64 = ""; const ch = 8192;
+    for (let i = 0; i < buf.length; i += ch) b64 += String.fromCharCode(...buf.subarray(i, i + ch));
+    return `data:image/jpeg;base64,${btoa(b64)}`;
   } catch {
     return null;
   }
@@ -146,7 +149,7 @@ export async function detectFaces(opts: {
       imageBytes: bytes,
       externalImageId: opts.assetId,
       maxFaces: 100,
-      qualityFilter: "AUTO",
+      qualityFilter: "NONE", // Index ALL detected faces — same as DetectFaces; no quality pre-filtering
     });
   } catch (e: any) {
     console.warn("face-detector: indexFaces failed", String(e?.message ?? e));

@@ -131,7 +131,14 @@ export async function indexFaces(opts: {
   qualityFilter: "AUTO" | "LOW" | "MEDIUM" | "HIGH";
 }): Promise<RekFaceRecord[]> {
   const { region, accessKeyId, secretAccessKey } = getCredentials();
-  const b64 = btoa(String.fromCharCode(...opts.imageBytes));
+  // btoa(String.fromCharCode(...bytes)) overflows the stack for large images.
+  // Chunk it to avoid the spread-into-args limit.
+  let b64 = "";
+  const chunk = 8192;
+  for (let i = 0; i < opts.imageBytes.length; i += chunk) {
+    b64 += String.fromCharCode(...opts.imageBytes.subarray(i, i + chunk));
+  }
+  b64 = btoa(b64);
   const data = await signedRequest({
     region, accessKeyId, secretAccessKey,
     target: "RekognitionService.IndexFaces",
