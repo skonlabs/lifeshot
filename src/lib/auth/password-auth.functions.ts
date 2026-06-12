@@ -25,8 +25,20 @@ const successSchema = z.object({
 });
 
 export const signInWithPasswordServer = createServerFn({ method: "POST" })
-  .inputValidator(inputSchema)
+  .inputValidator((raw: unknown) => {
+    const parsed = inputSchema.safeParse(raw);
+    return { parsed };
+  })
   .handler(async ({ data }) => {
+    if (!data.parsed.success) {
+      return errorSchema.parse({
+        ok: false,
+        message: "Please enter a valid email and password.",
+        status: 400,
+        requestId: null,
+      });
+    }
+    const input = data.parsed.data;
     const supabaseUrl = process.env.SUPABASE_URL ?? "https://vohevknnbvpaooletyts.supabase.co";
     const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? "sb_publishable_8DJ7KPaQ8JdG9-ZOqa30uw_pkc4pLpX";
 
@@ -39,8 +51,8 @@ export const signInWithPasswordServer = createServerFn({ method: "POST" })
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email: data.email,
-          password: data.password,
+          email: input.email,
+          password: input.password,
         }),
       });
 
