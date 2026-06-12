@@ -2,18 +2,16 @@
 /**
  * Provider factory. Installs real providers:
  *  - Geocoder (Nominatim/OSM): always installed — no API key required.
- *  - AI / Embedder / OCR / FaceDetector: installed when LIFESHOT_AI_PROVIDER=openai
+ *  - AI / Embedder / OCR: installed when LIFESHOT_AI_PROVIDER=openai
  *    AND OPENAI_API_KEY is present.
  */
 import { providers, setProviders } from "../_jobs/mocks.ts";
 import { embedText } from "./embedder.ts";
 import { enrichVision } from "./vision.ts";
 import { ocrImage } from "./ocr.ts";
-import { detectFaces } from "./face-detector.ts";
 import { reverseGeocode } from "./geocoder.ts";
 import { aiConfig } from "./config.ts";
 import { logger } from "../_pipeline/logger.ts";
-import { rekognitionConfigured } from "./rekognition.ts";
 
 let installed = false;
 
@@ -34,19 +32,6 @@ export function installOpenAIProviders(): boolean {
       },
     },
   });
-
-  // AWS Rekognition face detector is independent of OpenAI — install it
-  // whenever AWS credentials are configured, even when OpenAI is disabled.
-  if (rekognitionConfigured()) {
-    setProviders({
-      faceDetector: {
-        detectFaces: async ({ url, userId, assetId }) => {
-          return await detectFaces({ imageUrl: url, userId, assetId });
-        },
-      },
-    });
-    logger.info("ai_providers_installed", { provider: "aws_rekognition", scope: "face_detector" });
-  }
 
   const provider = envFlag("LIFESHOT_AI_PROVIDER");
   const key = envFlag("OPENAI_API_KEY");

@@ -39,7 +39,7 @@ export function collectionIdForUser(userId: string): string {
 // AWS Signature V4 signing for Rekognition REST (JSON) API
 // ---------------------------------------------------------------------------
 
-async function hmac(key: ArrayBuffer, data: string): Promise<ArrayBuffer> {
+async function hmac(key: BufferSource, data: string): Promise<ArrayBuffer> {
   const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return crypto.subtle.sign("HMAC", k, new TextEncoder().encode(data));
 }

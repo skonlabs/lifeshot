@@ -161,6 +161,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       }
       personId = newPerson.id;
     }
+    if (!personId) continue;
 
     // Register face_id → personId so subsequent faces in this run can match it.
     faceIdToPersonId.set(entry.face_id, personId);

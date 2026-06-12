@@ -82,7 +82,7 @@ export const aiConfig: AIConfig = {
   ttl: { searchSec: 300, explainSec: 3600 },
   embedBatchSize: 64,
   zdr: env("AI_ZDR", "true") === "true",
-  promptVersion: env("AI_PROMPT_VERSION", "v1"),
+  promptVersion: env("AI_PROMPT_VERSION", "v1")!,
 };
 
 export function priceFor(model: string, kind: "embed" | "chat", tokensIn = 0, tokensOut = 0): number {
