@@ -40,4 +40,12 @@ ALTER TABLE public.assets DROP COLUMN IF EXISTS location_country;
 -- ── people ────────────────────────────────────────────────────────────────────
 -- family_id: family membership lives in the family_members junction table;
 -- people.family_id is never read or written anywhere in the codebase.
+--
+-- The people_access RLS policy referenced family_id for family-shared reads,
+-- but since no code ever sets people.family_id the clause was always false.
+-- Recreate the policy owner-only (same effective behaviour), then drop.
+DROP POLICY IF EXISTS people_access ON public.people;
+CREATE POLICY people_access ON public.people FOR SELECT TO authenticated
+  USING (user_id = auth.uid());
+
 ALTER TABLE public.people DROP COLUMN IF EXISTS family_id;
