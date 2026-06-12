@@ -456,7 +456,7 @@ app.post("/assets/bulk", async (c) => {
  * POST /people/reset
  * Full face pipeline reset for the authenticated user:
  *   1. Drop + recreate their Rekognition collection (clean slate).
- *   2. Clear person_faces, auto-clustered people, enrichment faces.
+ *   2. Clear asset_faces, auto-clustered people, enrichment faces.
  *   3. Reset face_scanned_at so all assets are re-queued.
  * The pipeline will re-detect and re-cluster everything from scratch.
  */
@@ -471,41 +471,39 @@ app.post("/people/reset", async (c) => {
 
   // 2. Clear all face / person data for this user.
   const sb = getServiceClient();
-  const { data: peopleRows } = await sb.from("people").select("id").eq("user_id", uid);
-  const personIds = (peopleRows ?? []).map((r: { id: string }) => r.id);
-  if (personIds.length > 0) {
-    await sb.from("person_faces").delete().in("person_id", personIds);
-  }
+  const { error: afErr } = await sb.from("asset_faces").delete().eq("user_id", uid);
+  if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
   await sb.from("people").delete()
     .eq("user_id", uid)
     .not("auto_label", "is", null);
-  await sb.from("asset_ai_enrichment").update({ faces: [] })
+  await sb.from("asset_ai_enrichment").update({ faces: [], rekognition_response: null })
     .eq("user_id", uid)
     .not("faces", "eq", "[]");
   await sb.from("assets").update({ face_scanned_at: null })
     .eq("user_id", uid)
     .not("face_scanned_at", "is", null);
 
-  // Cancel any pending clusterPeople jobs for this user so stale coalesced
-  // jobs don't fire after the reset with incomplete data.
+  // Cancel any pending face jobs for this user so stale coalesced jobs don't
+  // fire after the reset with incomplete data.
   await sb.from("job_queue")
     .delete()
-    .eq("job_name", "clusterPeople")
+    .in("job_name", ["clusterPeople", "enrichAI"])
     .eq("user_id", uid)
     .eq("status", "pending");
 
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
+  // Time-based idempotency key so repeated resets always re-enqueue.
+  const resetEpoch = Date.now();
   const { data: assetRows } = await sb
     .from("assets")
     .select("id")
     .eq("user_id", uid)
-    .eq("media_type", "photo")
-    .is("face_scanned_at", null);
+    .in("media_type", ["photo", "live_photo", "animation"]);
 
   const jobs = (assetRows ?? []).map((a: { id: string }) => ({
     job_name: "enrichAI",
     payload: { asset_id: a.id },
-    idempotency_key: `ai:${a.id}:face-reset`,
+    idempotency_key: `ai:${a.id}:face-reset-${resetEpoch}`,
     status: "pending",
     user_id: uid,
     priority: 5,
