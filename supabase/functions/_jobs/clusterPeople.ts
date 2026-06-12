@@ -72,16 +72,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   for (const f of faceRows ?? []) {
     if (!f.face_id) continue;
     const occluded = (f.attributes as any)?.FaceOccluded?.Value === true;
-    // Normalize confidence to percent: rows may store 0..1 (current pipeline)
-    // or 0..100 (Rekognition raw / legacy rows). Values ≤ 1 are fractions.
-    const raw = Number(f.confidence ?? 0);
-    const confidencePct = raw <= 1 ? raw * 100 : raw;
+    const confidencePct = Number(f.confidence ?? 0) * 100;
     if (occluded || confidencePct < 90) continue;
     faceEntries.push({
       asset_id:   f.asset_id,
       face_id:    f.face_id,
       bbox:       f.bbox ?? null,
-      confidence: confidencePct / 100,
+      confidence: Number(f.confidence ?? 0),
       face_crop:  f.face_crop ?? null,
       attributes: f.attributes ?? null,
     });
