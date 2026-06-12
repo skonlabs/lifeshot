@@ -189,6 +189,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       bbox:                e.bbox,
       confidence:          e.confidence,
       face_crop:           e.face_crop,
+      attributes:          e.attributes,
       rekognition_face_id: e.face_id,
     }));
     const merged = [...kept, ...fresh];
