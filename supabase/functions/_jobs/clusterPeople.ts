@@ -90,7 +90,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   if (faceEntries.length === 0) {
-    return { user_id: uid, people: 0, clustered: 0, reason: "no_qualifying_faces" };
+    return {
+      user_id: uid, people: 0, clustered: 0, reason: "no_qualifying_faces",
+      faces_total: (faceRows ?? []).length,
+    };
   }
 
   const collectionId = collectionIdForUser(uid);
@@ -158,8 +161,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         )
         .select("id").single();
       if (npErr || !newPerson) {
-        console.error("clusterPeople: person upsert failed", npErr?.message);
-        continue;
+        // Throw instead of swallowing: a silent continue here makes the job
+        // "complete" while writing zero people, hiding the root cause.
+        throw new Error(`clusterPeople: person upsert failed: ${npErr?.message ?? "no row returned"}`);
       }
       personId = newPerson.id;
     }
@@ -235,8 +239,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
 
     const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
-    if (uErr) console.error("clusterPeople: people update failed", pid, uErr.message);
-    else peopleUpdated++;
+    if (uErr) throw new Error(`clusterPeople: people update failed for ${pid}: ${uErr.message}`);
+    peopleUpdated++;
   }
 
   return {
