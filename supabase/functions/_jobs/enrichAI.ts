@@ -13,12 +13,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
 
   const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
 
-  const { data: asset } = await sb
+  const { data: asset, error: assetErr } = await sb
     .from("assets")
     .select("id, user_id, thumbnail_cache_key, proxy_cache_key, mime_type, media_type")
     .eq("id", asset_id)
-    .single();
-  if (!asset) throw new Error("not found: asset");
+    .maybeSingle();
+  // Use a retryable error so the runner doesn't dead-letter on transient DB issues.
+  // Legitimate "asset deleted" cases will exhaust max_attempts naturally.
+  if (assetErr) throw new Error(`retryable: asset lookup failed: ${assetErr.message}`);
+  if (!asset) throw new Error("retryable: asset not ready yet");
 
   // ── Resolve image URL ──────────────────────────────────────────────────────
   let url: string | null = null;
