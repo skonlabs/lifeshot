@@ -298,8 +298,11 @@ export async function parseDetectedFaces(analysis: FaceAnalysis): Promise<Parsed
  * Returns the face unchanged when it qualifies, null otherwise.
  */
 export function qualifyFaceForPerson(face: ParsedFace): ParsedFace | null {
-  const notOccluded = (face.attributes as any)?.FaceOccluded?.Value === false;
-  const qualifies = notOccluded && face.confidence > 0.9;
+  // Use values straight from the Rekognition FaceDetail JSON:
+  // FaceOccluded.Value (boolean) and Confidence (0-100).
+  const attrs = face.attributes as any;
+  const notOccluded = attrs?.FaceOccluded?.Value === false;
+  const qualifies = notOccluded && Number(attrs?.Confidence ?? 0) > 90;
   return qualifies ? face : null;
 }
 

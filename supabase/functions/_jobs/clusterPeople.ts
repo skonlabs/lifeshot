@@ -71,10 +71,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const faceEntries: FaceEntry[] = [];
   for (const f of faceRows ?? []) {
     if (!f.face_id) continue;
-    const notOccluded = (f.attributes as any)?.FaceOccluded?.Value === false;
-    const confidence = Number(f.confidence ?? 0);
-    const qualifies = notOccluded && confidence > 0.9;
+    // Use values straight from the stored Rekognition FaceDetail JSON:
+    // FaceOccluded.Value (boolean) and Confidence (0-100).
+    const attrs = f.attributes as any;
+    const notOccluded = attrs?.FaceOccluded?.Value === false;
+    const jsonConfidence = Number(attrs?.Confidence ?? 0); // 0-100 Rekognition scale
+    const qualifies = notOccluded && jsonConfidence > 90;
     if (!qualifies) continue;
+    const confidence = jsonConfidence / 100;
     faceEntries.push({
       asset_id:   f.asset_id,
       face_id:    f.face_id,
