@@ -294,8 +294,8 @@ export async function parseDetectedFaces(analysis: FaceAnalysis): Promise<Parsed
 export function qualifyFaceForPerson(face: ParsedFace): ParsedFace | null {
   const occluded = (face.attributes as any)?.FaceOccluded?.Value === true;
   if (occluded) return null;
-  // confidence is stored as 0..1; convert to percent for the 90% gate.
-  if (face.confidence * 100 <= 90) return null;
+  // confidence is stored as 0..1, so compare directly against 0.9.
+  if (face.confidence <= 0.9) return null;
   return face;
 }
 

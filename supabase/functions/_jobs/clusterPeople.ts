@@ -72,13 +72,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   for (const f of faceRows ?? []) {
     if (!f.face_id) continue;
     const occluded = (f.attributes as any)?.FaceOccluded?.Value === true;
-    const confidencePct = Number(f.confidence ?? 0) * 100;
-    if (occluded || confidencePct < 90) continue;
+    const confidence = Number(f.confidence ?? 0);
+    if (occluded || confidence <= 0.9) continue;
     faceEntries.push({
       asset_id:   f.asset_id,
       face_id:    f.face_id,
       bbox:       f.bbox ?? null,
-      confidence: Number(f.confidence ?? 0),
+      confidence,
       face_crop:  f.face_crop ?? null,
       attributes: f.attributes ?? null,
     });
