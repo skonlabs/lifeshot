@@ -212,9 +212,14 @@ export async function analyzeAssetFaces(opts: {
   });
 
   // Dedup against the collection: keep the OLD canonical FaceId.
+  // Sequential (not Promise.all) — the `seen` set must be updated before the
+  // next face is checked, otherwise two faces in the same photo can race and
+  // both resolve to the same canonical FaceId, which then violates the unique
+  // (asset_id, face_id) index and fails the whole asset_faces insert.
   const toDelete: string[] = [];
   const seen = new Set<string>();
-  const faceRecords = await Promise.all(records.map(async (r) => {
+  const faceRecords: Array<Record<string, unknown>> = [];
+  for (const r of records) {
     let canonicalFaceId = r.faceId;
     try {
       const matches = await searchFaces({
@@ -231,14 +236,15 @@ export async function analyzeAssetFaces(opts: {
     } catch (e: any) {
       console.warn("analyzeAssetFaces: dedup search failed", r.faceId, String(e?.message ?? e));
     }
+    if (seen.has(canonicalFaceId)) continue; // same physical face already recorded for this asset
     seen.add(canonicalFaceId);
-    return {
+    faceRecords.push({
       FaceId: canonicalFaceId,
       BoundingBox: r.bbox,
       Confidence: r.confidence, // 0-100 as returned by Rekognition
       FaceDetail: r.attributes,
-    } as Record<string, unknown>;
-  }));
+    });
+  }
 
   if (toDelete.length > 0) {
     try {
@@ -367,8 +373,12 @@ export async function storeFaceResults(opts: {
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
-  if (faces.length > 0) {
-    const { error: insErr } = await sb.from("asset_faces").insert(faces.map((f) => ({
+  // Safety net: the unique (asset_id, face_id) index rejects duplicate
+  // face_ids within one asset, which would fail the entire insert.
+  const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
+
+  if (uniqueFaces.length > 0) {
+    const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
       asset_id:   assetId,
       user_id:    userId,
       face_id:    f.face_id,
@@ -380,5 +390,5 @@ export async function storeFaceResults(opts: {
     if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
   }
 
-  return { asset_faces: faces.length };
+  return { asset_faces: uniqueFaces.length };
 }

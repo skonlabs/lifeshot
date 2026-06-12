@@ -117,10 +117,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // clusterPeople is the sole writer to the people table — running it here
     // rather than in storeFaceResults ensures a single serialised per-user
     // write path, eliminating race conditions from parallel enrichAI jobs.
+    // Per-asset idempotency key: a coalesced (hourly) key gets recorded in
+    // job_ledger after the first run completes, permanently deduping all
+    // later enqueues — faces stored after that run would never be clustered.
     await enqueueJob("clusterPeople", {
       userId: ctx.userId,
       payload: { user_id: asset.user_id },
-      idempotencyKey: `people:${asset.user_id}:${new Date().toISOString().slice(0, 13)}`,
+      idempotencyKey: `people:${asset.user_id}:${asset_id}`,
     });
   }
 
