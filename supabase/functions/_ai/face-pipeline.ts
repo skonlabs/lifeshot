@@ -299,10 +299,16 @@ export async function parseDetectedFaces(analysis: FaceAnalysis): Promise<Parsed
  */
 export function qualifyFaceForPerson(face: ParsedFace): ParsedFace | null {
   // Use values straight from the Rekognition FaceDetail JSON:
-  // FaceOccluded.Value (boolean) and Confidence (0-100).
+  // FaceOccluded.Value (boolean), Confidence (0-100), and Pose angles (degrees).
   const attrs = face.attributes as any;
   const notOccluded = attrs?.FaceOccluded?.Value === false;
-  const qualifies = notOccluded && Number(attrs?.Confidence ?? 0) > 90;
+  const pose  = attrs?.Pose ?? {};
+  const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
+  const pitch = Math.abs(Number(pose.Pitch ?? 90));
+  // Exclude side profiles and severely tilted heads; these produce poor crops
+  // and cause false negative matches when clustering.
+  const notSideProfile = yaw < 40 && pitch < 35;
+  const qualifies = notOccluded && Number(attrs?.Confidence ?? 0) > 90 && notSideProfile;
   return qualifies ? face : null;
 }
 

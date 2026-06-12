@@ -22,9 +22,13 @@ function coverScore(attributes: any): number {
   return frontality * 0.50 + (sharp / 100) * 0.25 + (bright / 100) * 0.10 + gazeScore * 0.15;
 }
 
-const PRIMARY_THRESHOLD  = 75;
-const FALLBACK_THRESHOLD = 65;
-const MIN_COVER_SCORE    = 0.30;
+const PRIMARY_THRESHOLD  = 80;
+const FALLBACK_THRESHOLD = 70;
+const MIN_COVER_SCORE    = 0.50;
+
+// Maximum absolute pose angles for a face to qualify (excludes side profiles).
+const MAX_YAW_DEG   = 40;
+const MAX_PITCH_DEG = 35;
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -76,7 +80,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const attrs = f.attributes as any;
     const notOccluded = attrs?.FaceOccluded?.Value === false;
     const jsonConfidence = Number(attrs?.Confidence ?? 0); // 0-100 Rekognition scale
-    const qualifies = notOccluded && jsonConfidence > 90;
+    const pose  = attrs?.Pose ?? {};
+    const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
+    const pitch = Math.abs(Number(pose.Pitch ?? 90));
+    const notSideProfile = yaw < MAX_YAW_DEG && pitch < MAX_PITCH_DEG;
+    const qualifies = notOccluded && jsonConfidence > 90 && notSideProfile;
     if (!qualifies) continue;
     const confidence = jsonConfidence / 100;
     faceEntries.push({
@@ -176,23 +184,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   // ── 4. Persist to people table ────────────────────────────────────────────
-  // MERGE strategy: load existing people.faces, replace occurrences for assets
-  // touched in this run, keep occurrences from assets not in this run.
-  // This prevents a per-asset run from wiping faces from other assets, and
-  // prevents a full-user run from racing with another concurrent run.
-  const assetsInThisRun = new Set(faceEntries.map((e) => e.asset_id));
+  // Use the atomic merge_person_faces RPC so concurrent per-asset runs don't
+  // race on the faces array (last-write-wins would otherwise drop faces from
+  // assets processed by sibling jobs).
+  const assetsInThisRun = [...new Set(faceEntries.map((e) => e.asset_id))];
 
   let peopleUpdated = 0;
   for (const [pid, entries] of personFaceMap) {
-    // Find the existing person row for MERGE.
-    const existing = (existingPeople ?? []).find((p: any) => p.id === pid);
-    const existingFaces: any[] = Array.isArray((existing as any)?.faces)
-      ? (existing as any).faces
-      : [];
-
-    // Keep occurrences from assets NOT processed in this run.
-    const kept = existingFaces.filter((o: any) => !assetsInThisRun.has(o.asset_id));
-    // Add all occurrences from this run's assignments for this person.
+    // Build the fresh face objects to pass to the RPC.
     const fresh = entries.map((e) => ({
       asset_id:            e.asset_id,
       bbox:                e.bbox,
@@ -201,45 +200,43 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       attributes:          e.attributes,
       rekognition_face_id: e.face_id,
     }));
-    const merged = [...kept, ...fresh];
 
-    // Pick best cover: highest cover-score face that has a face_crop.
-    let bestCover: any = null;
+    // Pick best cover from this run's faces only.
+    // Prefer solo-portrait assets (only one qualifying face from that asset).
+    const assetsInFresh = new Map<string, number>();
+    for (const o of fresh) assetsInFresh.set(o.asset_id, (assetsInFresh.get(o.asset_id) ?? 0) + 1);
+
+    let bestCover: typeof fresh[0] | null = null;
     let bestScore = -1;
-    for (const o of merged) {
+    for (const o of fresh) {
       if (!o.face_crop) continue;
       const s = coverScore(o.attributes ?? null);
-      if (s >= MIN_COVER_SCORE && s > bestScore) { bestScore = s; bestCover = o; }
-    }
-    // If no scored crop, fall back to highest-confidence face with a bbox.
-    if (!bestCover) {
-      bestCover = merged
-        .filter((o: any) => o.bbox)
-        .sort((a: any, b: any) => Number(b.confidence ?? 0) - Number(a.confidence ?? 0))[0] ?? null;
+      if (s < MIN_COVER_SCORE) continue;
+      const isSolo = (assetsInFresh.get(o.asset_id) ?? 0) === 1;
+      const adjusted = isSolo ? s * 1.3 : s;
+      if (adjusted > bestScore) { bestScore = adjusted; bestCover = o; }
     }
 
+    const existing = (existingPeople ?? []).find((p: any) => p.id === pid);
     const allFaceIds = [...new Set(
       entries.map((e) => e.face_id).concat(
         Array.isArray((existing as any)?.rekognition_face_ids) ? (existing as any).rekognition_face_ids : [],
       ),
     )].filter(Boolean);
 
-    const update: Record<string, unknown> = {
-      faces:                merged,
-      face_count:           merged.length,
-      rekognition_face_ids: allFaceIds,
-    };
-    if (bestCover?.face_crop) {
-      update.cover_face_crop = bestCover.face_crop;
-      update.cover_asset_id  = bestCover.asset_id;
-      update.cover_bbox      = bestCover.bbox;
-    } else if (bestCover) {
-      update.cover_asset_id = bestCover.asset_id;
-      update.cover_bbox     = bestCover.bbox;
-    }
-
-    const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
-    if (uErr) throw new Error(`clusterPeople: people update failed for ${pid}: ${uErr.message}`);
+    // merge_person_faces atomically merges the faces array, face_count, and
+    // rekognition_face_ids, and updates cover fields only when a qualifying
+    // cover crop is supplied (NULL = keep existing cover).
+    const { error: rpcErr } = await sb.rpc("merge_person_faces", {
+      p_person_id:         pid,
+      p_assets_to_replace: assetsInThisRun,
+      p_new_faces:         fresh,
+      p_all_face_ids:      allFaceIds,
+      p_cover_face_crop:   bestCover?.face_crop ?? null,
+      p_cover_asset_id:    bestCover?.asset_id  ?? null,
+      p_cover_bbox:        bestCover?.bbox       ?? null,
+    });
+    if (rpcErr) throw new Error(`clusterPeople: merge_person_faces failed for ${pid}: ${rpcErr.message}`);
     peopleUpdated++;
   }
 
