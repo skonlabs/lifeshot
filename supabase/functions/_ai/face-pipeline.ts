@@ -292,11 +292,9 @@ export async function parseDetectedFaces(analysis: FaceAnalysis): Promise<Parsed
  * Returns the face unchanged when it qualifies, null otherwise.
  */
 export function qualifyFaceForPerson(face: ParsedFace): ParsedFace | null {
-  const occluded = (face.attributes as any)?.FaceOccluded?.Value === true;
-  if (occluded) return null;
-  // confidence is stored as 0..1, so compare directly against 0.9.
-  if (face.confidence <= 0.9) return null;
-  return face;
+  const notOccluded = (face.attributes as any)?.FaceOccluded?.Value === false;
+  const qualifies = notOccluded && face.confidence > 0.9;
+  return qualifies ? face : null;
 }
 
 // ---------------------------------------------------------------------------
