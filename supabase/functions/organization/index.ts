@@ -162,14 +162,22 @@ app.get("/people", async (c) => {
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
   if (coverAssetIds.length) {
-    const { data: assets } = await supa.from("assets")
-      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
-      .in("id", coverAssetIds);
-    for (const a of assets ?? []) coverAssets[a.id] = a;
-    const { data: mm } = await supa.from("asset_media_metadata")
-      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
-      .in("asset_id", coverAssetIds);
-    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+    // Chunk .in() to keep URL length under PostgREST's ~4KB limit.
+    // UUIDs are 36 chars each; chunks of 80 keep us well under.
+    const CHUNK = 80;
+    for (let i = 0; i < coverAssetIds.length; i += CHUNK) {
+      const slice = coverAssetIds.slice(i, i + CHUNK);
+      const { data: assets, error: aErr } = await supa.from("assets")
+        .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
+        .in("id", slice);
+      if (aErr) console.warn("[/people] assets fetch err", aErr.message);
+      for (const a of assets ?? []) coverAssets[a.id] = a;
+      const { data: mm, error: mErr } = await supa.from("asset_media_metadata")
+        .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+        .in("asset_id", slice);
+      if (mErr) console.warn("[/people] media fetch err", mErr.message);
+      for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+    }
   }
 
   // Batch-sign storage paths to avoid sequential round-trips.
@@ -235,7 +243,10 @@ app.get("/people", async (c) => {
       consent_required: p.consent_required, auto_label: p.auto_label,
       asset_count: counts[p.id] ?? 0, cover,
     };
-  }).filter((person: any) => person.asset_count > 0 && person.cover !== null);
+  // Show any person with at least one face occurrence. PersonTile renders a
+  // fallback avatar when cover is null, so don't drop people whose cover
+  // thumbnail couldn't be resolved.
+  }).filter((person: any) => person.asset_count > 0);
   console.log("[/people] final=", people.length);
   // Suppress unused import warnings.
   void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
