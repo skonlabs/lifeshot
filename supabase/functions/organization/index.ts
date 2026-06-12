@@ -133,6 +133,7 @@ app.get("/people", async (c) => {
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
+  console.log("[/people] uid=", uid, "raw=", (data ?? []).length, "after_filter=", peopleRows.length);
 
   // Asset counts: derive from the canonical `people.faces` jsonb array — the
   // clusterPeople pipeline writes there, not into the legacy `person_faces`
@@ -189,13 +190,15 @@ app.get("/people", async (c) => {
       const remaining = allPaths.filter((p) => !signedMap.has(p));
       if (!remaining.length) break;
       try {
-        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        const { data: signed, error: sErr } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        if (sErr) console.warn("[/people] sign err bucket=", bucket, sErr.message);
         for (const s of signed ?? []) {
           if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
         }
-      } catch (_) { /* try next bucket */ }
+      } catch (e) { console.warn("[/people] sign throw bucket=", bucket, String((e as any)?.message ?? e)); }
     }
   }
+  console.log("[/people] coverAssetIds=", coverAssetIds.length, "pathsToSign=", pathsToSign.size, "signed=", signedMap.size, "coverAssets=", Object.keys(coverAssets).length, "mediaMap=", Object.keys(mediaMap).length);
   const resolveKey = (ck: string | null | undefined): string | null => {
     if (!ck) return null;
     if (/^https?:\/\//.test(ck)) return ck;
@@ -233,6 +236,7 @@ app.get("/people", async (c) => {
       asset_count: counts[p.id] ?? 0, cover,
     };
   }).filter((person: any) => person.asset_count > 0 && person.cover !== null);
+  console.log("[/people] final=", people.length);
   // Suppress unused import warnings.
   void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
