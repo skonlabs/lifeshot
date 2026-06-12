@@ -133,6 +133,7 @@ app.get("/people", async (c) => {
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
   const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
+  console.log("[/people] uid=", uid, "raw=", (data ?? []).length, "after_filter=", peopleRows.length);
 
   // Asset counts: derive from the canonical `people.faces` jsonb array — the
   // clusterPeople pipeline writes there, not into the legacy `person_faces`
@@ -161,14 +162,22 @@ app.get("/people", async (c) => {
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
   if (coverAssetIds.length) {
-    const { data: assets } = await supa.from("assets")
-      .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
-      .in("id", coverAssetIds);
-    for (const a of assets ?? []) coverAssets[a.id] = a;
-    const { data: mm } = await supa.from("asset_media_metadata")
-      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
-      .in("asset_id", coverAssetIds);
-    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+    // Chunk .in() to keep URL length under PostgREST's ~4KB limit.
+    // UUIDs are 36 chars each; chunks of 80 keep us well under.
+    const CHUNK = 80;
+    for (let i = 0; i < coverAssetIds.length; i += CHUNK) {
+      const slice = coverAssetIds.slice(i, i + CHUNK);
+      const { data: assets, error: aErr } = await supa.from("assets")
+        .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
+        .in("id", slice);
+      if (aErr) console.warn("[/people] assets fetch err", aErr.message);
+      for (const a of assets ?? []) coverAssets[a.id] = a;
+      const { data: mm, error: mErr } = await supa.from("asset_media_metadata")
+        .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+        .in("asset_id", slice);
+      if (mErr) console.warn("[/people] media fetch err", mErr.message);
+      for (const row of mm ?? []) mediaMap[row.asset_id] = row;
+    }
   }
 
   // Batch-sign storage paths to avoid sequential round-trips.
@@ -189,13 +198,15 @@ app.get("/people", async (c) => {
       const remaining = allPaths.filter((p) => !signedMap.has(p));
       if (!remaining.length) break;
       try {
-        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        const { data: signed, error: sErr } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
+        if (sErr) console.warn("[/people] sign err bucket=", bucket, sErr.message);
         for (const s of signed ?? []) {
           if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
         }
-      } catch (_) { /* try next bucket */ }
+      } catch (e) { console.warn("[/people] sign throw bucket=", bucket, String((e as any)?.message ?? e)); }
     }
   }
+  console.log("[/people] coverAssetIds=", coverAssetIds.length, "pathsToSign=", pathsToSign.size, "signed=", signedMap.size, "coverAssets=", Object.keys(coverAssets).length, "mediaMap=", Object.keys(mediaMap).length);
   const resolveKey = (ck: string | null | undefined): string | null => {
     if (!ck) return null;
     if (/^https?:\/\//.test(ck)) return ck;
@@ -232,7 +243,11 @@ app.get("/people", async (c) => {
       consent_required: p.consent_required, auto_label: p.auto_label,
       asset_count: counts[p.id] ?? 0, cover,
     };
-  }).filter((person: any) => person.asset_count > 0 && person.cover !== null);
+  // Show any person with at least one face occurrence. PersonTile renders a
+  // fallback avatar when cover is null, so don't drop people whose cover
+  // thumbnail couldn't be resolved.
+  }).filter((person: any) => person.asset_count > 0);
+  console.log("[/people] final=", people.length);
   // Suppress unused import warnings.
   void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
