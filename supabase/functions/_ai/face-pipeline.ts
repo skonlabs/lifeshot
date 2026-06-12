@@ -341,35 +341,30 @@ export async function findBestPersonMatch(
 // ---------------------------------------------------------------------------
 
 /**
- * Persist one asset's face analysis:
- *   a. asset_ai_enrichment — faces column gets the raw analysis JSON as-is
- *      (rekognition_response mirrors it for the full-response requirement)
- *   b. asset_faces — one row per parsed face; existing rows for the asset are
- *      overwritten (delete + insert)
- *   c. people — each qualifying face (function 3) is matched to an existing
- *      person (function 4) or a new person is created; people.faces,
- *      face_count, rekognition_face_ids and the cover columns are updated.
- *      The cover is overwritten whenever a higher-confidence non-occluded
- *      face with a crop is available.
+ * Persist one asset's face detection results to asset_faces only.
+ * People clustering is intentionally NOT done here — it is the exclusive
+ * responsibility of clusterPeople, which runs as a serialised per-user job
+ * after enrichAI completes.
+ *
+ * Keeping the two writes separate eliminates the race condition that caused
+ * duplicate people records: concurrent enrichAI jobs can safely write to
+ * asset_faces in parallel (delete+insert is idempotent per asset_id) without
+ * touching the people table at all.
+ *
+ *   a. asset_faces — one row per parsed face; existing rows for this asset
+ *      are replaced (delete + insert) so re-scans are idempotent.
+ *
+ * Returns the number of face rows written.
  */
 export async function storeFaceResults(opts: {
   analysis: FaceAnalysis;
   faces: ParsedFace[];
-}): Promise<{ asset_faces: number; people_touched: number }> {
+}): Promise<{ asset_faces: number }> {
   const sb = serviceClient();
   const { analysis, faces } = opts;
-  const { assetId, userId, collectionId } = analysis;
+  const { assetId, userId } = analysis;
 
-  // ── a. asset_ai_enrichment: raw response as-is ─────────────────────────────
-  const { error: enrichErr } = await sb.from("asset_ai_enrichment").upsert({
-    asset_id: assetId,
-    user_id: userId,
-    faces: analysis.faceRecords,
-    rekognition_response: analysis.faceRecords,
-  }, { onConflict: "asset_id" });
-  if (enrichErr) throw new Error(`storeFaceResults: asset_ai_enrichment upsert failed: ${enrichErr.message}`);
-
-  // ── b. asset_faces: overwrite all faces for this asset ─────────────────────
+  // Delete existing rows for this asset so re-scans are clean.
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
@@ -386,102 +381,5 @@ export async function storeFaceResults(opts: {
     if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
   }
 
-  // ── c. people: assign qualifying faces ─────────────────────────────────────
-  const qualified = faces
-    .map((f) => qualifyFaceForPerson(f))
-    .filter((f): f is ParsedFace => f !== null);
-
-  if (qualified.length === 0) return { asset_faces: faces.length, people_touched: 0 };
-
-  const { data: existingPeople } = await sb
-    .from("people")
-    .select("id, auto_label, rekognition_face_ids, faces, cover_face_crop")
-    .eq("user_id", userId)
-    .like("auto_label", "auto:person:%");
-
-  const faceIdToPersonId = new Map<string, string>();
-  for (const p of existingPeople ?? []) {
-    for (const fid of ((p as any).rekognition_face_ids ?? []) as string[]) {
-      if (fid) faceIdToPersonId.set(fid, p.id);
-    }
-  }
-  let personCounter = existingPeople?.length ?? 0;
-  const touched = new Set<string>();
-
-  for (const face of qualified) {
-    // Already assigned (re-scan of an asset whose faces are clustered).
-    let personId = faceIdToPersonId.get(face.face_id) ?? null;
-
-    if (!personId) {
-      const match = await findBestPersonMatch(face, { collectionId, faceIdToPersonId });
-      personId = match?.personId ?? null;
-    }
-
-    if (!personId) {
-      personCounter++;
-      const autoLabel = `auto:person:${personCounter}`;
-      const { data: newPerson, error: npErr } = await sb
-        .from("people")
-        .upsert(
-          { user_id: userId, auto_label: autoLabel, display_name: `Person ${personCounter}`, consent_required: true },
-          { onConflict: "user_id,auto_label" },
-        )
-        .select("id").single();
-      if (npErr || !newPerson) {
-        console.error("storeFaceResults: person create failed", npErr?.message);
-        continue;
-      }
-      personId = newPerson.id;
-    }
-    if (!personId) continue;
-
-    faceIdToPersonId.set(face.face_id, personId);
-
-    // Merge this occurrence into people.faces and refresh derived columns.
-    const { data: person } = await sb
-      .from("people")
-      .select("id, faces, rekognition_face_ids")
-      .eq("id", personId)
-      .single();
-    if (!person) continue;
-
-    const occurrences: any[] = Array.isArray((person as any).faces) ? (person as any).faces : [];
-    const without = occurrences.filter(
-      (o) => !(o.asset_id === assetId && o.rekognition_face_id === face.face_id),
-    );
-    without.push({
-      asset_id:            assetId,
-      bbox:                face.bbox,
-      confidence:          face.confidence,
-      face_crop:           face.face_crop,
-      rekognition_face_id: face.face_id,
-    });
-
-    const faceIds = [...new Set([
-      ...(((person as any).rekognition_face_ids ?? []) as string[]),
-      face.face_id,
-    ])].filter(Boolean);
-
-    // Cover: highest-confidence occurrence that has a baked face_crop.
-    const best = without
-      .filter((o) => o.face_crop)
-      .sort((a, b) => Number(b.confidence ?? 0) - Number(a.confidence ?? 0))[0] ?? null;
-
-    const update: Record<string, unknown> = {
-      faces:                without,
-      face_count:           without.length,
-      rekognition_face_ids: faceIds,
-    };
-    if (best) {
-      update.cover_face_crop = best.face_crop;
-      update.cover_asset_id  = best.asset_id;
-      update.cover_bbox      = best.bbox;
-    }
-
-    const { error: updErr } = await sb.from("people").update(update).eq("id", personId);
-    if (updErr) console.error("storeFaceResults: people update failed", personId, updErr.message);
-    else touched.add(personId);
-  }
-
-  return { asset_faces: faces.length, people_touched: touched.size };
+  return { asset_faces: faces.length };
 }

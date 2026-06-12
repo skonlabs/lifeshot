@@ -108,10 +108,20 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
 
       const parsed = await parseDetectedFaces(analysis);
       const stored = await storeFaceResults({ analysis, faces: parsed });
-      console.log(`enrichAI: stored ${stored.asset_faces} face row(s), touched ${stored.people_touched} people for asset ${asset_id}`);
+      console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
     }
 
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
+
+    // Enqueue clusterPeople so the People page is updated promptly.
+    // clusterPeople is the sole writer to the people table — running it here
+    // rather than in storeFaceResults ensures a single serialised per-user
+    // write path, eliminating race conditions from parallel enrichAI jobs.
+    await enqueueJob("clusterPeople", {
+      userId: ctx.userId,
+      payload: { user_id: asset.user_id },
+      idempotencyKey: `people:${asset.user_id}:${new Date().toISOString().slice(0, 13)}`,
+    });
   }
 
   // ── Persist caption/tags/objects (faces written by storeFaceResults) ───────
