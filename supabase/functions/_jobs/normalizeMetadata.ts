@@ -464,22 +464,10 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           }
 
           if (ex.xmpIptc) {
-            await upsertLog(sb, "asset_xmp_iptc", {
-              asset_id, user_id: asset.user_id,
-              xmp_title: ex.xmpIptc.xmpTitle ?? null,
-              xmp_description: ex.xmpIptc.xmpDescription ?? null,
-              xmp_creator: ex.xmpIptc.xmpCreator ?? null,
-              xmp_rights: ex.xmpIptc.xmpRights ?? null,
-              xmp_keywords: ex.xmpIptc.xmpKeywords ?? null,
-              xmp_rating: ex.xmpIptc.xmpRating ?? null,
-              iptc_caption: ex.xmpIptc.iptcCaption ?? null,
-              iptc_headline: ex.xmpIptc.iptcHeadline ?? null,
-              iptc_keywords: ex.xmpIptc.iptcKeywords ?? null,
-              iptc_byline: ex.xmpIptc.iptcByline ?? null,
-              iptc_city: ex.xmpIptc.iptcCity ?? null,
-              iptc_state: ex.xmpIptc.iptcState ?? null,
-              iptc_country: ex.xmpIptc.iptcCountry ?? null,
-            }, { onConflict: "asset_id" }, "phase2-xmpiptc");
+            // asset_xmp_iptc was dropped in the schema consolidation. Keep
+            // parsing XMP/IPTC for diagnostics/future use, but do not persist
+            // into a non-existent table.
+            phase2Diag.xmpIptcDetected = true;
             byteExtractionSuccess = true;
           }
 
