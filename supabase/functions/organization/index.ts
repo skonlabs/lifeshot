@@ -494,6 +494,13 @@ app.post("/people/reset", async (c) => {
 
   // 2. Clear all face / person data for this user.
   const sb = getServiceClient();
+  const { data: assetRows } = await sb
+    .from("assets")
+    .select("id")
+    .eq("user_id", uid)
+    .in("media_type", ["photo", "live_photo", "animation"]);
+  const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
+
   const { error: fcErr } = await sb.from("face_clusters").delete().eq("user_id", uid);
   if (fcErr) throw new Error(`people/reset: face_clusters delete failed: ${fcErr.message}`);
 
