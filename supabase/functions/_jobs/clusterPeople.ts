@@ -2,6 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
 // Similarity threshold (percent) passed directly to Rekognition SearchFaces.
 // Rekognition itself decides whether two faces belong to the same person —
@@ -49,11 +50,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   const { data: privacy } = await sb
     .from("privacy_settings")
-    .select("face_processing_enabled")
+    .select("face_processing_enabled, face_pipeline_reset_at")
     .eq("user_id", uid)
     .maybeSingle();
   if (!privacy?.face_processing_enabled) {
     return { user_id: uid, skipped: "consent", clustered: 0 };
+  }
+
+  const initialResetGuard = await checkFaceResetGuard(sb, {
+    userId: uid,
+    jobId: ctx.jobId,
+    resetAt: privacy?.face_pipeline_reset_at ?? null,
+  });
+  if (!initialResetGuard.valid) {
+    return { user_id: uid, skipped: initialResetGuard.reason, clustered: 0 };
   }
 
   if (!rekognitionConfigured()) {
@@ -281,6 +291,21 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   let skippedCount = 0;
 
   for (const row of qualifying) {
+    const rowResetGuard = await checkFaceResetGuard(sb, {
+      userId: uid,
+      jobId: ctx.jobId,
+    });
+    if (!rowResetGuard.valid) {
+      return {
+        user_id: uid,
+        faces_processed: qualifying.length,
+        people_created: createdCount,
+        detections_linked: linkedCount,
+        skipped: skippedCount,
+        stopped: rowResetGuard.reason,
+      };
+    }
+
     const faceId = row.face_id;
     const faceJson = row.face; // Rekognition attributes, no FaceCrop
     const assetId = row.asset_id;
