@@ -2,6 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
 // Similarity threshold (percent) passed directly to Rekognition SearchFaces.
@@ -89,7 +90,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face: any;
   }
   const qualifying: FaceRow[] = (faceRows ?? [])
-    .filter((r: any) => r.face_id && r.asset_id)
+    .filter((r: any) => r.face_id && r.asset_id && isUsableIndexedFace(r.face))
     .sort((a: any, b: any) => {
       const assetCmp = String(a.asset_id).localeCompare(String(b.asset_id));
       if (assetCmp !== 0) return assetCmp;
@@ -127,10 +128,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   const { data: allAssetFaces } = await sb
     .from("asset_faces")
-    .select("person_id, face")
+    .select("id, asset_id, person_id, face")
     .eq("user_id", uid);
 
-  const existingLinks = (allAssetFaces ?? []).filter((row: any) => row.person_id);
+  const assetFaceRows = allAssetFaces ?? [];
+  const existingLinks = assetFaceRows.filter((row: any) => row.person_id);
 
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
@@ -292,6 +294,76 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return target;
   };
 
+  const unlinkFaceFromOtherPeople = async (targetPersonId: string, faceId: string): Promise<void> => {
+    const linkedPeople = Array.from(peopleById.values()).filter(
+      (person) => person.id !== targetPersonId && person.face_ids.includes(faceId),
+    );
+    const now = new Date().toISOString();
+
+    for (const linkedPerson of linkedPeople) {
+      const nextFaceIds = linkedPerson.face_ids.filter((id) => id !== faceId);
+      const nextCoverFaceId = linkedPerson.cover_face_id === faceId
+        ? (nextFaceIds[0] ?? null)
+        : linkedPerson.cover_face_id;
+      const staleAssetFaceIds = assetFaceRows
+        .filter((row: any) => row.person_id === linkedPerson.id && row.face?.FaceId === faceId)
+        .map((row: any) => row.id)
+        .filter(Boolean);
+
+      if (nextFaceIds.length === 0) {
+        const { error: deleteErr } = await sb.from("people").delete().eq("id", linkedPerson.id);
+        if (deleteErr) {
+          console.warn("clusterPeople: delete empty duplicate person failed", linkedPerson.id, deleteErr.message);
+          continue;
+        }
+        const { error: unlinkErr } = await sb
+          .from("asset_faces")
+          .update({ person_id: null, updated_at: now })
+          .in("id", staleAssetFaceIds);
+        if (unlinkErr) {
+          console.warn("clusterPeople: unlink duplicate asset_faces failed", linkedPerson.id, unlinkErr.message);
+        }
+        peopleById.delete(linkedPerson.id);
+      } else {
+        const nextCoverFace = nextCoverFaceId
+          ? assetFaceRows.find((row: any) => row.person_id === linkedPerson.id && row.face?.FaceId === nextCoverFaceId)?.face ?? null
+          : null;
+        const { error: updateErr } = await sb
+          .from("people")
+          .update({
+            face_ids: nextFaceIds,
+            face: nextCoverFace,
+            updated_at: now,
+          })
+          .eq("id", linkedPerson.id);
+        if (updateErr) {
+          console.warn("clusterPeople: remove stale face_id failed", linkedPerson.id, updateErr.message);
+          continue;
+        }
+        if (staleAssetFaceIds.length) {
+          const { error: unlinkErr } = await sb
+            .from("asset_faces")
+            .update({ person_id: null, updated_at: now })
+            .in("id", staleAssetFaceIds);
+          if (unlinkErr) {
+            console.warn("clusterPeople: unlink stale face rows failed", linkedPerson.id, unlinkErr.message);
+          }
+        }
+        linkedPerson.face_ids = nextFaceIds;
+        linkedPerson.cover_face_id = nextCoverFaceId;
+      }
+
+      for (const row of assetFaceRows) {
+        if (staleAssetFaceIds.includes(row.id)) row.person_id = null;
+      }
+
+      for (const fid of linkedPerson.face_ids) {
+        if (fid !== faceId) faceIdToPersonId.set(fid, linkedPerson.id);
+      }
+      faceIdToPersonId.delete(faceId);
+    }
+  };
+
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount = 0;
   let linkedCount = 0;
@@ -352,6 +424,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
 
     if (personId) {
+      await unlinkFaceFromOtherPeople(personId, faceId);
       const target = await ensurePersonOwnsFaceId(personId, faceId);
       if (!target) {
         skippedCount++;

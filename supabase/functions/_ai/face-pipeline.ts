@@ -20,6 +20,7 @@ import {
   rekognitionConfigured,
 } from "./rekognition.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
+import { isUsableIndexedFace } from "./face-quality.ts";
 
 const REKOGNITION_MAX_BYTES = 3_750_000;
 const DEDUP_SIMILARITY = 98;   // same physical face indexed twice in one collection
@@ -220,6 +221,11 @@ export async function analyzeAssetFaces(opts: {
   const seen = new Set<string>();
   const faceRecords: Array<Record<string, unknown>> = [];
   for (const r of records) {
+    if (!isUsableIndexedFace({ Confidence: r.confidence, FaceDetail: r.attributes })) {
+      toDelete.push(r.faceId);
+      continue;
+    }
+
     let canonicalFaceId = r.faceId;
     try {
       const matches = await searchFaces({
@@ -298,18 +304,10 @@ export async function parseDetectedFaces(analysis: FaceAnalysis): Promise<Parsed
  * Returns the face unchanged when it qualifies, null otherwise.
  */
 export function qualifyFaceForPerson(face: ParsedFace): ParsedFace | null {
-  // Use values straight from the Rekognition FaceDetail JSON:
-  // FaceOccluded.Value (boolean), Confidence (0-100), and Pose angles (degrees).
-  const attrs = face.attributes as any;
-  const notOccluded = attrs?.FaceOccluded?.Value === false;
-  const pose  = attrs?.Pose ?? {};
-  const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
-  const pitch = Math.abs(Number(pose.Pitch ?? 90));
-  // Exclude side profiles and severely tilted heads; these produce poor crops
-  // and cause false negative matches when clustering.
-  const notSideProfile = yaw < 40 && pitch < 35;
-  const qualifies = notOccluded && Number(attrs?.Confidence ?? 0) > 90 && notSideProfile;
-  return qualifies ? face : null;
+  return isUsableIndexedFace({
+    Confidence: face.confidence * 100,
+    FaceDetail: face.attributes ?? {},
+  }) ? face : null;
 }
 
 // ---------------------------------------------------------------------------
