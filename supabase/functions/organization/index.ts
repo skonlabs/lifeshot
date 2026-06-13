@@ -133,7 +133,7 @@ app.get("/people", async (c) => {
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
 
-  type PersonCoverCandidate = { asset_id: string; face_bbox: FaceBox | null; score: number };
+  type PersonCoverCandidate = { asset_id: string; face_bbox: FaceBox | null; score: number; face_crop: string | null };
   type PersonEntry = { id: string; display_name: string | null; asset_count: number; best: PersonCoverCandidate | null };
   const entries: PersonEntry[] = (rows ?? []).map((r: any) => ({
     id: r.id,
@@ -177,7 +177,7 @@ app.get("/people", async (c) => {
       );
       const current = bestByPerson.get(personId);
       if (!current || score > current.score) {
-        bestByPerson.set(personId, { asset_id: assetId, face_bbox: bbox, score });
+        bestByPerson.set(personId, { asset_id: assetId, face_bbox: bbox, score, face_crop: row.face?.FaceCrop ?? null });
       }
     }
 
@@ -226,9 +226,10 @@ app.get("/people", async (c) => {
           ?? asset?.proxy_cache_key
           ?? null,
       );
-      const cover = thumbUrl
+      const faceCrop = e.best?.face_crop ?? null;
+      const cover = (faceCrop || thumbUrl)
         ? {
-            face_crop: null,
+            face_crop: faceCrop,
             thumbnail_url: thumbUrl,
             face_bbox: e.best?.face_bbox ?? null,
             width: asset?.width ?? null,
