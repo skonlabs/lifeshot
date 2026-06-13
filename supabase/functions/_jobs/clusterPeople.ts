@@ -62,9 +62,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face_ids: Array.isArray(p.face_ids) ? p.face_ids : [],
   }));
 
+  const { data: existingLinks } = await sb
+    .from("asset_faces")
+    .select("person_id, face")
+    .eq("user_id", uid)
+    .not("person_id", "is", null);
+
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
   for (const p of people) for (const fid of p.face_ids) faceIdToPersonId.set(fid, p.id);
+  for (const row of existingLinks ?? []) {
+    const pid = row.person_id as string | null;
+    const fid = row.face?.FaceId as string | undefined;
+    if (pid && fid) faceIdToPersonId.set(fid, pid);
+  }
 
   // For auto-naming new persons.
   let maxPersonN = 0;
