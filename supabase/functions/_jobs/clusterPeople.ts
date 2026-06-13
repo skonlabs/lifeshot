@@ -6,7 +6,7 @@ import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/
 // Similarity threshold (percent) passed directly to Rekognition SearchFaces.
 // Rekognition itself decides whether two faces belong to the same person —
 // we do NOT filter or re-compare on our side.
-const SIMILARITY_THRESHOLD = 50;
+const SIMILARITY_THRESHOLD = 80;
 
 const SEARCH_PAGE_SIZE = 4096;
 
