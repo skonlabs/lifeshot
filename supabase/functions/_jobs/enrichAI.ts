@@ -127,7 +127,18 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       if (!postParseResetGuard.valid) {
         return { asset_id, skipped: postParseResetGuard.reason };
       }
-      const stored = await storeFaceResults({ analysis, faces: parsed });
+      const stored = await storeFaceResults({
+        analysis,
+        faces: parsed,
+        beforeWrite: async () => {
+          const guard = await checkFaceResetGuard(sb, {
+            userId: asset.user_id,
+            jobId: ctx.jobId,
+            resetAt: privacy?.face_pipeline_reset_at ?? null,
+          });
+          if (!guard.valid) throw new Error(guard.reason);
+        },
+      });
       console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
     }
 
