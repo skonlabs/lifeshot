@@ -55,7 +55,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // per-asset pass) — clusterPeople is the authoritative writer of people.
   let facesQuery = sb
     .from("asset_faces")
-    .select("asset_id, face_id, bbox, confidence, face_crop, attributes")
+    .select("asset_id, face_id, bbox, confidence, attributes")
     .eq("user_id", uid)
     .not("face_id", "is", null);
   if (asset_id) facesQuery = facesQuery.eq("asset_id", asset_id);
@@ -68,7 +68,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face_id:  string;
     bbox:     any;
     confidence: number;
-    face_crop:  string | null;
     attributes: any;
   }
 
@@ -92,7 +91,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       face_id:    f.face_id,
       bbox:       f.bbox ?? null,
       confidence,
-      face_crop:  f.face_crop ?? null,
       attributes: f.attributes ?? null,
     });
   }
@@ -200,31 +198,43 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
     // Keep occurrences from assets NOT processed in this run.
     const kept = existingFaces.filter((o: any) => !assetsInThisRun.has(o.asset_id));
-    // Add fresh occurrences from this run.
+    // Add fresh occurrences from this run (no face_crop — stored separately in
+    // asset_faces; including it here bloats the people.faces JSONB into 100MB+,
+    // which causes the bulk query above to return empty results silently).
     const fresh = entries.map((e) => ({
       asset_id:            e.asset_id,
       bbox:                e.bbox,
       confidence:          e.confidence,
-      face_crop:           e.face_crop,
       attributes:          e.attributes,
       rekognition_face_id: e.face_id,
     }));
     const merged = [...kept, ...fresh];
 
-    // Pick best cover from merged faces. Prefer solo-portrait assets (only one
-    // qualifying face from that asset in this person's list).
+    // Pick best cover candidate from merged faces by score.
+    // Prefer solo-portrait assets (only one qualifying face from that asset).
     const facesPerAsset = new Map<string, number>();
     for (const o of merged) facesPerAsset.set(o.asset_id, (facesPerAsset.get(o.asset_id) ?? 0) + 1);
 
-    let bestCover: any = null;
+    let bestCoverEntry: typeof fresh[0] | null = null;
     let bestScore = -1;
     for (const o of merged) {
-      if (!o.face_crop) continue;
       const s = coverScore(o.attributes ?? null);
       if (s < MIN_COVER_SCORE) continue;
       const isSolo = (facesPerAsset.get(o.asset_id) ?? 0) === 1;
       const adjusted = isSolo ? s * 1.3 : s;
-      if (adjusted > bestScore) { bestScore = adjusted; bestCover = o; }
+      if (adjusted > bestScore) { bestScore = adjusted; bestCoverEntry = o; }
+    }
+
+    // Fetch face_crop only for the chosen cover (single targeted row fetch).
+    let coverFaceCrop: string | null = null;
+    if (bestCoverEntry) {
+      const { data: cropRow } = await sb
+        .from("asset_faces")
+        .select("face_crop")
+        .eq("asset_id", bestCoverEntry.asset_id)
+        .eq("face_id", bestCoverEntry.rekognition_face_id)
+        .maybeSingle();
+      coverFaceCrop = cropRow?.face_crop ?? null;
     }
 
     const allFaceIds = [...new Set(
@@ -238,12 +248,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       face_count:           merged.length,
       rekognition_face_ids: allFaceIds,
     };
-    // Only set cover when we have a quality face_crop — never set cover_asset_id
-    // alone, which would cause the UI to show the full group-photo thumbnail.
-    if (bestCover?.face_crop) {
-      update.cover_face_crop = bestCover.face_crop;
-      update.cover_asset_id  = bestCover.asset_id;
-      update.cover_bbox      = bestCover.bbox;
+    if (coverFaceCrop && bestCoverEntry) {
+      update.cover_face_crop = coverFaceCrop;
+      update.cover_asset_id  = bestCoverEntry.asset_id;
+      update.cover_bbox      = bestCoverEntry.bbox;
     }
 
     const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
