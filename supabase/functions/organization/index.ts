@@ -576,14 +576,40 @@ app.post("/people/reset", async (c) => {
   const { error: queuePayloadErr } = await sb.from("job_queue")
     .delete()
     .in("job_name", ["clusterPeople", "clusterPlaces", "detectEvents"])
-    .eq("payload->>user_id", uid);
+    .filter("payload->>user_id", "eq", uid);
   if (queuePayloadErr) throw new Error(`people/reset: payload job_queue purge failed: ${queuePayloadErr.message}`);
 
-  const { error: ledgerPayloadErr } = await sb.from("job_ledger")
-    .delete()
-    .in("job_name", ["clusterPeople", "clusterPlaces", "detectEvents"])
-    .eq("payload->>user_id", uid);
-  if (ledgerPayloadErr) throw new Error(`people/reset: payload job_ledger purge failed: ${ledgerPayloadErr.message}`);
+  const legacyLedgerPrefixes = [
+    { job: "clusterPeople", prefix: `people:${uid}:` },
+    { job: "clusterPlaces", prefix: `places:${uid}:` },
+    { job: "detectEvents", prefix: `events:${uid}:` },
+  ] as const;
+  for (const entry of legacyLedgerPrefixes) {
+    const { error: legacyLedgerErr } = await sb.from("job_ledger")
+      .delete()
+      .eq("job_name", entry.job)
+      .like("idempotency_key", `${entry.prefix}%`);
+    if (legacyLedgerErr) throw new Error(`people/reset: legacy job_ledger purge failed: ${legacyLedgerErr.message}`);
+  }
+
+  if (assetIds.length > 0) {
+    for (let i = 0; i < assetIds.length; i += CHUNK) {
+      const chunk = assetIds.slice(i, i + CHUNK);
+      const { error: queueAssetErr } = await sb.from("job_queue")
+        .delete()
+        .eq("job_name", "enrichAI")
+        .in("payload->>asset_id", chunk);
+      if (queueAssetErr) throw new Error(`people/reset: asset job_queue purge failed: ${queueAssetErr.message}`);
+
+      for (const assetId of chunk) {
+        const { error: ledgerAssetErr } = await sb.from("job_ledger")
+          .delete()
+          .eq("job_name", "enrichAI")
+          .like("idempotency_key", `ai:${assetId}%`);
+        if (ledgerAssetErr) throw new Error(`people/reset: asset job_ledger purge failed: ${ledgerAssetErr.message}`);
+      }
+    }
+  }
 
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
   // Time-based idempotency key so repeated resets always re-enqueue.
