@@ -368,8 +368,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const faceJson = row.face; // Rekognition attributes, no FaceCrop
     const assetId = row.asset_id;
 
-    await unlinkFaceFromOtherPeople(personId ?? "", faceId);
-
     // 3a. Seed from existing local mapping.
     let personId: string | null = faceIdToPersonId.get(faceId) ?? null;
 
