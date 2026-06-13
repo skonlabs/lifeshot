@@ -28,8 +28,10 @@ export function isUsableFaceDetail(faceDetail: any): boolean {
   const sharpness = toNumber(faceDetail?.Quality?.Sharpness) ?? Number.NEGATIVE_INFINITY;
   const brightness = toNumber(faceDetail?.Quality?.Brightness) ?? Number.NEGATIVE_INFINITY;
   const notOccluded = toBoolean(faceDetail?.FaceOccluded?.Value) === false;
+  const eyesOpen = toBoolean(faceDetail?.EyesOpen?.Value) === true;
 
   return notOccluded
+    && eyesOpen
     && yaw <= FACE_CLUSTER_QUALITY.maxYaw
     && pitch <= FACE_CLUSTER_QUALITY.maxPitch
     && sharpness >= FACE_CLUSTER_QUALITY.minSharpness
