@@ -219,7 +219,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const existing = assetFaceByFaceId.get(row.face_id);
     row.asset_face_row_id = existing?.id ?? null;
   }
-  const existingLinks = assetFaceRows.filter((row: any) => row.person_id);
+  const existingLinks = assetFaceRows.filter((row: any) => row.person_id && isUsableIndexedFace(row.face));
 
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
@@ -539,7 +539,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const orphanIds = Array.from(peopleById.values())
-    .filter((person) => !assetFaceRows.some((row: any) => row.person_id === person.id))
+    .filter((person) => !assetFaceRows.some((row: any) => row.person_id === person.id && isUsableIndexedFace(row.face)))
     .map((person) => person.id);
   if (orphanIds.length) {
     const { error: cleanupErr } = await sb.from("people").delete().in("id", orphanIds);
