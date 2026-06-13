@@ -221,6 +221,11 @@ export async function analyzeAssetFaces(opts: {
   const seen = new Set<string>();
   const faceRecords: Array<Record<string, unknown>> = [];
   for (const r of records) {
+    if (!isUsableIndexedFace({ Confidence: r.confidence, FaceDetail: r.attributes })) {
+      toDelete.push(r.faceId);
+      continue;
+    }
+
     let canonicalFaceId = r.faceId;
     try {
       const matches = await searchFaces({
