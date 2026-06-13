@@ -5,10 +5,10 @@ import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/
 import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
-// Similarity threshold (percent) passed directly to Rekognition SearchFaces.
-// Rekognition itself decides whether two faces belong to the same person —
-// we do NOT filter or re-compare on our side.
-const SIMILARITY_THRESHOLD = 80;
+// Strict identity merge gate.
+// We pass 90 to Rekognition SearchFaces AND also verify the returned
+// Similarity locally before unioning two faces into the same person.
+const SIMILARITY_THRESHOLD = 90;
 
 const SEARCH_PAGE_SIZE = 4096;
 
@@ -371,6 +371,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       });
       for (const match of matches) {
         if (!match.faceId || match.faceId === row.face_id) continue;
+        if (match.similarity < SIMILARITY_THRESHOLD) continue;
         if (!qualifyingFaceIds.has(match.faceId)) continue;
         uf.union(row.face_id, match.faceId);
       }
