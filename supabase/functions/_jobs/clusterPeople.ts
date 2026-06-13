@@ -275,35 +275,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return target;
   };
 
-  const findBestComparedPersonId = async (faceId: string): Promise<string | null> => {
-    const sourceBytes = faceCropByFaceId.get(faceId);
-    if (!sourceBytes) return null;
-
-    let bestPersonId: string | null = null;
-    let bestSimilarity = -1;
-
-    for (const [candidateFaceId, candidatePersonId] of faceIdToPersonId.entries()) {
-      if (!candidatePersonId || candidateFaceId === faceId) continue;
-      const targetBytes = faceCropByFaceId.get(candidateFaceId);
-      if (!targetBytes) continue;
-      try {
-        const similarity = await compareFaces({
-          sourceImageBytes: sourceBytes,
-          targetImageBytes: targetBytes,
-          similarityThreshold: FACE_COMPARE_THRESHOLD,
-        });
-        if (similarity !== null && similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestPersonId = candidatePersonId;
-        }
-      } catch (e: any) {
-        console.warn("clusterPeople: CompareFaces failed", faceId, candidateFaceId, String(e?.message ?? e));
-      }
-    }
-
-    return bestPersonId;
-  };
-
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount = 0;
   let linkedCount = 0;
@@ -358,21 +329,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       linkedCount++;
     }
 
-    if (!personId) {
-      const comparedPersonId = await findBestComparedPersonId(faceId);
-      if (comparedPersonId) {
-        personId = comparedPersonId;
-        const target = await ensurePersonOwnsFaceId(personId, faceId);
-        if (!target) {
-          skippedCount++;
-          continue;
-        }
-        faceIdToPersonId.set(faceId, personId);
-        linkedCount++;
-      }
-    }
-
-    // 3c. No match after exhaustive compare → create a new person.
+    // 3c. No match at the Rekognition similarity threshold → create a new person.
     if (!personId) {
       maxPersonN++;
       const displayName = `Person ${maxPersonN}`;
