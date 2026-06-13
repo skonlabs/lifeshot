@@ -504,7 +504,6 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       device_model: a.device_model ?? null,
       thumbnail_cache_key: a.thumbnail_url ?? null,
       proxy_cache_key: a.preview_url ?? null,
-      status: "ingested",
     }));
     const { data: inserted, error: insertErr } = await sb.from("assets")
       .insert(rows).select("id");

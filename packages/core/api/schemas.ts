@@ -164,7 +164,7 @@ export const EventSummary = z.object({
 });
 export const PersonSummary = z.object({
   id: z.string().uuid(), display_name: z.string().nullable(),
-  asset_count: z.number().int(), consent_required: z.boolean(),
+  asset_count: z.number().int(),
   cover: AssetDescriptor.nullable(),
 });
 export const PlaceSummary = z.object({
