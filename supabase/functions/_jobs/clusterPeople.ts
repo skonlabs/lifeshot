@@ -1,29 +1,14 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
-import { compareFaces, searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
-// SearchFaces similarity threshold for linking a new detection to an existing
-// person. The user asked for >0.50 confidence.
+// Similarity threshold (percent) passed directly to Rekognition SearchFaces.
+// Rekognition itself decides whether two faces belong to the same person —
+// we do NOT filter or re-compare on our side.
 const SIMILARITY_THRESHOLD = 50;
 
 const SEARCH_PAGE_SIZE = 4096;
-
-const FACE_COMPARE_THRESHOLD = 50;
-
-function dataUrlToBytes(dataUrl: string | null | undefined): Uint8Array | null {
-  if (!dataUrl || typeof dataUrl !== "string") return null;
-  const comma = dataUrl.indexOf(",");
-  if (comma < 0) return null;
-  try {
-    const binary = atob(dataUrl.slice(comma + 1));
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
 
 function uniqueFaceIds(faceIds: string[]): string[] {
   return Array.from(new Set(faceIds.filter(Boolean)));
