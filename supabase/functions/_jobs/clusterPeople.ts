@@ -4,9 +4,14 @@ import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 // SearchFaces similarity threshold for linking a new detection to an existing
-// person. The user asked for ≥50% — keep it conservative; tighten later if we
-// see false merges.
+// person. The user asked for >0.50 confidence.
 const SIMILARITY_THRESHOLD = 50;
+
+const SEARCH_PAGE_SIZE = 4096;
+
+function uniqueFaceIds(faceIds: string[]): string[] {
+  return Array.from(new Set(faceIds.filter(Boolean)));
+}
 
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -57,9 +62,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face_ids: Array.isArray(p.face_ids) ? p.face_ids : [],
   }));
 
+  const { data: existingLinks } = await sb
+    .from("asset_faces")
+    .select("person_id, face")
+    .eq("user_id", uid)
+    .not("person_id", "is", null);
+
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
   for (const p of people) for (const fid of p.face_ids) faceIdToPersonId.set(fid, p.id);
+  for (const row of existingLinks ?? []) {
+    const pid = row.person_id as string | null;
+    const fid = row.face?.FaceId as string | undefined;
+    if (pid && fid) faceIdToPersonId.set(fid, pid);
+  }
 
   // For auto-naming new persons.
   let maxPersonN = 0;
@@ -67,6 +83,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const m = String(p.display_name ?? "").match(/^Person (\d+)$/);
     if (m) maxPersonN = Math.max(maxPersonN, Number(m[1]));
   }
+
+  const peopleById = new Map<string, PersonRow>(people.map((p) => [p.id, p]));
+  const personFaceIds = uniqueFaceIds(people.flatMap((p) => p.face_ids));
+  const searchMaxFaces = Math.max(SEARCH_PAGE_SIZE, personFaceIds.length + qualifying.length + 32);
 
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount  = 0;
@@ -88,7 +108,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           collectionId,
           faceId,
           faceMatchThreshold: SIMILARITY_THRESHOLD,
-          maxFaces: 20,
+          maxFaces: searchMaxFaces,
         });
         // Highest similarity first; first match that maps to a known person wins.
         const sorted = matches
@@ -100,9 +120,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         }
         if (personId) {
           // Append this faceId to the matched person's face_ids set.
-          const target = people.find((p) => p.id === personId)!;
+          const target = peopleById.get(personId);
+          if (!target) {
+            skippedCount++;
+            continue;
+          }
           if (!target.face_ids.includes(faceId)) {
-            target.face_ids.push(faceId);
+            target.face_ids = uniqueFaceIds([...target.face_ids, faceId]);
             const { error: upErr } = await sb.from("people")
               .update({ face_ids: target.face_ids, updated_at: new Date().toISOString() })
               .eq("id", personId);
@@ -138,7 +162,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         continue;
       }
       personId = inserted.id;
-      people.push({ id: personId, display_name: displayName, face_ids: [faceId] });
+      const created = { id: personId, display_name: displayName, face_ids: [faceId] };
+      people.push(created);
+      peopleById.set(personId, created);
       faceIdToPersonId.set(faceId, personId);
       createdCount++;
     }
