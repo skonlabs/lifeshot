@@ -30,7 +30,7 @@ supabase gen types typescript --project-id vohevknnbvpaooletyts --schema public 
 | ANN index | hnsw (m=16, ef_construction=64), cosine | > ~1M vectors/user-set |
 | FTS language | english + simple | multi-language users |
 | Partitioning | partition-ready columns; not partitioned yet | Stage-4 scale |
-| person_faces | table exists, write gated on face_recognition consent | always |
+| Face detections live on `asset_faces`; person aggregation lives on `people` | revisit only if face schema changes again |
 
 ## Test checklist (Definition of Done)
 
@@ -41,4 +41,4 @@ supabase gen types typescript --project-id vohevknnbvpaooletyts --schema public 
 - `merge_assets` / `split_source_ref` reversible and audited
 - `disconnect_source` / `delete_account` cascade and write audit completion
 - `source_providers` seeded with the 11 providers
-- `match_assets_by_embedding`, `hybrid_search`, `get_viewport`, `get_dashboard_counts`, `get_facets` return results on seed
+- `hybrid_search`, `get_viewport`, `get_dashboard_counts`, `get_facets` return results on seed

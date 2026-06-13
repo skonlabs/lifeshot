@@ -29,16 +29,18 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
 
   // ── Resolve image URLs (original / preview / thumbnail) ────────────────────
   async function signDerivative(kind: "preview" | "thumb"): Promise<string | null> {
-    const { data: deriv } = await sb
-      .from("asset_derivatives")
-      .select("storage_path, storage_bucket")
+    const { data: mm } = await sb
+      .from("asset_media_metadata")
+      .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
       .eq("asset_id", asset_id)
-      .eq("kind", kind)
       .maybeSingle();
-    if (!deriv?.storage_path) return null;
+    const directUrl = kind === "preview" ? mm?.preview_url : mm?.thumbnail_url;
+    if (directUrl && /^https?:\/\//.test(directUrl)) return directUrl;
+    const storagePath = kind === "preview" ? mm?.preview_storage_path : mm?.thumbnail_storage_path;
+    if (!storagePath) return null;
     const { data: signed } = await sb.storage
-      .from(deriv.storage_bucket)
-      .createSignedUrl(deriv.storage_path, 600);
+      .from(STORAGE_BUCKETS.derived)
+      .createSignedUrl(storagePath, 600);
     return signed?.signedUrl ?? null;
   }
 

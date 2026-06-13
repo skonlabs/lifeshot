@@ -36,10 +36,8 @@ async function findOrCreateAsset(
       .maybeSingle();
     if (ref?.asset_id) return { assetId: ref.asset_id as string, created: false };
   }
-  // asset_file_metadata path-hash lookup was removed when that table was
-  // dropped in the B-NUKE consolidation. Local/browser scans without a
-  // source_account_id now always create a new asset (idempotency handled by
-  // checksum_hash dedup downstream).
+  // Local/browser scans without a source_account_id now always create a new
+  // asset here; idempotency is handled later by checksum-based dedup.
 
   const { data: created, error } = await svc.from("assets").insert({
     user_id: userId,
@@ -96,7 +94,6 @@ async function writeSourceRef(svc: Svc, userId: string, assetId: string, rec: Ca
     source_uploaded_at: src.sourceUploadedAt ?? null,
     source_last_seen_at: new Date().toISOString(),
     is_primary: true,
-    last_seen_at: new Date().toISOString(),
   }, { onConflict: "source_account_id,source_asset_id" });
 }
 
@@ -112,7 +109,7 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
 
   if (rec.fileSystem) {
     const f = rec.fileSystem;
-    // asset_file_metadata dropped → filename / paths now on `assets` directly.
+    // Filename and path fields live on `assets` directly.
     await svc.from("assets").update({
       filename: f.filename ?? null,
       relative_path: f.relativePath ?? null,
@@ -179,7 +176,7 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
       timezone_from_location: g.timezoneFromLocation,
     });
   }
-  // asset_xmp_iptc was dropped in B-NUKE; XMP/IPTC fields are no longer persisted.
+  // XMP/IPTC fields are parsed when available but are not persisted.
   if (rec.video) {
     const v = rec.video;
     await upsertOne(svc, "asset_video_metadata", {

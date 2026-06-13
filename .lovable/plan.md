@@ -6,7 +6,7 @@ After a full trace of the pipeline (`syncSource → normalizeMetadata → enrich
 
 - **Sync / force-sync flow.** `force` clears cursors, bypasses staleness, and uses a unique run-id idempotency key. Normal sync resumes from `source_sync_cursors`.
 - **Auto-stop when done.** `source_sync_jobs.status` flips to `completed` only when there are no more pages *and* zero pending `normalizeMetadata` jobs. Worker self-perpetuates only while `job_queue` has pending rows, then naturally stops.
-- **Data extraction coverage.** Every job writes to the right tables (`assets`, `asset_media_metadata`, `asset_exif`, `asset_gps`, `asset_xmp_iptc`, `asset_ai_enrichment`, `people`, `places`, `events`, `event_assets`, etc.). No table is being skipped.
+- **Data extraction coverage.** Every job writes to the right live tables (`assets`, `asset_media_metadata`, `asset_exif`, `asset_gps`, `asset_ai_enrichment`, `people`, `places`, `events`, `event_assets`, etc.). No table is being skipped.
 - **Loop safety.** `syncSource` already detects identical-cursor loops and force-terminates.
 
 ## Real bugs to fix

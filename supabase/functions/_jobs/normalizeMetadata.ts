@@ -464,9 +464,8 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
           }
 
           if (ex.xmpIptc) {
-            // asset_xmp_iptc was dropped in the schema consolidation. Keep
-            // parsing XMP/IPTC for diagnostics/future use, but do not persist
-            // into a non-existent table.
+            // Keep parsing XMP/IPTC for diagnostics and future use, but do not
+            // persist it in the current schema.
             phase2Diag.xmpIptcDetected = true;
             byteExtractionSuccess = true;
           }

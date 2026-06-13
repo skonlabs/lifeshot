@@ -14,13 +14,11 @@ classifier → extractors (image,    POST /v1/:id/batch (idempotent) →  scan_b
   video, audio, doc, hashes)              ingestBatch()                  +
       ↓                                       ↓                       assets
 pending batch (≤ 50 records)         findOrCreateAsset()              asset_source_refs
-      ↓                              writeSourceRef()                 asset_file_metadata
-sync-client → POST batch             writeMetadataRows()              asset_media_metadata
-                                     generateSearchDocument()          asset_exif / gps / xmp_iptc
-                                                                       asset_video / document / audio
-                                                                       asset_hashes / preview
-                                                                       asset_ai_ready / organization
-                                                                       asset_search_documents
+      ↓                              writeSourceRef()                 asset_media_metadata
+sync-client → POST batch             writeMetadataRows()              asset_exif / gps
+                                     generateSearchDocument()         asset_video / document / audio
+                                                                       asset_ai_enrichment
+                                                                       assets.search_content
       ↓
 POST /v1/:id/finalize  →  scan_sessions.status = 'completed'
 ```
@@ -92,11 +90,9 @@ in once the spec-required connectors ship.
 
 Migration `supabase/migrations/20260531150000_metadata_engine.sql` introduces:
 
-- `scan_sessions`, `scan_roots`, `scan_checkpoints`, `scan_batches`, `scan_errors`
-- `asset_file_metadata`, `asset_media_metadata`, `asset_gps`, `asset_xmp_iptc`,
-  `asset_video_metadata`, `asset_document_metadata`, `asset_audio_metadata`,
-  `asset_hashes`, `asset_preview_metadata`, `asset_ai_ready_metadata`,
-  `asset_organization_signals`
+- `scan_sessions`, `scan_checkpoints`, `scan_batches`, `scan_errors`
+- `asset_media_metadata`, `asset_gps`, `asset_video_metadata`,
+  `asset_document_metadata`, `asset_audio_metadata`
 - Augments `asset_exif`, `asset_source_refs`, `source_accounts` with the
   spec's missing columns.
 
