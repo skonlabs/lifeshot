@@ -35,8 +35,14 @@ app.post("/consent", async (c) => {
   // Revoking AI/face consent deletes derived AI data immediately.
   if (!body.granted && (body.scope === "ai_processing" || body.scope === "face_recognition")) {
     const svc = getServiceClient();
+    const { data: assetRows } = await svc.from("assets").select("id").eq("user_id", uid);
+    const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
     await svc.from("asset_ai_enrichment").delete().eq("user_id", uid);
     await svc.from("asset_faces").delete().eq("user_id", uid);
+    await svc.from("face_clusters").delete().eq("user_id", uid);
+    if (assetIds.length > 0) {
+      await svc.from("person_faces").delete().in("asset_id", assetIds);
+    }
     await svc.from("people").delete().eq("user_id", uid);
   }
   emitEvent(c, "privacy.consent", { scope: body.scope, granted: body.granted });
@@ -55,7 +61,16 @@ app.delete("/derived-data", async (c) => {
   let fq = svc.from("asset_faces").delete().eq("user_id", uid);
   if (body.scope === "asset" && body.target_id) fq = fq.eq("asset_id", body.target_id);
   await fq;
+  if (body.scope === "asset" && body.target_id) {
+    await svc.from("person_faces").delete().eq("asset_id", body.target_id);
+  }
   if (body.scope === "all") {
+    const { data: assetRows } = await svc.from("assets").select("id").eq("user_id", uid);
+    const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
+    await svc.from("face_clusters").delete().eq("user_id", uid);
+    if (assetIds.length > 0) {
+      await svc.from("person_faces").delete().in("asset_id", assetIds);
+    }
     await svc.from("people").delete().eq("user_id", uid);
   }
   await cache.invalidateUser(uid);

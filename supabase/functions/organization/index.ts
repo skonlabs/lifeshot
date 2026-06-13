@@ -494,9 +494,25 @@ app.post("/people/reset", async (c) => {
 
   // 2. Clear all face / person data for this user.
   const sb = getServiceClient();
+  const { data: assetRows } = await sb
+    .from("assets")
+    .select("id")
+    .eq("user_id", uid)
+    .in("media_type", ["photo", "live_photo", "animation"]);
+  const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
+
+  if (assetIds.length > 0) {
+    const { error: pfErr } = await sb.from("person_faces").delete().in("asset_id", assetIds);
+    if (pfErr) throw new Error(`people/reset: person_faces delete failed: ${pfErr.message}`);
+  }
+
+  const { error: fcErr } = await sb.from("face_clusters").delete().eq("user_id", uid);
+  if (fcErr) throw new Error(`people/reset: face_clusters delete failed: ${fcErr.message}`);
+
   const { error: afErr } = await sb.from("asset_faces").delete().eq("user_id", uid);
   if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
-  await sb.from("people").delete().eq("user_id", uid);
+  const { error: peopleErr } = await sb.from("people").delete().eq("user_id", uid);
+  if (peopleErr) throw new Error(`people/reset: people delete failed: ${peopleErr.message}`);
   await sb.from("asset_ai_enrichment")
     .update({ faces: [], face_count: 0 })
     .eq("user_id", uid);
@@ -532,16 +548,11 @@ app.post("/people/reset", async (c) => {
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
   // Time-based idempotency key so repeated resets always re-enqueue.
   const resetEpoch = Date.now();
-  const { data: assetRows } = await sb
-    .from("assets")
-    .select("id")
-    .eq("user_id", uid)
-    .in("media_type", ["photo", "live_photo", "animation"]);
 
-  const jobs = (assetRows ?? []).map((a: { id: string }) => ({
+  const jobs = assetIds.map((id: string) => ({
     job_name: "enrichAI",
-    payload: { asset_id: a.id },
-    idempotency_key: `ai:${a.id}:face-reset-${resetEpoch}`,
+    payload: { asset_id: id },
+    idempotency_key: `ai:${id}:face-reset-${resetEpoch}`,
     status: "pending",
     user_id: uid,
     priority: 5,
