@@ -94,7 +94,6 @@ async function writeSourceRef(svc: Svc, userId: string, assetId: string, rec: Ca
     source_uploaded_at: src.sourceUploadedAt ?? null,
     source_last_seen_at: new Date().toISOString(),
     is_primary: true,
-    last_seen_at: new Date().toISOString(),
   }, { onConflict: "source_account_id,source_asset_id" });
 }
 
