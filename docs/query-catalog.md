@@ -73,22 +73,6 @@ the canonical form; RPCs are called via `supabase.rpc(name, params)`.
 - Insert correction: `insert into user_corrections(user_id, target_type, target_id, correction) ...`
 - Merge / Split: `select merge_assets($survivor, $merged, $reason)`, `select split_source_ref($ref, $reason)` — RPCs
 
-## GRAPH
-- Insert node: `insert into memory_nodes(user_id, node_type, ref_id, props) values (...)`
-- Insert edge: `insert into memory_edges(from_node_id, to_node_id, edge_type, weight, props) values (...)`
-- Neighbors (recursive CTE):
-  ```sql
-  with recursive walk as (
-    select id, 0 d from memory_nodes where ref_id = $1
-    union all
-    select e.to_node_id, w.d + 1 from memory_edges e
-      join walk w on e.from_node_id = w.id
-     where w.d < $2
-  )
-  select distinct n.* from walk w join memory_nodes n on n.id = w.id;
-  ```
-- Snapshot: `insert into graph_snapshots(user_id, snapshot) values (auth.uid(), $1)`
-
 ## PRIVACY / LIFECYCLE
 - Write consent: `insert into consent_records(user_id, scope, granted, granted_at, version) ...`
 - Delete derived for source: handled inside `disconnect_source(...)`
