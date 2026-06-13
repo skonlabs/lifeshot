@@ -26,6 +26,15 @@ function getCredentials() {
   return { region, accessKeyId, secretAccessKey };
 }
 
+function toBase64(bytes: Uint8Array): string {
+  let b64 = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    b64 += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(b64);
+}
+
 export function rekognitionConfigured(): boolean {
   const { accessKeyId, secretAccessKey } = getCredentials();
   return !!(accessKeyId && secretAccessKey);
@@ -141,14 +150,7 @@ export async function indexFaces(opts: {
   qualityFilter: "NONE" | "AUTO" | "LOW" | "MEDIUM" | "HIGH";
 }): Promise<RekFaceRecord[]> {
   const { region, accessKeyId, secretAccessKey } = getCredentials();
-  // btoa(String.fromCharCode(...bytes)) overflows the stack for large images.
-  // Chunk it to avoid the spread-into-args limit.
-  let b64 = "";
-  const chunk = 8192;
-  for (let i = 0; i < opts.imageBytes.length; i += chunk) {
-    b64 += String.fromCharCode(...opts.imageBytes.subarray(i, i + chunk));
-  }
-  b64 = btoa(b64);
+  const b64 = toBase64(opts.imageBytes);
   const data = await signedRequest({
     region, accessKeyId, secretAccessKey,
     target: "RekognitionService.IndexFaces",
@@ -200,6 +202,29 @@ export async function searchFaces(opts: {
     faceId: String(m.Face?.FaceId ?? ""),
     similarity: Number(m.Similarity ?? 0),
   }));
+}
+
+export async function compareFaces(opts: {
+  sourceImageBytes: Uint8Array;
+  targetImageBytes: Uint8Array;
+  similarityThreshold: number;
+}): Promise<number | null> {
+  const { region, accessKeyId, secretAccessKey } = getCredentials();
+  const data = await signedRequest({
+    region, accessKeyId, secretAccessKey,
+    target: "RekognitionService.CompareFaces",
+    body: {
+      SourceImage: { Bytes: toBase64(opts.sourceImageBytes) },
+      TargetImage: { Bytes: toBase64(opts.targetImageBytes) },
+      SimilarityThreshold: opts.similarityThreshold,
+    },
+  });
+
+  const similarities = (data.FaceMatches ?? [])
+    .map((m: any) => Number(m.Similarity ?? 0))
+    .filter((similarity: number) => Number.isFinite(similarity) && similarity >= opts.similarityThreshold);
+
+  return similarities.length ? Math.max(...similarities) : null;
 }
 
 export async function deleteFaces(opts: {
