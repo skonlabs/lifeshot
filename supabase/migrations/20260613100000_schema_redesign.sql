@@ -55,8 +55,11 @@ BEGIN
       AND column_name  = 'tags'
       AND data_type    = 'ARRAY'
   ) THEN
+    -- Drop the text[] default first so PostgreSQL can cast the column type.
+    ALTER TABLE public.asset_ai_enrichment ALTER COLUMN tags DROP DEFAULT;
     ALTER TABLE public.asset_ai_enrichment
       ALTER COLUMN tags TYPE jsonb USING to_jsonb(tags);
+    ALTER TABLE public.asset_ai_enrichment ALTER COLUMN tags SET DEFAULT '[]'::jsonb;
   END IF;
 END $$;
 
