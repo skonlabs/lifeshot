@@ -128,6 +128,61 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const personFaceIds = uniqueFaceIds(people.flatMap((p) => p.face_ids));
   const searchMaxFaces = Math.max(SEARCH_PAGE_SIZE, personFaceIds.length + qualifying.length + 32);
 
+  const mergePeople = async (survivorId: string, duplicateIds: string[]): Promise<PersonRow | null> => {
+    const survivor = peopleById.get(survivorId);
+    const dedupedIds = Array.from(new Set(duplicateIds.filter((id) => id && id !== survivorId && peopleById.has(id))));
+    if (!survivor) return null;
+    if (!dedupedIds.length) return survivor;
+
+    const mergedFaceIds = uniqueFaceIds([
+      ...survivor.face_ids,
+      ...dedupedIds.flatMap((id) => peopleById.get(id)?.face_ids ?? []),
+      survivor.cover_face_id ?? "",
+    ]);
+
+    const now = new Date().toISOString();
+    const { error: peopleErr } = await sb.from("people")
+      .update({ face_ids: mergedFaceIds, updated_at: now })
+      .eq("id", survivorId);
+    if (peopleErr) {
+      console.warn("clusterPeople: merge people update failed", survivorId, peopleErr.message);
+      return null;
+    }
+
+    const { error: relinkErr } = await sb.from("asset_faces")
+      .update({ person_id: survivorId, updated_at: now })
+      .in("person_id", dedupedIds);
+    if (relinkErr) {
+      console.warn("clusterPeople: merge asset_faces relink failed", survivorId, relinkErr.message);
+      return null;
+    }
+
+    const { error: eventRelinkErr } = await sb.from("event_people")
+      .update({ person_id: survivorId })
+      .in("person_id", dedupedIds);
+    if (eventRelinkErr) {
+      console.warn("clusterPeople: merge event_people relink failed", survivorId, eventRelinkErr.message);
+    }
+
+    const { error: deleteErr } = await sb.from("people")
+      .delete()
+      .in("id", dedupedIds);
+    if (deleteErr) {
+      console.warn("clusterPeople: delete merged duplicate people failed", survivorId, deleteErr.message);
+      return null;
+    }
+
+    survivor.face_ids = mergedFaceIds;
+    for (const fid of mergedFaceIds) faceIdToPersonId.set(fid, survivorId);
+    for (const duplicateId of dedupedIds) {
+      const duplicate = peopleById.get(duplicateId);
+      for (const fid of duplicate?.face_ids ?? []) faceIdToPersonId.set(fid, survivorId);
+      peopleById.delete(duplicateId);
+    }
+
+    return survivor;
+  };
+
   const ensurePersonOwnsFaceId = async (personId: string, faceId: string): Promise<PersonRow | null> => {
     const target = peopleById.get(personId);
     if (!target) return null;
@@ -174,9 +229,19 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         const sorted = matches
           .filter((m) => m.faceId && m.faceId !== faceId)
           .sort((a, b) => b.similarity - a.similarity);
+        const matchedPersonIds: string[] = [];
         for (const m of sorted) {
           const pid = faceIdToPersonId.get(m.faceId);
-          if (pid) { personId = pid; break; }
+          if (!pid) continue;
+          matchedPersonIds.push(pid);
+          if (!personId) personId = pid;
+        }
+        if (personId && matchedPersonIds.length > 1) {
+          const merged = await mergePeople(personId, matchedPersonIds);
+          if (!merged) {
+            skippedCount++;
+            continue;
+          }
         }
         if (personId) {
           const target = await ensurePersonOwnsFaceId(personId, faceId);
