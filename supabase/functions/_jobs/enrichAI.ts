@@ -119,7 +119,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // later enqueues — faces stored after that run would never be clustered.
     await enqueueJob("clusterPeople", {
       userId: ctx.userId,
-      payload: { user_id: asset.user_id },
+      payload: { user_id: asset.user_id, asset_id },
       idempotencyKey: `people:${asset.user_id}:${asset_id}`,
     });
   }

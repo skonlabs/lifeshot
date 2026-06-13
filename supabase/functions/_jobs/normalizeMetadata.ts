@@ -510,10 +510,11 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
   // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
   // as a fallback) after enrichment data is available — see those handlers.
-  // clusterPeople / clusterPlaces / detectEvents are coalesced to one run per user
-  // per day instead of one run per asset.
+  // clusterPlaces / detectEvents are coalesced to one run per user
+  // per day instead of one run per asset. clusterPeople is queued by enrichAI
+  // after face rows are written, so re-enqueueing it here only causes full-user
+  // reprocessing and duplicate race windows.
   const clusteringKey = sync_run_id ?? force_sync_run_id ?? new Date().toISOString().slice(0, 13);
-  await enqueueJob("clusterPeople", { userId: ctx.userId, payload: { user_id: asset.user_id }, idempotencyKey: `people:${asset.user_id}:${clusteringKey}` });
   // Always enqueue — clusterPlaces does its own cheap scan and exits early
   // when there is nothing to geocode. The previous `if (hasGpsData)` guard
   // missed cases where GPS arrived on a later asset in the same sync run.
