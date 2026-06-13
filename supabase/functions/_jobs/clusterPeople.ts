@@ -325,10 +325,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         }
         peopleById.delete(linkedPerson.id);
       } else {
+        const nextCoverFace = nextCoverFaceId
+          ? assetFaceRows.find((row: any) => row.person_id === linkedPerson.id && row.face?.FaceId === nextCoverFaceId)?.face ?? null
+          : null;
         const { error: updateErr } = await sb
           .from("people")
           .update({
             face_ids: nextFaceIds,
+            face: nextCoverFace,
             updated_at: now,
           })
           .eq("id", linkedPerson.id);
