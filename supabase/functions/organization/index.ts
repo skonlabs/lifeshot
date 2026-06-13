@@ -501,11 +501,6 @@ app.post("/people/reset", async (c) => {
     .in("media_type", ["photo", "live_photo", "animation"]);
   const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
 
-  if (assetIds.length > 0) {
-    const { error: pfErr } = await sb.from("person_faces").delete().in("asset_id", assetIds);
-    if (pfErr) throw new Error(`people/reset: person_faces delete failed: ${pfErr.message}`);
-  }
-
   const { error: fcErr } = await sb.from("face_clusters").delete().eq("user_id", uid);
   if (fcErr) throw new Error(`people/reset: face_clusters delete failed: ${fcErr.message}`);
 
