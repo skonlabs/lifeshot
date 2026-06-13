@@ -298,6 +298,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const linkedPeople = Array.from(peopleById.values()).filter(
       (person) => person.id !== targetPersonId && person.face_ids.includes(faceId),
     );
+    const now = new Date().toISOString();
 
     for (const linkedPerson of linkedPeople) {
       const nextFaceIds = linkedPerson.face_ids.filter((id) => id !== faceId);
@@ -313,7 +314,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         }
         const { error: unlinkErr } = await sb
           .from("asset_faces")
-          .update({ person_id: null, updated_at: new Date().toISOString() })
+          .update({ person_id: null, updated_at: now })
           .eq("person_id", linkedPerson.id);
         if (unlinkErr) {
           console.warn("clusterPeople: unlink duplicate asset_faces failed", linkedPerson.id, unlinkErr.message);
@@ -324,8 +325,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           .from("people")
           .update({
             face_ids: nextFaceIds,
-            face: nextCoverFaceId ? { FaceId: nextCoverFaceId } : linkedPerson.cover_face_id,
-            updated_at: new Date().toISOString(),
+            updated_at: now,
           })
           .eq("id", linkedPerson.id);
         if (updateErr) {
@@ -335,6 +335,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         linkedPerson.face_ids = nextFaceIds;
         linkedPerson.cover_face_id = nextCoverFaceId;
       }
+
+      for (const fid of linkedPerson.face_ids) {
+        if (fid !== faceId) faceIdToPersonId.set(fid, linkedPerson.id);
+      }
+      faceIdToPersonId.delete(faceId);
     }
   };
 
