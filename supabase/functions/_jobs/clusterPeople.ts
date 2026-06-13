@@ -2,6 +2,7 @@
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
 // Similarity threshold (percent) passed directly to Rekognition SearchFaces.
@@ -89,7 +90,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face: any;
   }
   const qualifying: FaceRow[] = (faceRows ?? [])
-    .filter((r: any) => r.face_id && r.asset_id)
+    .filter((r: any) => r.face_id && r.asset_id && isUsableIndexedFace(r.face))
     .sort((a: any, b: any) => {
       const assetCmp = String(a.asset_id).localeCompare(String(b.asset_id));
       if (assetCmp !== 0) return assetCmp;
