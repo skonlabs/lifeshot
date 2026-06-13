@@ -484,7 +484,6 @@ app.post("/assets/bulk", async (c) => {
  * The pipeline will re-detect and re-cluster everything from scratch.
  */
 app.post("/people/reset", async (c) => {
-  const supa = c.get("supabase");
   const uid = c.get("userId") as string;
 
   // 1. Nuke the Rekognition collection.
@@ -493,6 +492,8 @@ app.post("/people/reset", async (c) => {
   }
 
   // 2. Clear all face / person data for this user.
+  // Some legacy rows/jobs were written with a missing user_id, so purge by the
+  // user's asset/person ids as well — not only by user_id.
   const sb = getServiceClient();
   const { data: assetRows } = await sb
     .from("assets")
@@ -500,17 +501,49 @@ app.post("/people/reset", async (c) => {
     .eq("user_id", uid)
     .in("media_type", ["photo", "live_photo", "animation"]);
   const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
+  const CHUNK = 500;
 
-  const { error: afErr } = await sb.from("asset_faces").delete().eq("user_id", uid);
-  if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
-  const { error: peopleErr } = await sb.from("people").delete().eq("user_id", uid);
-  if (peopleErr) throw new Error(`people/reset: people delete failed: ${peopleErr.message}`);
-  await sb.from("asset_ai_enrichment")
-    .update({ faces: [], face_count: 0 })
+  const personIds = new Set<string>();
+  const { data: ownedPeople, error: ownedPeopleErr } = await sb.from("people")
+    .select("id")
     .eq("user_id", uid);
-  await sb.from("assets").update({ face_scanned_at: null })
-    .eq("user_id", uid)
-    .not("face_scanned_at", "is", null);
+  if (ownedPeopleErr) throw new Error(`people/reset: people lookup failed: ${ownedPeopleErr.message}`);
+  for (const row of ownedPeople ?? []) personIds.add(row.id as string);
+
+  if (assetIds.length > 0) {
+    for (let i = 0; i < assetIds.length; i += CHUNK) {
+      const chunk = assetIds.slice(i, i + CHUNK);
+
+      const { data: linkedPeople, error: linkedPeopleErr } = await sb.from("people")
+        .select("id")
+        .in("asset_id", chunk);
+      if (linkedPeopleErr) throw new Error(`people/reset: linked people lookup failed: ${linkedPeopleErr.message}`);
+      for (const row of linkedPeople ?? []) personIds.add(row.id as string);
+
+      const { error: afErr } = await sb.from("asset_faces").delete().in("asset_id", chunk);
+      if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
+
+      const { error: enrichErr } = await sb.from("asset_ai_enrichment")
+        .update({ faces: [], face_count: 0 })
+        .in("asset_id", chunk);
+      if (enrichErr) throw new Error(`people/reset: asset_ai_enrichment reset failed: ${enrichErr.message}`);
+
+      const { error: assetErr } = await sb.from("assets")
+        .update({ face_scanned_at: null })
+        .in("id", chunk)
+        .not("face_scanned_at", "is", null);
+      if (assetErr) throw new Error(`people/reset: assets reset failed: ${assetErr.message}`);
+    }
+  }
+
+  if (personIds.size > 0) {
+    const ids = Array.from(personIds);
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const { error: peopleErr } = await sb.from("people").delete().in("id", chunk);
+      if (peopleErr) throw new Error(`people/reset: people delete failed: ${peopleErr.message}`);
+    }
+  }
 
   // Purge ALL prior face-pipeline jobs (any status) for this user, and
   // their job_ledger entries.  Two reasons:
@@ -528,14 +561,29 @@ app.post("/people/reset", async (c) => {
     "clusterPlaces",
     "detectEvents",
   ];
-  await sb.from("job_queue")
+  const { error: queueOwnedErr } = await sb.from("job_queue")
     .delete()
     .in("job_name", FACE_PIPELINE_JOBS)
     .eq("user_id", uid);
-  await sb.from("job_ledger")
+  if (queueOwnedErr) throw new Error(`people/reset: job_queue purge failed: ${queueOwnedErr.message}`);
+
+  const { error: ledgerOwnedErr } = await sb.from("job_ledger")
     .delete()
     .in("job_name", FACE_PIPELINE_JOBS)
     .eq("user_id", uid);
+  if (ledgerOwnedErr) throw new Error(`people/reset: job_ledger purge failed: ${ledgerOwnedErr.message}`);
+
+  const { error: queuePayloadErr } = await sb.from("job_queue")
+    .delete()
+    .in("job_name", ["clusterPeople", "clusterPlaces", "detectEvents"])
+    .eq("payload->>user_id", uid);
+  if (queuePayloadErr) throw new Error(`people/reset: payload job_queue purge failed: ${queuePayloadErr.message}`);
+
+  const { error: ledgerPayloadErr } = await sb.from("job_ledger")
+    .delete()
+    .in("job_name", ["clusterPeople", "clusterPlaces", "detectEvents"])
+    .eq("payload->>user_id", uid);
+  if (ledgerPayloadErr) throw new Error(`people/reset: payload job_ledger purge failed: ${ledgerPayloadErr.message}`);
 
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
   // Time-based idempotency key so repeated resets always re-enqueue.
