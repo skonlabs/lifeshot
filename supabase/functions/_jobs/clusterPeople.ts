@@ -128,10 +128,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   const { data: allAssetFaces } = await sb
     .from("asset_faces")
-    .select("id, person_id, face")
+    .select("id, asset_id, person_id, face")
     .eq("user_id", uid);
 
-  const existingLinks = (allAssetFaces ?? []).filter((row: any) => row.person_id);
+  const assetFaceRows = allAssetFaces ?? [];
+  const existingLinks = assetFaceRows.filter((row: any) => row.person_id);
 
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
