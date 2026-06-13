@@ -1,12 +1,24 @@
-import { serviceClient } from "./clients.ts";
+/**
+ * Per-worker in-memory token bucket. Replaces the dropped
+ * `public.source_rate_buckets` table + `source_take_token` RPC.
+ * Good enough since each source account is normally pinned to one
+ * concurrent sync job at a time.
+ */
+const buckets = new Map<string, { tokens: number; updatedAt: number }>();
 
-/** Returns true if the source account is below per-minute quota. */
 export async function takeSourceToken(sourceAccountId: string, perMin: number): Promise<boolean> {
-  const { data, error } = await serviceClient().rpc("source_take_token", {
-    _source_account_id: sourceAccountId, _per_min: perMin,
-  });
-  if (error) throw new Error(`source_take_token: ${error.message}`);
-  return Boolean(data);
+  const cap = Math.max(1, perMin || 60);
+  const refillPerMs = cap / 60_000;
+  const now = Date.now();
+  const cur = buckets.get(sourceAccountId) ?? { tokens: cap, updatedAt: now };
+  const elapsed = Math.max(0, now - cur.updatedAt);
+  const tokens = Math.min(cap, cur.tokens + elapsed * refillPerMs);
+  if (tokens < 1) {
+    buckets.set(sourceAccountId, { tokens, updatedAt: now });
+    return false;
+  }
+  buckets.set(sourceAccountId, { tokens: tokens - 1, updatedAt: now });
+  return true;
 }
 
 /** Compute exponential backoff with jitter (seconds). */
