@@ -13,6 +13,32 @@ function uniqueFaceIds(faceIds: string[]): string[] {
   return Array.from(new Set(faceIds.filter(Boolean)));
 }
 
+function faceIdFromFace(face: any): string | null {
+  const faceId = face?.FaceId;
+  return typeof faceId === "string" && faceId ? faceId : null;
+}
+
+function compareJobStart(a: any, b: any): number {
+  const aKey = String(a.started_at ?? a.locked_at ?? a.created_at ?? "");
+  const bKey = String(b.started_at ?? b.locked_at ?? b.created_at ?? "");
+  if (aKey !== bKey) return aKey.localeCompare(bKey);
+  return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+}
+
+async function isLeaderClusterJob(sb: any, userId: string, jobId: string): Promise<boolean> {
+  const { data, error } = await sb.from("job_queue")
+    .select("id, started_at, locked_at, created_at")
+    .eq("job_name", "clusterPeople")
+    .eq("user_id", userId)
+    .eq("status", "running");
+  if (error) {
+    console.warn("clusterPeople: running-job lookup failed", userId, error.message);
+    return true;
+  }
+  const leader = [...(data ?? [])].sort(compareJobStart)[0];
+  return !leader || leader.id === jobId;
+}
+
 export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
   const { user_id, asset_id } = ctx.payload as { user_id?: string; asset_id?: string };
@@ -30,6 +56,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   if (!rekognitionConfigured()) {
     return { user_id: uid, skipped: "rekognition_not_configured", clustered: 0 };
+  }
+
+  const isLeader = await isLeaderClusterJob(sb, uid, ctx.jobId);
+  if (!isLeader) {
+    return { user_id: uid, skipped: "cluster_already_running", clustered: 0 };
   }
 
   // ── 1. Load qualifying faces (quality-filtered; FaceCrop excluded for size) ─
@@ -50,16 +81,25 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   // ── 2. Load existing people (one row per unique person) ─────────────────────
   // Each row owns a set of Rekognition FaceIds in `face_ids` plus a cover face.
-  interface PersonRow { id: string; display_name: string | null; face_ids: string[] }
+  interface PersonRow {
+    id: string;
+    display_name: string | null;
+    face_ids: string[];
+    cover_face_id: string | null;
+  }
   const { data: existingPeople } = await sb
     .from("people")
-    .select("id, display_name, face_ids")
+    .select("id, display_name, face_ids, face")
     .eq("user_id", uid);
 
   const people: PersonRow[] = (existingPeople ?? []).map((p: any) => ({
     id: p.id,
     display_name: p.display_name ?? null,
-    face_ids: Array.isArray(p.face_ids) ? p.face_ids : [],
+    cover_face_id: faceIdFromFace(p.face),
+    face_ids: uniqueFaceIds([
+      ...(Array.isArray(p.face_ids) ? p.face_ids : []),
+      faceIdFromFace(p.face) ?? "",
+    ]),
   }));
 
   const { data: existingLinks } = await sb
@@ -87,6 +127,26 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const peopleById = new Map<string, PersonRow>(people.map((p) => [p.id, p]));
   const personFaceIds = uniqueFaceIds(people.flatMap((p) => p.face_ids));
   const searchMaxFaces = Math.max(SEARCH_PAGE_SIZE, personFaceIds.length + qualifying.length + 32);
+
+  const ensurePersonOwnsFaceId = async (personId: string, faceId: string): Promise<PersonRow | null> => {
+    const target = peopleById.get(personId);
+    if (!target) return null;
+    const nextFaceIds = uniqueFaceIds([
+      ...target.face_ids,
+      faceId,
+      target.cover_face_id ?? "",
+    ]);
+    for (const fid of nextFaceIds) faceIdToPersonId.set(fid, personId);
+    if (nextFaceIds.length === target.face_ids.length) return target;
+    target.face_ids = nextFaceIds;
+    const { error: upErr } = await sb.from("people")
+      .update({ face_ids: nextFaceIds, updated_at: new Date().toISOString() })
+      .eq("id", personId);
+    if (upErr) {
+      console.warn("clusterPeople: append face_ids failed", personId, upErr.message);
+    }
+    return target;
+  };
 
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount  = 0;
@@ -119,18 +179,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           if (pid) { personId = pid; break; }
         }
         if (personId) {
-          // Append this faceId to the matched person's face_ids set.
-          const target = peopleById.get(personId);
+          const target = await ensurePersonOwnsFaceId(personId, faceId);
           if (!target) {
             skippedCount++;
             continue;
-          }
-          if (!target.face_ids.includes(faceId)) {
-            target.face_ids = uniqueFaceIds([...target.face_ids, faceId]);
-            const { error: upErr } = await sb.from("people")
-              .update({ face_ids: target.face_ids, updated_at: new Date().toISOString() })
-              .eq("id", personId);
-            if (upErr) console.warn("clusterPeople: append face_ids failed", personId, upErr.message);
           }
           faceIdToPersonId.set(faceId, personId);
           linkedCount++;
@@ -139,6 +191,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         console.warn("clusterPeople: SearchFaces failed", faceId, String(e?.message ?? e));
       }
     } else {
+      await ensurePersonOwnsFaceId(personId, faceId);
       linkedCount++;
     }
 
@@ -162,7 +215,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         continue;
       }
       personId = inserted.id;
-      const created = { id: personId, display_name: displayName, face_ids: [faceId] };
+      const created = { id: personId, display_name: displayName, face_ids: [faceId], cover_face_id: faceId };
       people.push(created);
       peopleById.set(personId, created);
       faceIdToPersonId.set(faceId, personId);
