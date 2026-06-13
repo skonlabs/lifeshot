@@ -496,14 +496,15 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         skippedCount += component.length;
         continue;
       }
-      target.face_ids = componentFaceIds;
+      const mergedFaceIds = uniqueFaceIds([...target.face_ids, ...componentFaceIds]);
+      target.face_ids = mergedFaceIds;
       target.cover_face_id = bestRow.face_id;
       const { error: upErr } = await sb
         .from("people")
         .update({
           asset_id: bestRow.asset_id,
           face: bestRow.face,
-          face_ids: componentFaceIds,
+          face_ids: mergedFaceIds,
           updated_at: now,
         })
         .eq("id", personId);
@@ -533,7 +534,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       }
     }
 
-    for (const faceId of componentFaceIds) {
+    for (const faceId of peopleById.get(personId)?.face_ids ?? componentFaceIds) {
       faceIdToPersonId.set(faceId, personId);
     }
   }
