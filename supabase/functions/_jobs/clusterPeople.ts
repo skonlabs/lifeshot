@@ -342,8 +342,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   let skippedCount = 0;
   const uf = new UnionFind();
   const qualifyingFaceIds = new Set(qualifying.map((row) => row.face_id));
-  const qualifyingByFaceId = new Map<string, FaceRecord>(qualifying.map((row) => [row.face_id, row]));
-
   for (const row of qualifying) {
     const rowResetGuard = await checkFaceResetGuard(sb, {
       userId: uid,
@@ -508,14 +506,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  const { error: cleanupErr } = await sb
-    .from("people")
-    .delete()
-    .eq("user_id", uid)
-    .not("id", "in", `(${Array.from(peopleById.keys()).map((id) => `"${id}"`).join(",") || '"00000000-0000-0000-0000-000000000000"'})`)
-    .filter("id", "in", `(select p.id from public.people p where p.user_id = '${uid}' and not exists (select 1 from public.asset_faces af where af.person_id = p.id))`);
-  if (cleanupErr) {
-    console.warn("clusterPeople: cleanup orphan people failed", uid, cleanupErr.message);
+  const orphanIds = Array.from(peopleById.values())
+    .filter((person) => !assetFaceRows.some((row: any) => row.person_id === person.id))
+    .map((person) => person.id);
+  if (orphanIds.length) {
+    const { error: cleanupErr } = await sb.from("people").delete().in("id", orphanIds);
+    if (cleanupErr) {
+      console.warn("clusterPeople: cleanup orphan people failed", uid, cleanupErr.message);
+    }
   }
 
   return {
