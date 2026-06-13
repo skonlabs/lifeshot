@@ -186,6 +186,30 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     .eq("user_id", uid);
 
   const assetFaceRows = allAssetFaces ?? [];
+  const invalidLinkedRows = assetFaceRows.filter((row: any) => row.person_id && !isUsableIndexedFace(row.face));
+  if (invalidLinkedRows.length) {
+    const invalidIds = invalidLinkedRows.map((row: any) => row.id).filter(Boolean);
+    if (invalidIds.length) {
+      const now = new Date().toISOString();
+      const { error: unlinkErr } = await sb
+        .from("asset_faces")
+        .update({ person_id: null, updated_at: now })
+        .in("id", invalidIds);
+      if (unlinkErr) {
+        console.warn("clusterPeople: unlink invalid asset_faces failed", uid, unlinkErr.message);
+      } else {
+        for (const row of assetFaceRows) {
+          if (invalidIds.includes(row.id)) row.person_id = null;
+        }
+      }
+    }
+  }
+
+  const validLinkedPersonIds = new Set(
+    assetFaceRows
+      .filter((row: any) => row.person_id && isUsableIndexedFace(row.face))
+      .map((row: any) => row.person_id as string),
+  );
   const assetFaceByFaceId = new Map<string, any>();
   for (const row of assetFaceRows) {
     const fid = row?.face?.FaceId;
@@ -195,11 +219,15 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const existing = assetFaceByFaceId.get(row.face_id);
     row.asset_face_row_id = existing?.id ?? null;
   }
-  const existingLinks = assetFaceRows.filter((row: any) => row.person_id);
+  const existingLinks = assetFaceRows.filter((row: any) => row.person_id && isUsableIndexedFace(row.face));
 
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
-  for (const p of people) for (const fid of p.face_ids) faceIdToPersonId.set(fid, p.id);
+  for (const p of people) {
+    const preserveFromFaceIds = validLinkedPersonIds.has(p.id) || !isAutoPersonName(p.display_name);
+    if (!preserveFromFaceIds) continue;
+    for (const fid of p.face_ids) faceIdToPersonId.set(fid, p.id);
+  }
   for (const row of existingLinks ?? []) {
     const pid = row.person_id as string | null;
     const fid = row.face?.FaceId as string | undefined;
@@ -511,7 +539,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const orphanIds = Array.from(peopleById.values())
-    .filter((person) => !assetFaceRows.some((row: any) => row.person_id === person.id))
+    .filter((person) => !assetFaceRows.some((row: any) => row.person_id === person.id && isUsableIndexedFace(row.face)))
     .map((person) => person.id);
   if (orphanIds.length) {
     const { error: cleanupErr } = await sb.from("people").delete().in("id", orphanIds);

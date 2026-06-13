@@ -204,6 +204,19 @@ export async function analyzeAssetFaces(opts: {
   const collectionId = collectionIdForUser(opts.userId);
   await ensureCollection(collectionId);
 
+  const sb = serviceClient();
+  const { data: knownRows } = await sb
+    .from("asset_faces")
+    .select("face")
+    .eq("user_id", opts.userId);
+  const validKnownFaceIds = new Set(
+    (knownRows ?? [])
+      .map((row: any) => row?.face)
+      .filter((face: any) => isUsableIndexedFace(face))
+      .map((face: any) => String(face?.FaceId ?? ""))
+      .filter(Boolean),
+  );
+
   const records = await indexFaces({
     collectionId,
     imageBytes: image.bytes,
@@ -217,12 +230,12 @@ export async function analyzeAssetFaces(opts: {
   // next face is checked, otherwise two faces in the same photo can race and
   // both resolve to the same canonical FaceId, which then violates the unique
   // (asset_id, face_id) index and fails the whole asset_faces insert.
-  const toDelete: string[] = [];
+  const toDelete = new Set<string>();
   const seen = new Set<string>();
   const faceRecords: Array<Record<string, unknown>> = [];
   for (const r of records) {
     if (!isUsableIndexedFace({ Confidence: r.confidence, FaceDetail: r.attributes })) {
-      toDelete.push(r.faceId);
+      toDelete.add(r.faceId);
       continue;
     }
 
@@ -233,10 +246,15 @@ export async function analyzeAssetFaces(opts: {
         faceMatchThreshold: DEDUP_SIMILARITY, maxFaces: 5,
       });
       const existing = matches
-        .filter((m) => m.faceId !== r.faceId && m.similarity >= DEDUP_SIMILARITY && !seen.has(m.faceId))
+        .filter((m) => {
+          if (m.faceId === r.faceId || m.similarity < DEDUP_SIMILARITY || seen.has(m.faceId)) return false;
+          if (validKnownFaceIds.has(m.faceId)) return true;
+          toDelete.add(m.faceId);
+          return false;
+        })
         .sort((a, b) => b.similarity - a.similarity)[0];
       if (existing) {
-        toDelete.push(r.faceId);
+        toDelete.add(r.faceId);
         canonicalFaceId = existing.faceId;
       }
     } catch (e: any) {
@@ -252,9 +270,9 @@ export async function analyzeAssetFaces(opts: {
     });
   }
 
-  if (toDelete.length > 0) {
+  if (toDelete.size > 0) {
     try {
-      await deleteFaces({ collectionId, faceIds: toDelete });
+      await deleteFaces({ collectionId, faceIds: Array.from(toDelete) });
     } catch (e: any) {
       console.warn("analyzeAssetFaces: dedup deleteFaces failed", String(e?.message ?? e));
     }
