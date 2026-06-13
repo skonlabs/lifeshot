@@ -2,6 +2,8 @@
 
 export const FACE_CLUSTER_QUALITY = {
   minConfidence: 90,
+  minEyesOpenConfidence: 90,
+  minFaceOccludedConfidence: 90,
   maxYaw: 30,
   maxPitch: 25,
   minSharpness: 35,
@@ -28,10 +30,14 @@ export function isUsableFaceDetail(faceDetail: any): boolean {
   const sharpness = toNumber(faceDetail?.Quality?.Sharpness) ?? Number.NEGATIVE_INFINITY;
   const brightness = toNumber(faceDetail?.Quality?.Brightness) ?? Number.NEGATIVE_INFINITY;
   const notOccluded = toBoolean(faceDetail?.FaceOccluded?.Value) === false;
+  const notOccludedConfidence = toNumber(faceDetail?.FaceOccluded?.Confidence) ?? 100;
   const eyesOpen = toBoolean(faceDetail?.EyesOpen?.Value) === true;
+  const eyesOpenConfidence = toNumber(faceDetail?.EyesOpen?.Confidence) ?? 100;
 
   return notOccluded
+    && notOccludedConfidence >= FACE_CLUSTER_QUALITY.minFaceOccludedConfidence
     && eyesOpen
+    && eyesOpenConfidence >= FACE_CLUSTER_QUALITY.minEyesOpenConfidence
     && yaw <= FACE_CLUSTER_QUALITY.maxYaw
     && pitch <= FACE_CLUSTER_QUALITY.maxPitch
     && sharpness >= FACE_CLUSTER_QUALITY.minSharpness

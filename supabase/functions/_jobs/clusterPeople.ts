@@ -141,15 +141,23 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "cluster_already_running", clustered: 0 };
   }
 
-  // ── 1. Load qualifying faces across the whole user, not just one asset. ────
-  // Asset-scoped clustering can only assign the newest detections; it cannot
-  // reliably repair already-split people rows created by older runs because
-  // the bridged faces may live on different assets. Every clusterPeople run is
-  // therefore a full per-user reconciliation pass.
-  const { data: faceRows, error } = await sb.rpc("get_qualifying_faces", { p_user_id: uid });
-  if (error) throw new Error(`clusterPeople get_qualifying_faces: ${error.message}`);
+  // ── 1. Load all user faces once and derive the qualifying set in code. ──────
+  // This keeps clustering tied to the same quality logic used everywhere else
+  // (including EyesOpen) instead of depending on a stale SQL function.
+  const { data: allAssetFaces, error: assetFacesErr } = await sb
+    .from("asset_faces")
+    .select("id, asset_id, person_id, face")
+    .eq("user_id", uid);
+  if (assetFacesErr) throw new Error(`clusterPeople asset_faces load failed: ${assetFacesErr.message}`);
 
-  const qualifying: FaceRecord[] = (faceRows ?? [])
+  const assetFaceRows = allAssetFaces ?? [];
+  const qualifying: FaceRecord[] = assetFaceRows
+    .map((row: any) => ({
+      asset_id: row.asset_id,
+      face_id: typeof row?.face?.FaceId === "string" ? row.face.FaceId : "",
+      face: row.face,
+      asset_face_row_id: row.id ?? null,
+    }))
     .filter((r: any) => r.face_id && r.asset_id && isUsableIndexedFace(r.face))
     .sort((a: any, b: any) => {
       const assetCmp = String(a.asset_id).localeCompare(String(b.asset_id));
@@ -180,12 +188,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ]),
   }));
 
-  const { data: allAssetFaces } = await sb
-    .from("asset_faces")
-    .select("id, asset_id, person_id, face")
-    .eq("user_id", uid);
-
-  const assetFaceRows = allAssetFaces ?? [];
   const invalidLinkedRows = assetFaceRows.filter((row: any) => row.person_id && !isUsableIndexedFace(row.face));
   if (invalidLinkedRows.length) {
     const invalidIds = invalidLinkedRows.map((row: any) => row.id).filter(Boolean);
@@ -458,7 +460,22 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       }
     }
 
-    const bestRow = [...component].sort((a, b) => faceQualityRank(b.face) - faceQualityRank(a.face))[0];
+    const persistedBestRows: FaceRecord[] = existingPersonIds
+      .map((id) => peopleById.get(id)?.cover_face_id ?? null)
+      .filter(Boolean)
+      .map((faceId) => {
+        const row = assetFaceByFaceId.get(faceId as string);
+        if (!row || !isUsableIndexedFace(row.face)) return null;
+        return {
+          asset_id: row.asset_id,
+          face_id: String(row.face?.FaceId ?? faceId),
+          face: row.face,
+          asset_face_row_id: row.id ?? null,
+        } satisfies FaceRecord;
+      })
+      .filter(Boolean) as FaceRecord[];
+    const bestRow = [...component, ...persistedBestRows]
+      .sort((a, b) => faceQualityRank(b.face) - faceQualityRank(a.face))[0];
     const now = new Date().toISOString();
 
     if (!personId) {

@@ -23,7 +23,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
 
 const REKOGNITION_MAX_BYTES = 3_750_000;
-const DEDUP_SIMILARITY = 90;   // reuse existing indexed face only at 90%+ similarity
+const DEDUP_SIMILARITY = 98;   // reuse existing indexed face only for near-identical rescans
 const PRIMARY_THRESHOLD = 90;  // confident person match
 const FALLBACK_THRESHOLD = 90; // acceptable person match
 const MIN_PERSON_CONFIDENCE = 0.90; // function 3 gate (0..1 scale)
