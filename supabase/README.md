@@ -30,7 +30,7 @@ supabase gen types typescript --project-id vohevknnbvpaooletyts --schema public 
 | ANN index | hnsw (m=16, ef_construction=64), cosine | > ~1M vectors/user-set |
 | FTS language | english + simple | multi-language users |
 | Partitioning | partition-ready columns; not partitioned yet | Stage-4 scale |
-| person_faces | table exists, write gated on face_recognition consent | always |
+| Face detections live on `asset_faces`; person aggregation lives on `people` | revisit only if face schema changes again |
 
 ## Test checklist (Definition of Done)
 
