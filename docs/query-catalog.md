@@ -42,7 +42,7 @@ the canonical form; RPCs are called via `supabase.rpc(name, params)`.
   insert into assets(user_id, media_type, capture_time, checksum_hash, ...) values (...) returning id;
   insert into asset_source_refs(asset_id, source_account_id, source_asset_id, is_primary)
     values ($1, $2, $3, true)
-  on conflict (source_account_id, source_asset_id) do update set last_seen_at = now();
+  on conflict (source_account_id, source_asset_id) do update set source_last_seen_at = now();
   ```
 - Viewport: `select * from get_viewport(_cursor, _viewport_size, _filters)` — RPC
 - Timeline window: `select * from get_timeline_window(_granularity, _bucket)` — RPC
