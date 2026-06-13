@@ -407,6 +407,16 @@ app.post("/corrections", async (c) => {
   // (search reindex picks up the changes on next pipeline pass).
   let job_id: string | null = null;
   if (body.target_type === "person") {
+    // Persist the new display_name directly on the (single) person row.
+    const newName = typeof (body.correction as any)?.display_name === "string"
+      ? String((body.correction as any).display_name).trim()
+      : null;
+    if (newName) {
+      const { error: renameErr } = await supa.from("people")
+        .update({ display_name: newName, updated_at: new Date().toISOString() })
+        .eq("id", body.target_id);
+      if (renameErr) throw new ApiError("internal", renameErr.message);
+    }
     const job = await jobEnqueuer.enqueue("clusterPeople",
       { user_id: uid, target_person_id: body.target_id, correction: body.correction },
       { userId: uid });
