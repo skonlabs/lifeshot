@@ -136,10 +136,19 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
             jobId: ctx.jobId,
             resetAt: privacy?.face_pipeline_reset_at ?? null,
           });
-          if (!guard.valid) throw new Error(guard.reason);
+          if (!guard.valid) throw new Error(`invalid: ${guard.reason}`);
         },
       });
       console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
+    }
+
+    const preFinalizeResetGuard = await checkFaceResetGuard(sb, {
+      userId: asset.user_id,
+      jobId: ctx.jobId,
+      resetAt: privacy?.face_pipeline_reset_at ?? null,
+    });
+    if (!preFinalizeResetGuard.valid) {
+      return { asset_id, skipped: preFinalizeResetGuard.reason };
     }
 
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
@@ -156,6 +165,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       payload: { user_id: asset.user_id, asset_id },
       idempotencyKey: `people:${asset.user_id}:${asset_id}`,
     });
+  }
+
+  const preEnrichmentWriteResetGuard = await checkFaceResetGuard(sb, {
+    userId: asset.user_id,
+    jobId: ctx.jobId,
+    resetAt: privacy?.face_pipeline_reset_at ?? null,
+  });
+  if (!preEnrichmentWriteResetGuard.valid) {
+    return { asset_id, skipped: preEnrichmentWriteResetGuard.reason };
   }
 
   // ── Persist caption/tags/faces to asset_ai_enrichment ─────────────────────
