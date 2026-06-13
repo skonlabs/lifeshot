@@ -23,9 +23,9 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
 
 const REKOGNITION_MAX_BYTES = 3_750_000;
-const DEDUP_SIMILARITY = 98;   // same physical face indexed twice in one collection
-const PRIMARY_THRESHOLD = 75;  // confident person match
-const FALLBACK_THRESHOLD = 65; // acceptable person match
+const DEDUP_SIMILARITY = 90;   // reuse existing indexed face only at 90%+ similarity
+const PRIMARY_THRESHOLD = 90;  // confident person match
+const FALLBACK_THRESHOLD = 90; // acceptable person match
 const MIN_PERSON_CONFIDENCE = 0.90; // function 3 gate (0..1 scale)
 
 // ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ export async function analyzeAssetFaces(opts: {
         faceMatchThreshold: DEDUP_SIMILARITY, maxFaces: 5,
       });
       const existing = matches
-        .filter((m) => m.faceId !== r.faceId && !seen.has(m.faceId))
+        .filter((m) => m.faceId !== r.faceId && m.similarity >= DEDUP_SIMILARITY && !seen.has(m.faceId))
         .sort((a, b) => b.similarity - a.similarity)[0];
       if (existing) {
         toDelete.push(r.faceId);
@@ -340,10 +340,10 @@ export async function findBestPersonMatch(
   }
 
   const sorted = matches
-    .filter((m) => m.faceId !== face.face_id && ctx.faceIdToPersonId.has(m.faceId))
+    .filter((m) => m.faceId !== face.face_id && m.similarity >= PRIMARY_THRESHOLD && ctx.faceIdToPersonId.has(m.faceId))
     .sort((a, b) => b.similarity - a.similarity);
 
-  const best = sorted.find((m) => m.similarity >= PRIMARY_THRESHOLD) ?? sorted[0] ?? null;
+  const best = sorted[0] ?? null;
   if (!best) return null;
   return { personId: ctx.faceIdToPersonId.get(best.faceId)!, similarity: best.similarity };
 }
