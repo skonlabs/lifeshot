@@ -13,7 +13,11 @@ import {
 
 export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
-  const { asset_id } = ctx.payload as { asset_id: string };
+  const { asset_id, sync_run_id, force_sync_run_id } = ctx.payload as {
+    asset_id: string;
+    sync_run_id?: string;
+    force_sync_run_id?: string;
+  };
   if (!asset_id) throw new Error("invalid: asset_id");
 
   const { enqueueJob } = await import("../_pipeline/enqueuer.ts");
@@ -154,16 +158,20 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
 
     // Enqueue clusterPeople so the People page is updated promptly.
-    // clusterPeople is the sole writer to the people table — running it here
-    // rather than in storeFaceResults ensures a single serialised per-user
-    // write path, eliminating race conditions from parallel enrichAI jobs.
-    // Per-asset idempotency key: a coalesced (hourly) key gets recorded in
-    // job_ledger after the first run completes, permanently deduping all
-    // later enqueues — faces stored after that run would never be clustered.
+    // clusterPeople is a FULL per-user reconciliation pass, so the idempotency
+    // key must be scoped to the current sync/reset cycle, not a permanent
+    // per-asset key. Otherwise a past completed ledger row can block future
+    // reclusters forever, leaving stale people rows visible even after faces
+    // were re-detected successfully.
+    const reclusterScope = force_sync_run_id
+      ?? sync_run_id
+      ?? privacy?.face_pipeline_reset_at
+      ?? new Date().toISOString().slice(0, 13);
+
     await enqueueJob("clusterPeople", {
-      userId: ctx.userId,
+      userId: asset.user_id,
       payload: { user_id: asset.user_id, asset_id },
-      idempotencyKey: `people:${asset.user_id}:${asset_id}`,
+      idempotencyKey: `people:${asset.user_id}:${reclusterScope}`,
     });
   }
 

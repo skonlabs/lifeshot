@@ -507,7 +507,15 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("hashAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `hash:${asset_id}${forceSuffix}` });
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
-  await enqueueJob("enrichAI", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ai:${asset_id}${forceSuffix}` });
+  await enqueueJob("enrichAI", {
+    userId: ctx.userId,
+    payload: {
+      asset_id,
+      ...(sync_run_id ? { sync_run_id } : {}),
+      ...(force_sync_run_id ? { force_sync_run_id } : {}),
+    },
+    idempotencyKey: `ai:${asset_id}${forceSuffix}`,
+  });
   // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
   // as a fallback) after enrichment data is available — see those handlers.
   // clusterPlaces / detectEvents are coalesced to one run per user
