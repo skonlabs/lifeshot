@@ -1,13 +1,29 @@
 // deno-lint-ignore-file no-explicit-any
 import { serviceClient } from "../_pipeline/clients.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
-import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { compareFaces, searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 // SearchFaces similarity threshold for linking a new detection to an existing
 // person. The user asked for >0.50 confidence.
 const SIMILARITY_THRESHOLD = 50;
 
 const SEARCH_PAGE_SIZE = 4096;
+
+const FACE_COMPARE_THRESHOLD = 50;
+
+function dataUrlToBytes(dataUrl: string | null | undefined): Uint8Array | null {
+  if (!dataUrl || typeof dataUrl !== "string") return null;
+  const comma = dataUrl.indexOf(",");
+  if (comma < 0) return null;
+  try {
+    const binary = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
 
 function uniqueFaceIds(faceIds: string[]): string[] {
   return Array.from(new Set(faceIds.filter(Boolean)));
@@ -107,11 +123,24 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ]),
   }));
 
-  const { data: existingLinks } = await sb
+  const { data: allAssetFaces } = await sb
     .from("asset_faces")
     .select("person_id, face")
-    .eq("user_id", uid)
-    .not("person_id", "is", null);
+    .eq("user_id", uid);
+
+  const existingLinks = (allAssetFaces ?? []).filter((row: any) => row.person_id);
+
+  const faceCropByFaceId = new Map<string, Uint8Array>();
+  for (const row of qualifying) {
+    const fid = row.face_id;
+    const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
+    if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
+  }
+  for (const row of allAssetFaces ?? []) {
+    const fid = row.face?.FaceId as string | undefined;
+    const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
+    if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
+  }
 
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
@@ -273,6 +302,35 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return target;
   };
 
+  const findBestComparedPersonId = async (faceId: string): Promise<string | null> => {
+    const sourceBytes = faceCropByFaceId.get(faceId);
+    if (!sourceBytes) return null;
+
+    let bestPersonId: string | null = null;
+    let bestSimilarity = -1;
+
+    for (const [candidateFaceId, candidatePersonId] of faceIdToPersonId.entries()) {
+      if (!candidatePersonId || candidateFaceId === faceId) continue;
+      const targetBytes = faceCropByFaceId.get(candidateFaceId);
+      if (!targetBytes) continue;
+      try {
+        const similarity = await compareFaces({
+          sourceImageBytes: sourceBytes,
+          targetImageBytes: targetBytes,
+          similarityThreshold: FACE_COMPARE_THRESHOLD,
+        });
+        if (similarity !== null && similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          bestPersonId = candidatePersonId;
+        }
+      } catch (e: any) {
+        console.warn("clusterPeople: CompareFaces failed", faceId, candidateFaceId, String(e?.message ?? e));
+      }
+    }
+
+    return bestPersonId;
+  };
+
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount = 0;
   let linkedCount = 0;
@@ -327,7 +385,21 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       linkedCount++;
     }
 
-    // 3c. No match → create a new person, this detection becomes the cover.
+    if (!personId) {
+      const comparedPersonId = await findBestComparedPersonId(faceId);
+      if (comparedPersonId) {
+        personId = comparedPersonId;
+        const target = await ensurePersonOwnsFaceId(personId, faceId);
+        if (!target) {
+          skippedCount++;
+          continue;
+        }
+        faceIdToPersonId.set(faceId, personId);
+        linkedCount++;
+      }
+    }
+
+    // 3c. No match after exhaustive compare → create a new person.
     if (!personId) {
       maxPersonN++;
       const displayName = `Person ${maxPersonN}`;
