@@ -1,6 +1,5 @@
 /**
- * Per-worker in-memory token bucket. Replaces the dropped
- * `public.source_rate_buckets` table + `source_take_token` RPC.
+ * Per-worker in-memory token bucket.
  * Good enough since each source account is normally pinned to one
  * concurrent sync job at a time.
  */
