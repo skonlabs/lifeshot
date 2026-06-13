@@ -181,7 +181,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     let bestCoverRow: any = null;
     let bestScore = -1;
     for (const row of candidateRows ?? []) {
-      if (!row.face_crop) continue;
       const s = coverScore(row.attributes);
       if (s < MIN_COVER_SCORE) continue;
       const isSolo = (facesPerAsset.get(row.asset_id) ?? 0) === 1;
@@ -200,10 +199,20 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       face_count:           merged.length,
       rekognition_face_ids: allFaceIds,
     };
-    if (bestCoverRow?.face_crop) {
-      update.cover_face_crop = bestCoverRow.face_crop;
-      update.cover_asset_id  = bestCoverRow.asset_id;
-      update.cover_bbox      = entries.find((e) => e.face_id === bestCoverRow.face_id)?.bbox ?? null;
+    if (bestCoverRow) {
+      // face_crop is optional — face-detector doesn't always produce one. When
+      // missing, the frontend falls back to thumbnail + face_bbox CSS crop.
+      if (bestCoverRow.face_crop) update.cover_face_crop = bestCoverRow.face_crop;
+      update.cover_asset_id = bestCoverRow.asset_id;
+      update.cover_bbox     = entries.find((e) => e.face_id === bestCoverRow.face_id)?.bbox ?? null;
+    } else {
+      // No face cleared MIN_COVER_SCORE — still set a cover from the highest-
+      // confidence detected face so the tile is not a blank placeholder.
+      const fallback = entries.slice().sort((a, b) => b.confidence - a.confidence)[0];
+      if (fallback) {
+        update.cover_asset_id = fallback.asset_id;
+        update.cover_bbox     = fallback.bbox ?? null;
+      }
     }
 
     const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
