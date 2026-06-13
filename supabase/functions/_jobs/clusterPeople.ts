@@ -253,54 +253,51 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   let skippedCount  = 0;
 
   for (const row of qualifying) {
-    const faceId  = row.face_id;
+    const faceId = row.face_id;
     const faceJson = row.face; // Rekognition attributes, no FaceCrop
     const assetId = row.asset_id;
 
-    // 3a. Already known? Just ensure the asset_faces row points to that person.
+    // 3a. Seed from existing local mapping.
     let personId: string | null = faceIdToPersonId.get(faceId) ?? null;
 
-    // 3b. Search Rekognition for a similar face that some person already owns.
-    if (!personId) {
-      try {
-        const matches = await searchFaces({
-          collectionId,
-          faceId,
-          faceMatchThreshold: SIMILARITY_THRESHOLD,
-          maxFaces: searchMaxFaces,
-        });
-        // Highest similarity first; first match that maps to a known person wins.
-        const sorted = matches
-          .filter((m) => m.faceId && m.faceId !== faceId)
-          .sort((a, b) => b.similarity - a.similarity);
-        const matchedPersonIds: string[] = [];
-        for (const m of sorted) {
-          const pid = faceIdToPersonId.get(m.faceId);
-          if (!pid) continue;
-          matchedPersonIds.push(pid);
-          if (!personId) personId = pid;
-        }
-        if (personId && matchedPersonIds.length > 1) {
-          const merged = await mergePeople(personId, matchedPersonIds);
-          if (!merged) {
-            skippedCount++;
-            continue;
-          }
-        }
-        if (personId) {
-          const target = await ensurePersonOwnsFaceId(personId, faceId);
-          if (!target) {
-            skippedCount++;
-            continue;
-          }
-          faceIdToPersonId.set(faceId, personId);
-          linkedCount++;
-        }
-      } catch (e: any) {
-        console.warn("clusterPeople: SearchFaces failed", faceId, String(e?.message ?? e));
+    // 3b. Search Rekognition for all similar known faces, then merge every
+    // matched person row into a single survivor.
+    try {
+      const matches = await searchFaces({
+        collectionId,
+        faceId,
+        faceMatchThreshold: SIMILARITY_THRESHOLD,
+        maxFaces: searchMaxFaces,
+      });
+      const sorted = matches
+        .filter((m) => m.faceId && m.faceId !== faceId)
+        .sort((a, b) => b.similarity - a.similarity);
+      const matchedPersonIds = new Set<string>();
+      if (personId) matchedPersonIds.add(personId);
+      for (const m of sorted) {
+        const pid = faceIdToPersonId.get(m.faceId);
+        if (!pid) continue;
+        if (!personId) personId = pid;
+        matchedPersonIds.add(pid);
       }
-    } else {
-      await ensurePersonOwnsFaceId(personId, faceId);
+      if (personId && matchedPersonIds.size > 1) {
+        const merged = await mergePeople(personId, Array.from(matchedPersonIds));
+        if (!merged) {
+          skippedCount++;
+          continue;
+        }
+      }
+    } catch (e: any) {
+      console.warn("clusterPeople: SearchFaces failed", faceId, String(e?.message ?? e));
+    }
+
+    if (personId) {
+      const target = await ensurePersonOwnsFaceId(personId, faceId);
+      if (!target) {
+        skippedCount++;
+        continue;
+      }
+      faceIdToPersonId.set(faceId, personId);
       linkedCount++;
     }
 
