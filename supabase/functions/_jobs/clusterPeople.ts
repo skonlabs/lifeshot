@@ -115,18 +115,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   const existingLinks = (allAssetFaces ?? []).filter((row: any) => row.person_id);
 
-  const faceCropByFaceId = new Map<string, Uint8Array>();
-  for (const row of qualifying) {
-    const fid = row.face_id;
-    const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
-    if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
-  }
-  for (const row of allAssetFaces ?? []) {
-    const fid = row.face?.FaceId as string | undefined;
-    const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
-    if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
-  }
-
   // faceId → personId index for O(1) "already-known-face" lookups.
   const faceIdToPersonId = new Map<string, string>();
   for (const p of people) for (const fid of p.face_ids) faceIdToPersonId.set(fid, p.id);
