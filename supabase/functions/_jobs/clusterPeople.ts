@@ -293,6 +293,50 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return target;
   };
 
+  const unlinkFaceFromOtherPeople = async (targetPersonId: string, faceId: string): Promise<void> => {
+    const linkedPeople = Array.from(peopleById.values()).filter(
+      (person) => person.id !== targetPersonId && person.face_ids.includes(faceId),
+    );
+
+    for (const linkedPerson of linkedPeople) {
+      const nextFaceIds = linkedPerson.face_ids.filter((id) => id !== faceId);
+      const nextCoverFaceId = linkedPerson.cover_face_id === faceId
+        ? (nextFaceIds[0] ?? null)
+        : linkedPerson.cover_face_id;
+
+      if (nextFaceIds.length === 0) {
+        const { error: deleteErr } = await sb.from("people").delete().eq("id", linkedPerson.id);
+        if (deleteErr) {
+          console.warn("clusterPeople: delete empty duplicate person failed", linkedPerson.id, deleteErr.message);
+          continue;
+        }
+        const { error: unlinkErr } = await sb
+          .from("asset_faces")
+          .update({ person_id: null, updated_at: new Date().toISOString() })
+          .eq("person_id", linkedPerson.id);
+        if (unlinkErr) {
+          console.warn("clusterPeople: unlink duplicate asset_faces failed", linkedPerson.id, unlinkErr.message);
+        }
+        peopleById.delete(linkedPerson.id);
+      } else {
+        const { error: updateErr } = await sb
+          .from("people")
+          .update({
+            face_ids: nextFaceIds,
+            face: nextCoverFaceId ? { FaceId: nextCoverFaceId } : linkedPerson.cover_face_id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", linkedPerson.id);
+        if (updateErr) {
+          console.warn("clusterPeople: remove stale face_id failed", linkedPerson.id, updateErr.message);
+          continue;
+        }
+        linkedPerson.face_ids = nextFaceIds;
+        linkedPerson.cover_face_id = nextCoverFaceId;
+      }
+    }
+  };
+
   // ── 3. Assign each detection to a person ────────────────────────────────────
   let createdCount = 0;
   let linkedCount = 0;
