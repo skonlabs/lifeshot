@@ -165,14 +165,15 @@ app.post("/memory/viewport", async (c) => {
   // intersect via .in("id", ...) on the main query.
   let restrictIds: string[] | null = null;
   if (body.people_filter?.length) {
-    // person_faces was merged into people.faces (jsonb) in B-NUKE; extract
-    // asset_ids from each selected person's faces array.
-    const { data: peopleRows } = await supa.from("people")
-      .select("faces").in("id", body.people_filter);
-    const ids = Array.from(new Set(
-      (peopleRows ?? []).flatMap((p: any) =>
-        Array.isArray(p.faces) ? p.faces.map((f: any) => f.asset_id).filter(Boolean) : [])
-    ));
+    // Each people row links to one asset_id (new schema: one row per face per asset).
+    // Collect all asset_ids for the selected people (grouped by display_name).
+    const { data: seedRows } = await supa.from("people")
+      .select("display_name").in("id", body.people_filter);
+    const names = [...new Set((seedRows ?? []).map((r: any) => r.display_name).filter(Boolean))];
+    const { data: peopleRows } = names.length
+      ? await supa.from("people").select("asset_id").in("display_name", names)
+      : { data: [] };
+    const ids = Array.from(new Set((peopleRows ?? []).map((p: any) => p.asset_id).filter(Boolean)));
     restrictIds = ids;
     if (ids.length === 0) {
       return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });

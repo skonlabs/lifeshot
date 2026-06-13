@@ -378,23 +378,25 @@ export async function storeFaceResults(opts: {
   const { analysis, faces } = opts;
   const { assetId, userId } = analysis;
 
-  // Delete existing rows for this asset so re-scans are clean.
+  // Delete existing rows for this asset so re-scans are idempotent.
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
-  // Safety net: the unique (asset_id, face_id) index rejects duplicate
-  // face_ids within one asset, which would fail the entire insert.
+  // Deduplicate by face_id within this asset.
   const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
 
   if (uniqueFaces.length > 0) {
+    // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
     const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
-      asset_id:   assetId,
-      user_id:    userId,
-      face_id:    f.face_id,
-      bbox:       f.bbox,
-      confidence: f.confidence,
-      face_crop:  f.face_crop,
-      attributes: f.attributes,
+      asset_id: assetId,
+      user_id:  userId,
+      face: {
+        FaceId:      f.face_id,
+        BoundingBox: f.bbox,
+        Confidence:  Math.round(f.confidence * 1000) / 10, // normalize back to 0-100 scale
+        FaceDetail:  f.attributes ?? {},
+        FaceCrop:    f.face_crop,
+      },
     })));
     if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
   }

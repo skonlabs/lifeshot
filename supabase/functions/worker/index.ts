@@ -93,33 +93,26 @@ app.get("/debug/stats", async (c) => {
   const { count: faceCount } = await facesQ;
   out.asset_faces_count = faceCount ?? 0;
 
-  let peopleQ = sb.from("people").select("id, display_name, auto_label, cover_face_crop, cover_asset_id, face_count, faces");
+  let peopleQ = sb.from("people").select("id, display_name, asset_id, face");
   if (uid) peopleQ = peopleQ.eq("user_id", uid);
   const { data: people } = await peopleQ.limit(500);
-  let pWithFaces = 0, pWithCover = 0, pWithCoverCrop = 0;
   const peopleSample: Array<Record<string, unknown>> = [];
+  const uniqueNames = new Set<string>();
   for (const p of people ?? []) {
-    const arr = Array.isArray((p as any).faces) ? (p as any).faces : [];
-    if (arr.length > 0) pWithFaces++;
-    if ((p as any).cover_asset_id) pWithCover++;
-    if ((p as any).cover_face_crop) pWithCoverCrop++;
+    if (p.display_name) uniqueNames.add(p.display_name);
     if (peopleSample.length < 10) {
       peopleSample.push({
-        id: (p as any).id,
-        display_name: (p as any).display_name,
-        auto_label: (p as any).auto_label,
-        has_cover_face_crop: !!(p as any).cover_face_crop,
-        cover_asset_id: (p as any).cover_asset_id,
-        face_count: (p as any).face_count,
-        faces_len: arr.length,
+        id:            (p as any).id,
+        display_name:  (p as any).display_name,
+        asset_id:      (p as any).asset_id,
+        face_id:       (p as any).face?.FaceId ?? null,
+        face_confidence: (p as any).face?.Confidence ?? null,
       });
     }
   }
-  out.people_total = people?.length ?? 0;
-  out.people_with_faces_jsonb = pWithFaces;
-  out.people_with_cover_asset = pWithCover;
-  out.people_with_cover_face_crop = pWithCoverCrop;
-  out.people_sample = peopleSample;
+  out.people_rows_total    = people?.length ?? 0;
+  out.people_unique_names  = uniqueNames.size;
+  out.people_sample        = peopleSample;
 
   // privacy flag per user if asked.
   if (uid) {

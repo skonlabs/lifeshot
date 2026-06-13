@@ -125,68 +125,81 @@ app.get("/people", async (c) => {
   if (!privacy?.face_processing_enabled) {
     return c.json({ people: [], face_processing_disabled: true });
   }
-  // Query people with Rekognition-pipeline cover fields.
-  // Face quality is already guaranteed at detection time (face-detector.ts gate),
-  // so we don't re-score here — we just use the stored cover_face_crop / cover_asset_id.
-  const { data, error } = await supa.from("people")
-    .select("id, display_name, is_child, is_elder, consent_required, auto_label, cover_face_crop, cover_asset_id, cover_bbox")
+
+  // Fetch all people rows (face JSON has Rekognition attributes, ~3KB/row — no FaceCrop).
+  const { data: rows, error } = await supa.from("people")
+    .select("id, display_name, asset_id, face")
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
-  const peopleRows = (data ?? []).filter((p: any) => p.auto_label !== "auto:unclustered-faces");
-  console.log("[/people] uid=", uid, "raw=", (data ?? []).length, "after_filter=", peopleRows.length);
 
-  // Asset counts: derive from the canonical `people.faces` jsonb array — the
-  // clusterPeople pipeline writes there, not into the legacy `person_faces`
-  // table. Counting distinct asset_id within the array gives the true number
-  // of photos this person appears in.
-  const ids = peopleRows.map((p: any) => p.id);
-  const counts: Record<string, number> = {};
-  if (ids.length) {
-    const { data: faceRows } = await supa.from("people")
-      .select("id, faces").in("id", ids);
-    for (const row of faceRows ?? []) {
-      const arr = Array.isArray((row as any).faces) ? (row as any).faces : [];
-      const seen = new Set<string>();
-      for (const f of arr) if (f && typeof f.asset_id === "string") seen.add(f.asset_id);
-      counts[(row as any).id] = seen.size;
-    }
+  // Group rows by display_name; each unique display_name = one physical person.
+  const groups = new Map<string, any[]>();
+  for (const row of rows ?? []) {
+    const key = row.display_name ?? "__unlabeled__";
+    const arr = groups.get(key) ?? [];
+    arr.push(row);
+    groups.set(key, arr);
   }
 
-  // Batch-resolve thumbnail URLs for any cover that doesn't already have a
-  // baked-in face_crop data URL.
-  const coverAssetIds = Array.from(new Set(
-    peopleRows
-      .filter((p: any) => p.cover_asset_id && !p.cover_face_crop)
-      .map((p: any) => p.cover_asset_id as string),
-  ));
+  // Score face quality for cover selection.
+  function faceQuality(face: any): number {
+    const fd = face?.FaceDetail ?? {};
+    const pose    = fd.Pose    ?? {};
+    const quality = fd.Quality ?? {};
+    const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
+    const pitch = Math.abs(Number(pose.Pitch ?? 90));
+    const sharp  = Number(quality.Sharpness  ?? 0);
+    const bright = Number(quality.Brightness ?? 0);
+    const frontality = Math.max(0, 1 - yaw / 90) * Math.max(0, 1 - pitch / 90);
+    return frontality * 0.60 + (sharp / 100) * 0.25 + (bright / 100) * 0.15;
+  }
+
+  // For each group, pick the best face row and collect cover asset ids.
+  type PersonEntry = { id: string; display_name: string; asset_count: number; best: any };
+  const entries: PersonEntry[] = [];
+  const coverAssetIds = new Set<string>();
+
+  for (const [displayName, groupRows] of groups) {
+    let best = groupRows[0];
+    let bestScore = faceQuality(best.face);
+    for (const row of groupRows.slice(1)) {
+      const s = faceQuality(row.face);
+      if (s > bestScore) { bestScore = s; best = row; }
+    }
+    entries.push({
+      id:           best.id,
+      display_name: displayName === "__unlabeled__" ? null : displayName,
+      asset_count:  new Set(groupRows.map((r: any) => r.asset_id).filter(Boolean)).size,
+      best,
+    });
+    if (best.asset_id) coverAssetIds.add(best.asset_id as string);
+  }
+
+  // Batch-resolve thumbnail URLs for cover assets.
+  const coverAssetArr = Array.from(coverAssetIds);
   const coverAssets: Record<string, any> = {};
   const mediaMap: Record<string, any> = {};
-  if (coverAssetIds.length) {
-    // Chunk .in() to keep URL length under PostgREST's ~4KB limit.
-    // UUIDs are 36 chars each; chunks of 80 keep us well under.
-    const CHUNK = 80;
-    for (let i = 0; i < coverAssetIds.length; i += CHUNK) {
-      const slice = coverAssetIds.slice(i, i + CHUNK);
-      const { data: assets, error: aErr } = await supa.from("assets")
-        .select("id, thumbnail_cache_key, proxy_cache_key, blurhash, dominant_color, media_type, width, height")
-        .in("id", slice);
-      if (aErr) console.warn("[/people] assets fetch err", aErr.message);
-      for (const a of assets ?? []) coverAssets[a.id] = a;
-      const { data: mm, error: mErr } = await supa.from("asset_media_metadata")
-        .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
-        .in("asset_id", slice);
-      if (mErr) console.warn("[/people] media fetch err", mErr.message);
-      for (const row of mm ?? []) mediaMap[row.asset_id] = row;
-    }
+  const CHUNK = 80;
+  for (let i = 0; i < coverAssetArr.length; i += CHUNK) {
+    const slice = coverAssetArr.slice(i, i + CHUNK);
+    const { data: assets } = await supa.from("assets")
+      .select("id, thumbnail_cache_key, proxy_cache_key, width, height")
+      .in("id", slice);
+    for (const a of assets ?? []) coverAssets[a.id] = a;
+    const { data: mm } = await supa.from("asset_media_metadata")
+      .select("asset_id, thumbnail_url, thumbnail_storage_path, preview_url, preview_storage_path")
+      .in("asset_id", slice);
+    for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
 
-  // Batch-sign storage paths to avoid sequential round-trips.
+  // Sign storage paths.
   const pathsToSign = new Set<string>();
-  for (const cid of coverAssetIds) {
+  for (const cid of coverAssetArr) {
     const asset = coverAssets[cid] ?? null;
     const media = mediaMap[cid] ?? null;
-    for (const ck of [media?.thumbnail_url, media?.thumbnail_storage_path, asset?.thumbnail_cache_key,
-      media?.preview_url, media?.preview_storage_path, asset?.proxy_cache_key]) {
+    for (const ck of [media?.thumbnail_url, media?.thumbnail_storage_path,
+      asset?.thumbnail_cache_key, media?.preview_url, media?.preview_storage_path,
+      asset?.proxy_cache_key]) {
       if (typeof ck === "string" && ck && !/^https?:\/\//.test(ck)) pathsToSign.add(ck);
     }
   }
@@ -198,56 +211,40 @@ app.get("/people", async (c) => {
       const remaining = allPaths.filter((p) => !signedMap.has(p));
       if (!remaining.length) break;
       try {
-        const { data: signed, error: sErr } = await svc.storage.from(bucket).createSignedUrls(remaining, 60 * 60);
-        if (sErr) console.warn("[/people] sign err bucket=", bucket, sErr.message);
+        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 3600);
         for (const s of signed ?? []) {
           if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
         }
-      } catch (e) { console.warn("[/people] sign throw bucket=", bucket, String((e as any)?.message ?? e)); }
+      } catch (_) { /* non-fatal */ }
     }
   }
-  console.log("[/people] coverAssetIds=", coverAssetIds.length, "pathsToSign=", pathsToSign.size, "signed=", signedMap.size, "coverAssets=", Object.keys(coverAssets).length, "mediaMap=", Object.keys(mediaMap).length);
   const resolveKey = (ck: string | null | undefined): string | null => {
     if (!ck) return null;
     if (/^https?:\/\//.test(ck)) return ck;
     return signedMap.get(ck) ?? null;
   };
 
-  const people = peopleRows.map((p: any) => {
-    const faceCrop = typeof p.cover_face_crop === "string" ? p.cover_face_crop : null;
-    const coverBbox = (p.cover_bbox && typeof p.cover_bbox === "object" &&
-      typeof (p.cover_bbox as any).x === "number") ? p.cover_bbox : null;
-    let thumbUrl: string | null = null;
-    let coverWidth: number | null = null;
-    let coverHeight: number | null = null;
-    if (!faceCrop && p.cover_asset_id) {
-      const asset = coverAssets[p.cover_asset_id] ?? null;
-      const media = mediaMap[p.cover_asset_id] ?? null;
-      thumbUrl = resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
-        ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
-        ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key);
-      coverWidth  = typeof asset?.width  === "number" ? asset.width  : null;
-      coverHeight = typeof asset?.height === "number" ? asset.height : null;
-    }
-    // Cover preference:
-    //   1. baked face_crop data URL (when face-detector produced one)
-    //   2. thumbnail + face_bbox  (PersonTile CSS-crops to the face region)
-    //   3. thumbnail alone        (PersonTile falls back to centered crop)
-    const cover = faceCrop
-      ? { face_crop: faceCrop, thumbnail_url: null, face_bbox: null, width: null, height: null }
-      : thumbUrl
-        ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: coverBbox, width: coverWidth, height: coverHeight }
+  // Build response. Cover uses thumbnail + face bbox (BoundingBox from people.face).
+  const people = entries
+    .filter((e) => e.asset_count > 0)
+    .map((e) => {
+      const bbox = e.best.face?.BoundingBox ?? null;
+      const validBbox = bbox && typeof bbox.x === "number" ? bbox : null;
+      const aid  = e.best.asset_id as string | null;
+      const asset = aid ? (coverAssets[aid] ?? null) : null;
+      const media = aid ? (mediaMap[aid] ?? null) : null;
+      const thumbUrl = aid
+        ? resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
+          ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
+          ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key)
         : null;
-    return {
-      id: p.id, display_name: p.display_name, is_child: p.is_child, is_elder: p.is_elder,
-      consent_required: p.consent_required, auto_label: p.auto_label,
-      asset_count: counts[p.id] ?? 0, cover,
-    };
-  // Show any person with at least one face occurrence. PersonTile renders a
-  // fallback avatar when cover is null, so don't drop people whose cover
-  // thumbnail couldn't be resolved.
-  }).filter((person: any) => person.asset_count > 0);
-  console.log("[/people] final=", people.length);
+      const cover = thumbUrl
+        ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: validBbox,
+            width: asset?.width ?? null, height: asset?.height ?? null }
+        : null;
+      return { id: e.id, display_name: e.display_name, asset_count: e.asset_count, cover };
+    });
+
   // Suppress unused import warnings.
   void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
@@ -256,15 +253,26 @@ app.get("/people", async (c) => {
 app.get("/people/:id", async (c) => {
   const supa = c.get("supabase");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
-  const { data: person } = await supa.from("people").select("*").eq("id", id).maybeSingle();
+  const { data: person } = await supa.from("people")
+    .select("id, user_id, display_name, asset_id, face, created_at, updated_at")
+    .eq("id", id).maybeSingle();
   if (!person) throw new ApiError("not_found", "Person not found");
-  const facesArr = Array.isArray(person.faces) ? person.faces : [];
-  const compactFaces = facesArr.slice(0, 50).map((f: any) => ({
-    asset_id: f.asset_id, confidence: f.confidence,
-  }));
+
+  // Return all occurrences of this person (same display_name, same user).
+  const { data: occurrences } = await supa.from("people")
+    .select("id, asset_id, face")
+    .eq("user_id", (person as any).user_id)
+    .eq("display_name", (person as any).display_name ?? "");
+
+  const assetIds = [...new Set((occurrences ?? []).map((o: any) => o.asset_id).filter(Boolean))];
   return c.json({
-    ...person, person, faces: compactFaces,
-    asset_count: person.face_count ?? new Set(facesArr.map((f: any) => f.asset_id)).size,
+    ...(person as any),
+    asset_count: assetIds.length,
+    occurrences: (occurrences ?? []).map((o: any) => ({
+      id:       o.id,
+      asset_id: o.asset_id,
+      face_id:  o.face?.FaceId ?? null,
+    })),
   });
 });
 
@@ -488,12 +496,10 @@ app.post("/people/reset", async (c) => {
   const sb = getServiceClient();
   const { error: afErr } = await sb.from("asset_faces").delete().eq("user_id", uid);
   if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
-  await sb.from("people").delete()
-    .eq("user_id", uid)
-    .not("auto_label", "is", null);
-  await sb.from("asset_ai_enrichment").update({ faces: [], rekognition_response: null })
-    .eq("user_id", uid)
-    .not("faces", "eq", "[]");
+  await sb.from("people").delete().eq("user_id", uid);
+  await sb.from("asset_ai_enrichment")
+    .update({ faces: [], face_count: 0 })
+    .eq("user_id", uid);
   await sb.from("assets").update({ face_scanned_at: null })
     .eq("user_id", uid)
     .not("face_scanned_at", "is", null);

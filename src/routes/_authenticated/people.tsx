@@ -13,7 +13,6 @@ type Cover = {
   face_bbox?: Bbox;
   width?: number | null;
   height?: number | null;
-  face_count?: number | null;
 } | null | undefined;
 
 type Person = {

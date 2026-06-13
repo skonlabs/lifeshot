@@ -68,17 +68,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // ── Vision analysis (caption + tags + objects) ─────────────────────────────
   let caption = "";
   let tags: string[] = [];
-  let objects: Array<{ label: string; score: number }> = [];
   let visionError: string | null = null;
 
   try {
-    const [capResult, objResult] = await Promise.all([
-      providers.ai.caption({ url }),
-      providers.ai.detectObjects({ url }),
-    ]);
+    const capResult = await providers.ai.caption({ url });
     caption = capResult.caption;
     tags = capResult.tags ?? [];
-    objects = objResult ?? [];
   } catch (e: any) {
     visionError = String(e?.message ?? e);
     console.error("enrichAI: vision failed", { asset_id, error: visionError });
@@ -127,16 +122,14 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     });
   }
 
-  // ── Persist caption/tags/objects (faces written by storeFaceResults) ───────
+  // ── Persist caption/tags/faces to asset_ai_enrichment ─────────────────────
   const { error: upsertErr } = await sb.from("asset_ai_enrichment").upsert({
     asset_id,
-    user_id: asset.user_id,
+    user_id:    asset.user_id,
     caption,
-    tags,
-    objects,
-    faces: rawFaces,
-    rekognition_response: rawFaces.length > 0 ? rawFaces : null,
-    enriched_at: !visionError ? new Date().toISOString() : null,
+    tags:       tags as unknown as string,   // stored as jsonb array
+    faces:      rawFaces,
+    face_count: rawFaces.length,
   }, { onConflict: "asset_id" });
   if (upsertErr) {
     console.error("enrichAI: asset_ai_enrichment upsert failed", { asset_id, error: upsertErr.message });
@@ -149,12 +142,10 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   });
 
   if (visionError) {
-    // Permanent vision failures (unsupported/corrupt image formats, persistent
-    // circuit-breaker trips) must NOT spin forever — mark non-retryable.
     const permanent = /invalid_image_format|unsupported image|image_parse_error|invalid image|circuit breaker open/i.test(visionError);
     if (permanent) {
       console.warn("enrichAI: permanent vision failure — not retrying", { asset_id, visionError });
-      return { asset_id, caption_len: 0, tags: 0, objects: 0, faces: rawFaces.length, vision_skipped: visionError.slice(0, 200) };
+      return { asset_id, caption_len: 0, tags: 0, faces: rawFaces.length, vision_skipped: visionError.slice(0, 200) };
     }
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${visionError}`);
   }
@@ -162,8 +153,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   return {
     asset_id,
     caption_len: caption.length,
-    tags: tags.length,
-    objects: objects.length,
-    faces: rawFaces.length,
+    tags:        tags.length,
+    faces:       rawFaces.length,
   };
 }

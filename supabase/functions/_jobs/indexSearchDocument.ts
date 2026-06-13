@@ -26,7 +26,7 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
   if (!asset) throw new Error("not found: asset");
 
   const [aiRow, gpsRow, exifRow] = await Promise.all([
-    sb.from("asset_ai_enrichment").select("caption, tags, objects, ocr_text")
+    sb.from("asset_ai_enrichment").select("caption, tags, ocr_text")
       .eq("asset_id", asset_id).maybeSingle().then((r) => r.data),
     sb.from("asset_gps").select(
       "reverse_geocoded_city, reverse_geocoded_state, reverse_geocoded_country, place_name",
@@ -46,13 +46,9 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
 
   // AI caption + tags + object labels
   if (aiRow?.caption) parts.push(aiRow.caption);
-  if (Array.isArray(aiRow?.tags) && aiRow.tags.length) parts.push(aiRow.tags.join(" "));
-  if (Array.isArray(aiRow?.objects)) {
-    const labels = aiRow.objects
-      .map((o: any) => (typeof o === "string" ? o : o?.label))
-      .filter(Boolean);
-    if (labels.length) parts.push(labels.join(" "));
-  }
+  // tags is now jsonb (array); handle both jsonb array and legacy text[] formats.
+  const tagsArr = Array.isArray(aiRow?.tags) ? aiRow.tags : [];
+  if (tagsArr.length) parts.push(tagsArr.join(" "));
 
   // OCR text (now on asset_ai_enrichment.ocr_text)
   if (aiRow?.ocr_text) parts.push(aiRow.ocr_text);

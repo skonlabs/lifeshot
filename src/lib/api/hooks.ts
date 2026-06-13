@@ -588,7 +588,7 @@ export function usePeople() {
     queryKey: ["people"],
     queryFn: async () => {
       try {
-        return await api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; consent_required: boolean; cover?: { asset_id: string; thumbnail_url: string | null; blurhash: string | null; dominant_color: string | null; width: number | null; height: number | null; capture_time: string | null; media_type: string; source_badge: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; hydration_status: "pending" | "ready" } | null }>; face_processing_disabled?: boolean }>("/people");
+        return await api.organization<{ people: Array<{ id: string; display_name: string | null; asset_count: number; cover?: { face_crop: string | null; thumbnail_url: string | null; face_bbox?: { x: number; y: number; w: number; h: number } | null; width: number | null; height: number | null } | null }>; face_processing_disabled?: boolean }>("/people");
       } catch (error) {
         if (isTemporaryUpstreamError(error)) {
           return { people: [], face_processing_disabled: false };
