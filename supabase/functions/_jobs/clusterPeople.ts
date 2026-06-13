@@ -327,6 +327,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
     survivor.face_ids = mergedFaceIds;
     for (const fid of mergedFaceIds) faceIdToPersonId.set(fid, survivorId);
+    for (const row of assetFaceRows) {
+      if (dedupedIds.includes(row.person_id)) row.person_id = survivorId;
+    }
     for (const duplicateId of dedupedIds) {
       const duplicate = peopleById.get(duplicateId);
       for (const fid of duplicate?.face_ids ?? []) faceIdToPersonId.set(fid, survivorId);
