@@ -75,11 +75,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "cluster_already_running", clustered: 0 };
   }
 
-  // ── 1. Load qualifying faces (quality-filtered; FaceCrop excluded for size) ─
-  const rpcArgs: Record<string, unknown> = { p_user_id: uid };
-  if (asset_id) rpcArgs.p_asset_id = asset_id;
-
-  const { data: faceRows, error } = await sb.rpc("get_qualifying_faces", rpcArgs);
+  // ── 1. Load qualifying faces across the whole user, not just one asset. ────
+  // Asset-scoped clustering can only assign the newest detections; it cannot
+  // reliably repair already-split people rows created by older runs because
+  // the bridged faces may live on different assets. Every clusterPeople run is
+  // therefore a full per-user reconciliation pass.
+  const { data: faceRows, error } = await sb.rpc("get_qualifying_faces", { p_user_id: uid });
   if (error) throw new Error(`clusterPeople get_qualifying_faces: ${error.message}`);
 
   interface FaceRow {
@@ -87,7 +88,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     face_id: string;
     face: any;
   }
-  const qualifying: FaceRow[] = (faceRows ?? []).filter((r: any) => r.face_id && r.asset_id);
+  const qualifying: FaceRow[] = (faceRows ?? [])
+    .filter((r: any) => r.face_id && r.asset_id)
+    .sort((a: any, b: any) => {
+      const assetCmp = String(a.asset_id).localeCompare(String(b.asset_id));
+      if (assetCmp !== 0) return assetCmp;
+      return String(a.face_id).localeCompare(String(b.face_id));
+    });
 
   if (qualifying.length === 0) {
     return { user_id: uid, people: 0, clustered: 0, reason: "no_qualifying_faces" };
@@ -407,6 +414,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   return {
     user_id: uid,
+    trigger_asset_id: asset_id ?? null,
     faces_processed: qualifying.length,
     people_created: createdCount,
     detections_linked: linkedCount,
