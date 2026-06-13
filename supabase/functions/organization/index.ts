@@ -498,13 +498,30 @@ app.post("/people/reset", async (c) => {
     .eq("user_id", uid)
     .not("face_scanned_at", "is", null);
 
-  // Cancel any pending face jobs for this user so stale coalesced jobs don't
-  // fire after the reset with incomplete data.
+  // Purge ALL prior face-pipeline jobs (any status) for this user, and
+  // their job_ledger entries.  Two reasons:
+  //   1. Stale pending/running rows would fire after the reset with
+  //      incomplete data.
+  //   2. Stale completed rows (per-asset idempotency keys from earlier
+  //      cycles) would cause enqueueJob to dedup against them — even after
+  //      we wipe the people/faces tables, no fresh clusterPeople would ever
+  //      be queued for those assets, so the People page stays empty.
+  // clusterPlaces and detectEvents share the same coalescing pattern, so
+  // include them too.
+  const FACE_PIPELINE_JOBS = [
+    "enrichAI",
+    "clusterPeople",
+    "clusterPlaces",
+    "detectEvents",
+  ];
   await sb.from("job_queue")
     .delete()
-    .in("job_name", ["clusterPeople", "enrichAI"])
-    .eq("user_id", uid)
-    .eq("status", "pending");
+    .in("job_name", FACE_PIPELINE_JOBS)
+    .eq("user_id", uid);
+  await sb.from("job_ledger")
+    .delete()
+    .in("job_name", FACE_PIPELINE_JOBS)
+    .eq("user_id", uid);
 
   // 3. Enqueue enrichAI for all image assets so they are re-detected immediately.
   // Time-based idempotency key so repeated resets always re-enqueue.
