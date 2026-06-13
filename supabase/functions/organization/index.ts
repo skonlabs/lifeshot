@@ -126,54 +126,38 @@ app.get("/people", async (c) => {
     return c.json({ people: [], face_processing_disabled: true });
   }
 
-  // Fetch all people rows (face JSON has Rekognition attributes, ~3KB/row — no FaceCrop).
+  // One row per unique person (post one-row-per-person migration).
   const { data: rows, error } = await supa.from("people")
     .select("id, display_name, asset_id, face")
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
 
-  // Group rows by display_name; each unique display_name = one physical person.
-  const groups = new Map<string, any[]>();
-  for (const row of rows ?? []) {
-    const key = row.display_name ?? "__unlabeled__";
-    const arr = groups.get(key) ?? [];
-    arr.push(row);
-    groups.set(key, arr);
-  }
+  type PersonEntry = { id: string; display_name: string | null; asset_count: number; best: any };
+  const entries: PersonEntry[] = (rows ?? []).map((r: any) => ({
+    id: r.id,
+    display_name: r.display_name ?? null,
+    asset_count: 0,
+    best: r,
+  }));
 
-  // Score face quality for cover selection.
-  function faceQuality(face: any): number {
-    const fd = face?.FaceDetail ?? {};
-    const pose    = fd.Pose    ?? {};
-    const quality = fd.Quality ?? {};
-    const yaw   = Math.abs(Number(pose.Yaw   ?? 90));
-    const pitch = Math.abs(Number(pose.Pitch ?? 90));
-    const sharp  = Number(quality.Sharpness  ?? 0);
-    const bright = Number(quality.Brightness ?? 0);
-    const frontality = Math.max(0, 1 - yaw / 90) * Math.max(0, 1 - pitch / 90);
-    return frontality * 0.60 + (sharp / 100) * 0.25 + (bright / 100) * 0.15;
-  }
-
-  // For each group, pick the best face row and collect cover asset ids.
-  type PersonEntry = { id: string; display_name: string; asset_count: number; best: any };
-  const entries: PersonEntry[] = [];
-  const coverAssetIds = new Set<string>();
-
-  for (const [displayName, groupRows] of groups) {
-    let best = groupRows[0];
-    let bestScore = faceQuality(best.face);
-    for (const row of groupRows.slice(1)) {
-      const s = faceQuality(row.face);
-      if (s > bestScore) { bestScore = s; best = row; }
+  // Count detections per person via asset_faces.person_id.
+  if (entries.length) {
+    const ids = entries.map((e) => e.id);
+    const { data: linkRows } = await supa.from("asset_faces")
+      .select("person_id, asset_id")
+      .in("person_id", ids);
+    const perPerson = new Map<string, Set<string>>();
+    for (const r of linkRows ?? []) {
+      if (!r.person_id || !r.asset_id) continue;
+      let s = perPerson.get(r.person_id);
+      if (!s) { s = new Set<string>(); perPerson.set(r.person_id, s); }
+      s.add(r.asset_id);
     }
-    entries.push({
-      id:           best.id,
-      display_name: displayName === "__unlabeled__" ? null : displayName,
-      asset_count:  new Set(groupRows.map((r: any) => r.asset_id).filter(Boolean)).size,
-      best,
-    });
-    if (best.asset_id) coverAssetIds.add(best.asset_id as string);
+    for (const e of entries) e.asset_count = perPerson.get(e.id)?.size ?? 0;
   }
+
+  const coverAssetIds = new Set<string>();
+  for (const e of entries) if (e.best?.asset_id) coverAssetIds.add(e.best.asset_id as string);
 
   // Batch-resolve thumbnail URLs for cover assets.
   const coverAssetArr = Array.from(coverAssetIds);
@@ -254,15 +238,14 @@ app.get("/people/:id", async (c) => {
   const supa = c.get("supabase");
   const { id } = parseParams(c, z.object({ id: z.string().uuid() }));
   const { data: person } = await supa.from("people")
-    .select("id, user_id, display_name, asset_id, face, created_at, updated_at")
+    .select("id, user_id, display_name, asset_id, face, face_ids, created_at, updated_at")
     .eq("id", id).maybeSingle();
   if (!person) throw new ApiError("not_found", "Person not found");
 
-  // Return all occurrences of this person (same display_name, same user).
-  const { data: occurrences } = await supa.from("people")
+  // All occurrences: every asset_faces row linked to this person.
+  const { data: occurrences } = await supa.from("asset_faces")
     .select("id, asset_id, face")
-    .eq("user_id", (person as any).user_id)
-    .eq("display_name", (person as any).display_name ?? "");
+    .eq("person_id", id);
 
   const assetIds = [...new Set((occurrences ?? []).map((o: any) => o.asset_id).filter(Boolean))];
   return c.json({
@@ -424,6 +407,16 @@ app.post("/corrections", async (c) => {
   // (search reindex picks up the changes on next pipeline pass).
   let job_id: string | null = null;
   if (body.target_type === "person") {
+    // Persist the new display_name directly on the (single) person row.
+    const newName = typeof (body.correction as any)?.display_name === "string"
+      ? String((body.correction as any).display_name).trim()
+      : null;
+    if (newName) {
+      const { error: renameErr } = await supa.from("people")
+        .update({ display_name: newName, updated_at: new Date().toISOString() })
+        .eq("id", body.target_id);
+      if (renameErr) throw new ApiError("internal", renameErr.message);
+    }
     const job = await jobEnqueuer.enqueue("clusterPeople",
       { user_id: uid, target_person_id: body.target_id, correction: body.correction },
       { userId: uid });

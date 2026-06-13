@@ -165,15 +165,10 @@ app.post("/memory/viewport", async (c) => {
   // intersect via .in("id", ...) on the main query.
   let restrictIds: string[] | null = null;
   if (body.people_filter?.length) {
-    // Each people row links to one asset_id (new schema: one row per face per asset).
-    // Collect all asset_ids for the selected people (grouped by display_name).
-    const { data: seedRows } = await supa.from("people")
-      .select("display_name").in("id", body.people_filter);
-    const names = [...new Set((seedRows ?? []).map((r: any) => r.display_name).filter(Boolean))];
-    const { data: peopleRows } = names.length
-      ? await supa.from("people").select("asset_id").in("display_name", names)
-      : { data: [] };
-    const ids = Array.from(new Set((peopleRows ?? []).map((p: any) => p.asset_id).filter(Boolean)));
+    // One row per unique person. Asset ids come from asset_faces.person_id.
+    const { data: linkRows } = await supa.from("asset_faces")
+      .select("asset_id").in("person_id", body.people_filter);
+    const ids = Array.from(new Set((linkRows ?? []).map((r: any) => r.asset_id).filter(Boolean)));
     restrictIds = ids;
     if (ids.length === 0) {
       return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
