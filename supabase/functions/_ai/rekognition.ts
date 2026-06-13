@@ -185,6 +185,7 @@ export async function searchFaces(opts: {
   maxFaces: number;
 }): Promise<Array<{ faceId: string; similarity: number }>> {
   const { region, accessKeyId, secretAccessKey } = getCredentials();
+  const maxFaces = Math.max(1, Math.floor(opts.maxFaces));
   const data = await signedRequest({
     region, accessKeyId, secretAccessKey,
     target: "RekognitionService.SearchFaces",
@@ -192,7 +193,7 @@ export async function searchFaces(opts: {
       CollectionId: opts.collectionId,
       FaceId: opts.faceId,
       FaceMatchThreshold: opts.faceMatchThreshold,
-      MaxFaces: opts.maxFaces,
+      MaxFaces: maxFaces,
     },
   });
   return (data.FaceMatches ?? []).map((m: any) => ({
