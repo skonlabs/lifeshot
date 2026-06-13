@@ -26,7 +26,8 @@ function compareJobStart(a: any, b: any): number {
 }
 
 async function isLeaderClusterJob(sb: any, userId: string, jobId: string): Promise<boolean> {
-  const { data, error } = await sb.from("job_queue")
+  const { data, error } = await sb
+    .from("job_queue")
     .select("id, started_at, locked_at, created_at")
     .eq("job_name", "clusterPeople")
     .eq("user_id", userId)
@@ -70,7 +71,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { data: faceRows, error } = await sb.rpc("get_qualifying_faces", rpcArgs);
   if (error) throw new Error(`clusterPeople get_qualifying_faces: ${error.message}`);
 
-  interface FaceRow { asset_id: string; face_id: string; face: any }
+  interface FaceRow {
+    asset_id: string;
+    face_id: string;
+    face: any;
+  }
   const qualifying: FaceRow[] = (faceRows ?? []).filter((r: any) => r.face_id && r.asset_id);
 
   if (qualifying.length === 0) {
@@ -145,7 +150,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ]);
 
     const now = new Date().toISOString();
-    const { error: peopleErr } = await sb.from("people")
+    const { error: peopleErr } = await sb
+      .from("people")
       .update({ face_ids: mergedFaceIds, updated_at: now })
       .eq("id", survivorId);
     if (peopleErr) {
@@ -153,7 +159,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       return null;
     }
 
-    const { error: relinkErr } = await sb.from("asset_faces")
+    const { error: relinkErr } = await sb
+      .from("asset_faces")
       .update({ person_id: survivorId, updated_at: now })
       .in("person_id", dedupedIds);
     if (relinkErr) {
@@ -161,11 +168,16 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       return null;
     }
 
-    const { data: duplicateEventLinks, error: eventReadErr } = await sb.from("event_people")
+    const { data: duplicateEventLinks, error: eventReadErr } = await sb
+      .from("event_people")
       .select("id, event_id")
       .in("person_id", dedupedIds);
     if (eventReadErr) {
-      console.warn("clusterPeople: read duplicate event_people links failed", survivorId, eventReadErr.message);
+      console.warn(
+        "clusterPeople: read duplicate event_people links failed",
+        survivorId,
+        eventReadErr.message,
+      );
       return null;
     }
 
@@ -173,7 +185,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       new Set((duplicateEventLinks ?? []).map((row: any) => row.event_id).filter(Boolean)),
     );
     if (eventIds.length) {
-      const { data: survivorEventLinks, error: survivorEventErr } = await sb.from("event_people")
+      const { data: survivorEventLinks, error: survivorEventErr } = await sb
+        .from("event_people")
         .select("event_id")
         .eq("person_id", survivorId)
         .in("event_id", eventIds);
@@ -192,27 +205,40 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       if (missingEventLinks.length) {
         const { error: eventInsertErr } = await sb.from("event_people").insert(missingEventLinks);
         if (eventInsertErr) {
-          console.warn("clusterPeople: insert survivor event_people links failed", survivorId, eventInsertErr.message);
+          console.warn(
+            "clusterPeople: insert survivor event_people links failed",
+            survivorId,
+            eventInsertErr.message,
+          );
           return null;
         }
       }
-      const duplicateEventLinkIds = (duplicateEventLinks ?? []).map((row: any) => row.id).filter(Boolean);
+      const duplicateEventLinkIds = (duplicateEventLinks ?? [])
+        .map((row: any) => row.id)
+        .filter(Boolean);
       if (duplicateEventLinkIds.length) {
-        const { error: eventDeleteErr } = await sb.from("event_people")
+        const { error: eventDeleteErr } = await sb
+          .from("event_people")
           .delete()
           .in("id", duplicateEventLinkIds);
         if (eventDeleteErr) {
-          console.warn("clusterPeople: delete duplicate event_people links failed", survivorId, eventDeleteErr.message);
+          console.warn(
+            "clusterPeople: delete duplicate event_people links failed",
+            survivorId,
+            eventDeleteErr.message,
+          );
           return null;
         }
       }
     }
 
-    const { error: deleteErr } = await sb.from("people")
-      .delete()
-      .in("id", dedupedIds);
+    const { error: deleteErr } = await sb.from("people").delete().in("id", dedupedIds);
     if (deleteErr) {
-      console.warn("clusterPeople: delete merged duplicate people failed", survivorId, deleteErr.message);
+      console.warn(
+        "clusterPeople: delete merged duplicate people failed",
+        survivorId,
+        deleteErr.message,
+      );
       return null;
     }
 
@@ -227,18 +253,18 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return survivor;
   };
 
-  const ensurePersonOwnsFaceId = async (personId: string, faceId: string): Promise<PersonRow | null> => {
+  const ensurePersonOwnsFaceId = async (
+    personId: string,
+    faceId: string,
+  ): Promise<PersonRow | null> => {
     const target = peopleById.get(personId);
     if (!target) return null;
-    const nextFaceIds = uniqueFaceIds([
-      ...target.face_ids,
-      faceId,
-      target.cover_face_id ?? "",
-    ]);
+    const nextFaceIds = uniqueFaceIds([...target.face_ids, faceId, target.cover_face_id ?? ""]);
     for (const fid of nextFaceIds) faceIdToPersonId.set(fid, personId);
     if (nextFaceIds.length === target.face_ids.length) return target;
     target.face_ids = nextFaceIds;
-    const { error: upErr } = await sb.from("people")
+    const { error: upErr } = await sb
+      .from("people")
       .update({ face_ids: nextFaceIds, updated_at: new Date().toISOString() })
       .eq("id", personId);
     if (upErr) {
@@ -248,9 +274,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   };
 
   // ── 3. Assign each detection to a person ────────────────────────────────────
-  let createdCount  = 0;
-  let linkedCount   = 0;
-  let skippedCount  = 0;
+  let createdCount = 0;
+  let linkedCount = 0;
+  let skippedCount = 0;
 
   for (const row of qualifying) {
     const faceId = row.face_id;
@@ -305,7 +331,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     if (!personId) {
       maxPersonN++;
       const displayName = `Person ${maxPersonN}`;
-      const { data: inserted, error: insErr } = await sb.from("people")
+      const { data: inserted, error: insErr } = await sb
+        .from("people")
         .insert({
           user_id: uid,
           asset_id: assetId,
@@ -321,7 +348,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         continue;
       }
       personId = inserted.id;
-      const created = { id: personId, display_name: displayName, face_ids: [faceId], cover_face_id: faceId };
+      const created = {
+        id: personId,
+        display_name: displayName,
+        face_ids: [faceId],
+        cover_face_id: faceId,
+      };
       people.push(created);
       peopleById.set(personId, created);
       faceIdToPersonId.set(faceId, personId);
@@ -331,13 +363,15 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     // 3d. Link the detection row in asset_faces to its person.
     // jsonb-operator filters via PostgREST are brittle; fetch candidates and
     // match the FaceId in-process. An asset has at most a handful of faces.
-    const { data: candidateRows } = await sb.from("asset_faces")
+    const { data: candidateRows } = await sb
+      .from("asset_faces")
       .select("id, face")
       .eq("user_id", uid)
       .eq("asset_id", assetId);
     const targetId = (candidateRows ?? []).find((r: any) => r.face?.FaceId === faceId)?.id;
     if (targetId) {
-      const { error: linkErr } = await sb.from("asset_faces")
+      const { error: linkErr } = await sb
+        .from("asset_faces")
         .update({ person_id: personId, updated_at: new Date().toISOString() })
         .eq("id", targetId);
       if (linkErr) console.warn("clusterPeople: link asset_faces failed", faceId, linkErr.message);
@@ -345,10 +379,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   return {
-    user_id:         uid,
+    user_id: uid,
     faces_processed: qualifying.length,
-    people_created:  createdCount,
+    people_created: createdCount,
     detections_linked: linkedCount,
-    skipped:         skippedCount,
+    skipped: skippedCount,
   };
 }
