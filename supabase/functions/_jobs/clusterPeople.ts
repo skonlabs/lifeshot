@@ -123,11 +123,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     ]),
   }));
 
-  const { data: existingLinks } = await sb
+  const { data: allAssetFaces } = await sb
     .from("asset_faces")
     .select("person_id, face")
-    .eq("user_id", uid)
-    .not("person_id", "is", null);
+    .eq("user_id", uid);
+
+  const existingLinks = (allAssetFaces ?? []).filter((row: any) => row.person_id);
 
   const faceCropByFaceId = new Map<string, Uint8Array>();
   for (const row of qualifying) {
@@ -135,7 +136,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
     if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
   }
-  for (const row of existingLinks ?? []) {
+  for (const row of allAssetFaces ?? []) {
     const fid = row.face?.FaceId as string | undefined;
     const cropBytes = dataUrlToBytes(row.face?.FaceCrop);
     if (fid && cropBytes && !faceCropByFaceId.has(fid)) faceCropByFaceId.set(fid, cropBytes);
