@@ -20,6 +20,7 @@ import {
   rekognitionConfigured,
 } from "./rekognition.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
+import { isUsableIndexedFace } from "./face-quality.ts";
 
 const REKOGNITION_MAX_BYTES = 3_750_000;
 const DEDUP_SIMILARITY = 98;   // same physical face indexed twice in one collection
