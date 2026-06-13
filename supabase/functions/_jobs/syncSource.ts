@@ -441,9 +441,8 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
     hasLocationMetadata: boolean;
   }>();
   if (existingAssetIds.length > 0) {
-    // asset_file_metadata + asset_preview_metadata were dropped in B-NUKE.
-    // filename now lives on assets directly, and thumbnail/preview presence is
-    // derived from asset_media_metadata.thumbnail_*/preview_* columns.
+    // File naming now lives on assets directly, and thumbnail/preview presence
+    // is derived from asset_media_metadata.thumbnail_*/preview_* columns.
     const [
       { data: assetsMetaRows, error: assetsMetaError },
       { data: mediaMetadataRows, error: mediaMetadataError },
