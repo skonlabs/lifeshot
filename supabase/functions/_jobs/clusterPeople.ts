@@ -144,12 +144,19 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
 
     // 3d. Link the detection row in asset_faces to its person.
-    const { error: linkErr } = await sb.from("asset_faces")
-      .update({ person_id: personId, updated_at: new Date().toISOString() })
+    // jsonb-operator filters via PostgREST are brittle; fetch candidates and
+    // match the FaceId in-process. An asset has at most a handful of faces.
+    const { data: candidateRows } = await sb.from("asset_faces")
+      .select("id, face")
       .eq("user_id", uid)
-      .eq("asset_id", assetId)
-      .eq("face->>FaceId", faceId);
-    if (linkErr) console.warn("clusterPeople: link asset_faces failed", faceId, linkErr.message);
+      .eq("asset_id", assetId);
+    const targetId = (candidateRows ?? []).find((r: any) => r.face?.FaceId === faceId)?.id;
+    if (targetId) {
+      const { error: linkErr } = await sb.from("asset_faces")
+        .update({ person_id: personId, updated_at: new Date().toISOString() })
+        .eq("id", targetId);
+      if (linkErr) console.warn("clusterPeople: link asset_faces failed", faceId, linkErr.message);
+    }
   }
 
   return {
