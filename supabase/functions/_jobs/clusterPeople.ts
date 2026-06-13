@@ -125,12 +125,16 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   const peopleById = new Map<string, PersonRow>(people.map((p) => [p.id, p]));
-  const personFaceIds = uniqueFaceIds(people.flatMap((p) => p.face_ids));
-  const searchMaxFaces = Math.max(SEARCH_PAGE_SIZE, personFaceIds.length + qualifying.length + 32);
+  const searchMaxFaces = SEARCH_PAGE_SIZE;
 
-  const mergePeople = async (survivorId: string, duplicateIds: string[]): Promise<PersonRow | null> => {
+  const mergePeople = async (
+    survivorId: string,
+    duplicateIds: string[],
+  ): Promise<PersonRow | null> => {
     const survivor = peopleById.get(survivorId);
-    const dedupedIds = Array.from(new Set(duplicateIds.filter((id) => id && id !== survivorId && peopleById.has(id))));
+    const dedupedIds = Array.from(
+      new Set(duplicateIds.filter((id) => id && id !== survivorId && peopleById.has(id))),
+    );
     if (!survivor) return null;
     if (!dedupedIds.length) return survivor;
 
@@ -157,11 +161,51 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       return null;
     }
 
-    const { error: eventRelinkErr } = await sb.from("event_people")
-      .update({ person_id: survivorId })
+    const { data: duplicateEventLinks, error: eventReadErr } = await sb.from("event_people")
+      .select("id, event_id")
       .in("person_id", dedupedIds);
-    if (eventRelinkErr) {
-      console.warn("clusterPeople: merge event_people relink failed", survivorId, eventRelinkErr.message);
+    if (eventReadErr) {
+      console.warn("clusterPeople: read duplicate event_people links failed", survivorId, eventReadErr.message);
+      return null;
+    }
+
+    const eventIds = Array.from(
+      new Set((duplicateEventLinks ?? []).map((row: any) => row.event_id).filter(Boolean)),
+    );
+    if (eventIds.length) {
+      const { data: survivorEventLinks, error: survivorEventErr } = await sb.from("event_people")
+        .select("event_id")
+        .eq("person_id", survivorId)
+        .in("event_id", eventIds);
+      if (survivorEventErr) {
+        console.warn(
+          "clusterPeople: read survivor event_people links failed",
+          survivorId,
+          survivorEventErr.message,
+        );
+        return null;
+      }
+      const survivorEventIds = new Set((survivorEventLinks ?? []).map((row: any) => row.event_id));
+      const missingEventLinks = eventIds
+        .filter((eventId) => !survivorEventIds.has(eventId))
+        .map((event_id) => ({ event_id, person_id: survivorId }));
+      if (missingEventLinks.length) {
+        const { error: eventInsertErr } = await sb.from("event_people").insert(missingEventLinks);
+        if (eventInsertErr) {
+          console.warn("clusterPeople: insert survivor event_people links failed", survivorId, eventInsertErr.message);
+          return null;
+        }
+      }
+      const duplicateEventLinkIds = (duplicateEventLinks ?? []).map((row: any) => row.id).filter(Boolean);
+      if (duplicateEventLinkIds.length) {
+        const { error: eventDeleteErr } = await sb.from("event_people")
+          .delete()
+          .in("id", duplicateEventLinkIds);
+        if (eventDeleteErr) {
+          console.warn("clusterPeople: delete duplicate event_people links failed", survivorId, eventDeleteErr.message);
+          return null;
+        }
+      }
     }
 
     const { error: deleteErr } = await sb.from("people")
