@@ -384,7 +384,21 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       linkedCount++;
     }
 
-    // 3c. No match → create a new person, this detection becomes the cover.
+    if (!personId) {
+      const comparedPersonId = await findBestComparedPersonId(faceId);
+      if (comparedPersonId) {
+        personId = comparedPersonId;
+        const target = await ensurePersonOwnsFaceId(personId, faceId);
+        if (!target) {
+          skippedCount++;
+          continue;
+        }
+        faceIdToPersonId.set(faceId, personId);
+        linkedCount++;
+      }
+    }
+
+    // 3c. No match after exhaustive compare → create a new person.
     if (!personId) {
       maxPersonN++;
       const displayName = `Person ${maxPersonN}`;
