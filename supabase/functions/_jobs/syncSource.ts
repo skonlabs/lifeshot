@@ -548,7 +548,7 @@ export async function syncSource(ctx: JobContext): Promise<unknown> {
       source_modified_at: a.modified_time ?? a.created_time ?? null,
       provider_url: a.provider_url ?? null,
       is_primary: existing ? (existing.is_primary ?? false) : true,
-      last_seen_at: now,
+      source_last_seen_at: now,
     };
   }).filter((r) => r.asset_id); // skip any that failed to insert
 
