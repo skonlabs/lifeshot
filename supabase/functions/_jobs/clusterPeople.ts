@@ -305,6 +305,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       const nextCoverFaceId = linkedPerson.cover_face_id === faceId
         ? (nextFaceIds[0] ?? null)
         : linkedPerson.cover_face_id;
+      const staleAssetFaceIds = assetFaceRows
+        .filter((row: any) => row.person_id === linkedPerson.id && row.face?.FaceId === faceId)
+        .map((row: any) => row.id)
+        .filter(Boolean);
 
       if (nextFaceIds.length === 0) {
         const { error: deleteErr } = await sb.from("people").delete().eq("id", linkedPerson.id);
@@ -315,7 +319,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         const { error: unlinkErr } = await sb
           .from("asset_faces")
           .update({ person_id: null, updated_at: now })
-          .eq("person_id", linkedPerson.id);
+          .in("id", staleAssetFaceIds);
         if (unlinkErr) {
           console.warn("clusterPeople: unlink duplicate asset_faces failed", linkedPerson.id, unlinkErr.message);
         }
@@ -332,8 +336,21 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           console.warn("clusterPeople: remove stale face_id failed", linkedPerson.id, updateErr.message);
           continue;
         }
+        if (staleAssetFaceIds.length) {
+          const { error: unlinkErr } = await sb
+            .from("asset_faces")
+            .update({ person_id: null, updated_at: now })
+            .in("id", staleAssetFaceIds);
+          if (unlinkErr) {
+            console.warn("clusterPeople: unlink stale face rows failed", linkedPerson.id, unlinkErr.message);
+          }
+        }
         linkedPerson.face_ids = nextFaceIds;
         linkedPerson.cover_face_id = nextCoverFaceId;
+      }
+
+      for (const row of assetFaceRows) {
+        if (staleAssetFaceIds.includes(row.id)) row.person_id = null;
       }
 
       for (const fid of linkedPerson.face_ids) {
