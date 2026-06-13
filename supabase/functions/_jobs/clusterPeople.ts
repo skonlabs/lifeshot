@@ -184,14 +184,23 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   // ── 4. Persist to people table ────────────────────────────────────────────
-  // Use the atomic merge_person_faces RPC so concurrent per-asset runs don't
-  // race on the faces array (last-write-wins would otherwise drop faces from
-  // assets processed by sibling jobs).
-  const assetsInThisRun = [...new Set(faceEntries.map((e) => e.asset_id))];
+  // MERGE strategy: keep face entries from assets not in this run, replace those
+  // from assets touched in this run. Uses a client-side read-then-write; the
+  // atomic merge_person_faces RPC (migration 20260612040000) eliminates the race
+  // when that migration has been applied — until then this path is safe for
+  // sequential (non-parallel) clusterPeople runs.
+  const assetsInThisRun = new Set(faceEntries.map((e) => e.asset_id));
 
   let peopleUpdated = 0;
   for (const [pid, entries] of personFaceMap) {
-    // Build the fresh face objects to pass to the RPC.
+    const existing = (existingPeople ?? []).find((p: any) => p.id === pid);
+    const existingFaces: any[] = Array.isArray((existing as any)?.faces)
+      ? (existing as any).faces
+      : [];
+
+    // Keep occurrences from assets NOT processed in this run.
+    const kept = existingFaces.filter((o: any) => !assetsInThisRun.has(o.asset_id));
+    // Add fresh occurrences from this run.
     const fresh = entries.map((e) => ({
       asset_id:            e.asset_id,
       bbox:                e.bbox,
@@ -200,43 +209,45 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       attributes:          e.attributes,
       rekognition_face_id: e.face_id,
     }));
+    const merged = [...kept, ...fresh];
 
-    // Pick best cover from this run's faces only.
-    // Prefer solo-portrait assets (only one qualifying face from that asset).
-    const assetsInFresh = new Map<string, number>();
-    for (const o of fresh) assetsInFresh.set(o.asset_id, (assetsInFresh.get(o.asset_id) ?? 0) + 1);
+    // Pick best cover from merged faces. Prefer solo-portrait assets (only one
+    // qualifying face from that asset in this person's list).
+    const facesPerAsset = new Map<string, number>();
+    for (const o of merged) facesPerAsset.set(o.asset_id, (facesPerAsset.get(o.asset_id) ?? 0) + 1);
 
-    let bestCover: typeof fresh[0] | null = null;
+    let bestCover: any = null;
     let bestScore = -1;
-    for (const o of fresh) {
+    for (const o of merged) {
       if (!o.face_crop) continue;
       const s = coverScore(o.attributes ?? null);
       if (s < MIN_COVER_SCORE) continue;
-      const isSolo = (assetsInFresh.get(o.asset_id) ?? 0) === 1;
+      const isSolo = (facesPerAsset.get(o.asset_id) ?? 0) === 1;
       const adjusted = isSolo ? s * 1.3 : s;
       if (adjusted > bestScore) { bestScore = adjusted; bestCover = o; }
     }
 
-    const existing = (existingPeople ?? []).find((p: any) => p.id === pid);
     const allFaceIds = [...new Set(
       entries.map((e) => e.face_id).concat(
         Array.isArray((existing as any)?.rekognition_face_ids) ? (existing as any).rekognition_face_ids : [],
       ),
     )].filter(Boolean);
 
-    // merge_person_faces atomically merges the faces array, face_count, and
-    // rekognition_face_ids, and updates cover fields only when a qualifying
-    // cover crop is supplied (NULL = keep existing cover).
-    const { error: rpcErr } = await sb.rpc("merge_person_faces", {
-      p_person_id:         pid,
-      p_assets_to_replace: assetsInThisRun,
-      p_new_faces:         fresh,
-      p_all_face_ids:      allFaceIds,
-      p_cover_face_crop:   bestCover?.face_crop ?? null,
-      p_cover_asset_id:    bestCover?.asset_id  ?? null,
-      p_cover_bbox:        bestCover?.bbox       ?? null,
-    });
-    if (rpcErr) throw new Error(`clusterPeople: merge_person_faces failed for ${pid}: ${rpcErr.message}`);
+    const update: Record<string, unknown> = {
+      faces:                merged,
+      face_count:           merged.length,
+      rekognition_face_ids: allFaceIds,
+    };
+    // Only set cover when we have a quality face_crop — never set cover_asset_id
+    // alone, which would cause the UI to show the full group-photo thumbnail.
+    if (bestCover?.face_crop) {
+      update.cover_face_crop = bestCover.face_crop;
+      update.cover_asset_id  = bestCover.asset_id;
+      update.cover_bbox      = bestCover.bbox;
+    }
+
+    const { error: uErr } = await sb.from("people").update(update).eq("id", pid);
+    if (uErr) throw new Error(`clusterPeople: people update failed for ${pid}: ${uErr.message}`);
     peopleUpdated++;
   }
 
