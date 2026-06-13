@@ -478,6 +478,14 @@ app.post("/assets/bulk", async (c) => {
  */
 app.post("/people/reset", async (c) => {
   const uid = c.get("userId") as string;
+  const resetAt = new Date().toISOString();
+  const sb = getServiceClient();
+
+  const { error: resetStampErr } = await sb.from("privacy_settings").upsert({
+    user_id: uid,
+    face_pipeline_reset_at: resetAt,
+  }, { onConflict: "user_id" });
+  if (resetStampErr) throw new Error(`people/reset: reset marker update failed: ${resetStampErr.message}`);
 
   // 1. Nuke the Rekognition collection.
   if (rekognitionConfigured()) {
@@ -487,13 +495,12 @@ app.post("/people/reset", async (c) => {
   // 2. Clear all face / person data for this user.
   // Some legacy rows/jobs were written with a missing user_id, so purge by the
   // user's asset/person ids as well — not only by user_id.
-  const sb = getServiceClient();
   const { data: assetRows } = await sb
     .from("assets")
-    .select("id")
+    .select("id, mime_type, media_type")
     .eq("user_id", uid)
-    .in("media_type", ["photo", "live_photo", "animation"]);
-  const assetIds = (assetRows ?? []).map((a: { id: string }) => a.id);
+    .or("media_type.in.(photo,live_photo,animation),mime_type.like.image/%");
+  const assetIds = new Set((assetRows ?? []).map((a: { id: string }) => a.id));
   const CHUNK = 500;
 
   const personIds = new Set<string>();
@@ -503,9 +510,25 @@ app.post("/people/reset", async (c) => {
   if (ownedPeopleErr) throw new Error(`people/reset: people lookup failed: ${ownedPeopleErr.message}`);
   for (const row of ownedPeople ?? []) personIds.add(row.id as string);
 
-  if (assetIds.length > 0) {
-    for (let i = 0; i < assetIds.length; i += CHUNK) {
-      const chunk = assetIds.slice(i, i + CHUNK);
+  const { data: faceAssetRows, error: faceAssetErr } = await sb
+    .from("asset_faces")
+    .select("asset_id")
+    .eq("user_id", uid);
+  if (faceAssetErr) throw new Error(`people/reset: asset_faces lookup failed: ${faceAssetErr.message}`);
+  for (const row of faceAssetRows ?? []) if (row.asset_id) assetIds.add(row.asset_id as string);
+
+  const { data: enrichAssetRows, error: enrichAssetErr } = await sb
+    .from("asset_ai_enrichment")
+    .select("asset_id")
+    .eq("user_id", uid);
+  if (enrichAssetErr) throw new Error(`people/reset: asset_ai_enrichment lookup failed: ${enrichAssetErr.message}`);
+  for (const row of enrichAssetRows ?? []) if (row.asset_id) assetIds.add(row.asset_id as string);
+
+  const allAssetIds = Array.from(assetIds);
+
+  if (allAssetIds.length > 0) {
+    for (let i = 0; i < allAssetIds.length; i += CHUNK) {
+      const chunk = allAssetIds.slice(i, i + CHUNK);
 
       const { data: linkedPeople, error: linkedPeopleErr } = await sb.from("people")
         .select("id")
@@ -585,9 +608,9 @@ app.post("/people/reset", async (c) => {
     if (legacyLedgerErr) throw new Error(`people/reset: legacy job_ledger purge failed: ${legacyLedgerErr.message}`);
   }
 
-  if (assetIds.length > 0) {
-    for (let i = 0; i < assetIds.length; i += CHUNK) {
-      const chunk = assetIds.slice(i, i + CHUNK);
+  if (allAssetIds.length > 0) {
+    for (let i = 0; i < allAssetIds.length; i += CHUNK) {
+      const chunk = allAssetIds.slice(i, i + CHUNK);
       const { error: queueAssetErr } = await sb.from("job_queue")
         .delete()
         .eq("job_name", "enrichAI")
@@ -608,7 +631,7 @@ app.post("/people/reset", async (c) => {
   // Time-based idempotency key so repeated resets always re-enqueue.
   const resetEpoch = Date.now();
 
-  const jobs = assetIds.map((id: string) => ({
+  const jobs = allAssetIds.map((id: string) => ({
     job_name: "enrichAI",
     payload: { asset_id: id },
     idempotency_key: `ai:${id}:face-reset-${resetEpoch}`,

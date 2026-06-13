@@ -373,10 +373,13 @@ export async function findBestPersonMatch(
 export async function storeFaceResults(opts: {
   analysis: FaceAnalysis;
   faces: ParsedFace[];
+  beforeWrite?: () => Promise<void>;
 }): Promise<{ asset_faces: number }> {
   const sb = serviceClient();
   const { analysis, faces } = opts;
   const { assetId, userId } = analysis;
+
+  if (opts.beforeWrite) await opts.beforeWrite();
 
   // Delete existing rows for this asset so re-scans are idempotent.
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
@@ -386,6 +389,7 @@ export async function storeFaceResults(opts: {
   const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
 
   if (uniqueFaces.length > 0) {
+    if (opts.beforeWrite) await opts.beforeWrite();
     // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
     const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
       asset_id: assetId,

@@ -4,6 +4,7 @@ import { providers } from "./mocks.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
 
 import { rekognitionConfigured } from "../_ai/rekognition.ts";
+import { checkFaceResetGuard } from "./faceResetGuard.ts";
 import {
   analyzeAssetFaces,
   parseDetectedFaces,
@@ -26,6 +27,20 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // Legitimate "asset deleted" cases will exhaust max_attempts naturally.
   if (assetErr) throw new Error(`retryable: asset lookup failed: ${assetErr.message}`);
   if (!asset) throw new Error("retryable: asset not ready yet");
+
+  const { data: privacy } = await sb
+    .from("privacy_settings")
+    .select("face_pipeline_reset_at")
+    .eq("user_id", asset.user_id)
+    .maybeSingle();
+  const resetGuard = await checkFaceResetGuard(sb, {
+    userId: asset.user_id,
+    jobId: ctx.jobId,
+    resetAt: privacy?.face_pipeline_reset_at ?? null,
+  });
+  if (!resetGuard.valid) {
+    return { asset_id, skipped: resetGuard.reason };
+  }
 
   // ── Resolve image URLs (original / preview / thumbnail) ────────────────────
   async function signDerivative(kind: "preview" | "thumb"): Promise<string | null> {
@@ -104,8 +119,36 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       console.log(`enrichAI: Rekognition returned ${rawFaces.length} face(s) for asset ${asset_id}`);
 
       const parsed = await parseDetectedFaces(analysis);
-      const stored = await storeFaceResults({ analysis, faces: parsed });
+      const postParseResetGuard = await checkFaceResetGuard(sb, {
+        userId: asset.user_id,
+        jobId: ctx.jobId,
+        resetAt: privacy?.face_pipeline_reset_at ?? null,
+      });
+      if (!postParseResetGuard.valid) {
+        return { asset_id, skipped: postParseResetGuard.reason };
+      }
+      const stored = await storeFaceResults({
+        analysis,
+        faces: parsed,
+        beforeWrite: async () => {
+          const guard = await checkFaceResetGuard(sb, {
+            userId: asset.user_id,
+            jobId: ctx.jobId,
+            resetAt: privacy?.face_pipeline_reset_at ?? null,
+          });
+          if (!guard.valid) throw new Error(`invalid: ${guard.reason}`);
+        },
+      });
       console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
+    }
+
+    const preFinalizeResetGuard = await checkFaceResetGuard(sb, {
+      userId: asset.user_id,
+      jobId: ctx.jobId,
+      resetAt: privacy?.face_pipeline_reset_at ?? null,
+    });
+    if (!preFinalizeResetGuard.valid) {
+      return { asset_id, skipped: preFinalizeResetGuard.reason };
     }
 
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
@@ -122,6 +165,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       payload: { user_id: asset.user_id, asset_id },
       idempotencyKey: `people:${asset.user_id}:${asset_id}`,
     });
+  }
+
+  const preEnrichmentWriteResetGuard = await checkFaceResetGuard(sb, {
+    userId: asset.user_id,
+    jobId: ctx.jobId,
+    resetAt: privacy?.face_pipeline_reset_at ?? null,
+  });
+  if (!preEnrichmentWriteResetGuard.valid) {
+    return { asset_id, skipped: preEnrichmentWriteResetGuard.reason };
   }
 
   // ── Persist caption/tags/faces to asset_ai_enrichment ─────────────────────
