@@ -8,8 +8,7 @@ import type { JobContext } from "../_pipeline/runner.ts";
  *
  * Source of truth: `asset_gps` (canonical). On success it back-fills the
  * reverse-geocoded city / country / place_name onto `asset_gps`, ensures a
- * `places` row exists, and mirrors place_id / place_name onto `assets` so
- * callers can query places in a single join.
+ * `places` row exists, and mirrors place_id onto `assets`.
  */
 
 // Round coords to ~1km so nearby assets share a single geocode lookup.
@@ -126,7 +125,6 @@ export async function clusterPlaces(ctx: JobContext): Promise<unknown> {
     // City/country live in asset_gps now (updated in the upsert above).
     await sb.from("assets").update({
       place_id: placeId,
-      place_name: placeName,
     }).eq("id", assetId);
 
     affectedAssets.push(assetId);

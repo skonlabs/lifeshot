@@ -9,8 +9,8 @@ installOpenAIProviders();
 
 /**
  * ocrAsset — extracts text from an asset via OCR and persists the result to
- * asset_ocr.  After writing, re-enqueues indexSearchDocument so the extracted
- * text is incorporated into FTS immediately.
+ * asset_ai_enrichment. After writing, re-enqueues indexSearchDocument so the
+ * extracted text is incorporated into FTS immediately.
  *
  * Only runs on assets whose media metadata marks ocr_possible=true, or on
  * documents/screenshots when media_type indicates it.

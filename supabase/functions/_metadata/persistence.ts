@@ -59,7 +59,6 @@ async function findOrCreateAsset(
     video_fingerprint: rec.hashes?.videoFingerprint ?? null,
     device_make: rec.exif?.cameraMake ?? rec.exif?.exifMake ?? null,
     device_model: rec.exif?.cameraModel ?? rec.exif?.exifModel ?? null,
-    status: "ingested",
   }).select("id").single();
   if (error) throw new Error(`insert assets: ${error.message}`);
   // Location data lives in asset_gps (canonical store); insert if coords present.
@@ -177,7 +176,6 @@ async function writeMetadataRows(svc: Svc, userId: string, assetId: string, rec:
       reverse_geocoded_state: g.reverseGeocodedState,
       reverse_geocoded_country: g.reverseGeocodedCountry,
       reverse_geocoded_country_code: g.reverseGeocodedCountryCode,
-      place_name: g.placeName,
       timezone_from_location: g.timezoneFromLocation,
     });
   }

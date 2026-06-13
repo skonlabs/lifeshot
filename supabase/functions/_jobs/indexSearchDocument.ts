@@ -5,9 +5,8 @@ import type { JobContext } from "../_pipeline/runner.ts";
 /**
  * indexSearchDocument — builds the FTS document for an asset and writes it to
  * public.assets.search_content. The DB trigger trg_assets_search_tsv keeps
- * search_tsv in sync. asset_search_documents, asset_ocr, asset_xmp_iptc and
- * asset_file_metadata were dropped in the B-NUKE consolidation; OCR now lives
- * on asset_ai_enrichment, filename/folder on assets, XMP/IPTC is unsupported.
+ * search_tsv in sync. OCR now lives on asset_ai_enrichment and filename/folder
+ * live directly on assets.
  */
 export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
