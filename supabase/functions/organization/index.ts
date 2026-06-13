@@ -9,8 +9,9 @@ import { findIdempotent, storeIdempotent } from "../_shared/idempotency.ts";
 import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
-import { faceQualityScore, faceVisualSignature, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
+import { faceQualityScore, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
 import { recreateCollection, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 
 const ListPage = z.object({
   cursor: z.string().optional(),
@@ -128,36 +129,66 @@ app.get("/people", async (c) => {
 
   // One row per unique person (post one-row-per-person migration).
   const { data: rows, error } = await supa.from("people")
-    .select("id, display_name, asset_id, face")
+    .select("id, display_name")
     .eq("user_id", uid);
   if (error) throw new ApiError("internal", error.message);
 
-  type PersonEntry = { id: string; display_name: string | null; asset_count: number; best: any };
+  type PersonCoverCandidate = { asset_id: string; face_bbox: FaceBox | null; score: number };
+  type PersonEntry = { id: string; display_name: string | null; asset_count: number; best: PersonCoverCandidate | null };
   const entries: PersonEntry[] = (rows ?? []).map((r: any) => ({
     id: r.id,
     display_name: r.display_name ?? null,
     asset_count: 0,
-    best: r,
+    best: null,
   }));
 
-  // Count detections per person via asset_faces.person_id.
+  // Count only usable detections per person and pick the best linked face as
+  // the cover. Never trust people.face / people.asset_id here because those can
+  // still point at legacy seed faces from older clustering runs.
   if (entries.length) {
     const ids = entries.map((e) => e.id);
     const { data: linkRows } = await supa.from("asset_faces")
-      .select("person_id, asset_id")
+      .select("person_id, asset_id, face")
       .in("person_id", ids);
+
+    const usableRows = (linkRows ?? []).filter((row: any) => (
+      row.person_id && row.asset_id && isUsableIndexedFace(row.face)
+    ));
+
     const perPerson = new Map<string, Set<string>>();
-    for (const r of linkRows ?? []) {
+    const facesPerAsset = new Map<string, number>();
+    for (const r of usableRows) {
       if (!r.person_id || !r.asset_id) continue;
       let s = perPerson.get(r.person_id);
       if (!s) { s = new Set<string>(); perPerson.set(r.person_id, s); }
       s.add(r.asset_id);
+      facesPerAsset.set(r.asset_id, (facesPerAsset.get(r.asset_id) ?? 0) + 1);
     }
-    for (const e of entries) e.asset_count = perPerson.get(e.id)?.size ?? 0;
+
+    const bestByPerson = new Map<string, PersonCoverCandidate>();
+    for (const row of usableRows) {
+      const personId = row.person_id as string;
+      const assetId = row.asset_id as string;
+      const bbox = sanitizeFaceBox(row.face?.BoundingBox ?? null);
+      const score = faceQualityScore(
+        bbox,
+        Number(row.face?.Confidence ?? 0),
+        facesPerAsset.get(assetId) ?? 1,
+      );
+      const current = bestByPerson.get(personId);
+      if (!current || score > current.score) {
+        bestByPerson.set(personId, { asset_id: assetId, face_bbox: bbox, score });
+      }
+    }
+
+    for (const e of entries) {
+      e.asset_count = perPerson.get(e.id)?.size ?? 0;
+      e.best = bestByPerson.get(e.id) ?? null;
+    }
   }
 
   const coverAssetIds = new Set<string>();
-  for (const e of entries) if (e.best?.asset_id) coverAssetIds.add(e.best.asset_id as string);
+  for (const e of entries) if (e.best?.asset_id) coverAssetIds.add(e.best.asset_id);
 
   // Batch-resolve thumbnail URLs for cover assets.
   const coverAssetArr = Array.from(coverAssetIds);
@@ -176,61 +207,37 @@ app.get("/people", async (c) => {
     for (const row of mm ?? []) mediaMap[row.asset_id] = row;
   }
 
-  // Sign storage paths.
-  const pathsToSign = new Set<string>();
-  for (const cid of coverAssetArr) {
-    const asset = coverAssets[cid] ?? null;
-    const media = mediaMap[cid] ?? null;
-    for (const ck of [media?.thumbnail_url, media?.thumbnail_storage_path,
-      asset?.thumbnail_cache_key, media?.preview_url, media?.preview_storage_path,
-      asset?.proxy_cache_key]) {
-      if (typeof ck === "string" && ck && !/^https?:\/\//.test(ck)) pathsToSign.add(ck);
-    }
-  }
-  const signedMap = new Map<string, string>();
-  if (pathsToSign.size) {
-    const allPaths = Array.from(pathsToSign);
-    const svc = getServiceClient();
-    for (const bucket of ["thumbnails", "lifeshot-derived"] as const) {
-      const remaining = allPaths.filter((p) => !signedMap.has(p));
-      if (!remaining.length) break;
-      try {
-        const { data: signed } = await svc.storage.from(bucket).createSignedUrls(remaining, 3600);
-        for (const s of signed ?? []) {
-          if (s?.signedUrl && s.path && !signedMap.has(s.path)) signedMap.set(s.path, s.signedUrl);
-        }
-      } catch (_) { /* non-fatal */ }
-    }
-  }
-  const resolveKey = (ck: string | null | undefined): string | null => {
-    if (!ck) return null;
-    if (/^https?:\/\//.test(ck)) return ck;
-    return signedMap.get(ck) ?? null;
-  };
-
-  // Build response. Cover uses thumbnail + face bbox (BoundingBox from people.face).
-  const people = entries
-    .filter((e) => e.asset_count > 0)
-    .map((e) => {
-      const bbox = e.best.face?.BoundingBox ?? null;
-      const validBbox = bbox && typeof bbox.x === "number" ? bbox : null;
-      const aid  = e.best.asset_id as string | null;
-      const asset = aid ? (coverAssets[aid] ?? null) : null;
-      const media = aid ? (mediaMap[aid] ?? null) : null;
-      const thumbUrl = aid
-        ? resolveKey(media?.thumbnail_url) ?? resolveKey(media?.thumbnail_storage_path)
-          ?? resolveKey(asset?.thumbnail_cache_key) ?? resolveKey(media?.preview_url)
-          ?? resolveKey(media?.preview_storage_path) ?? resolveKey(asset?.proxy_cache_key)
-        : null;
+  const people = await Promise.all(entries
+    .filter((e) => e.asset_count > 0 && e.best?.asset_id)
+    .map(async (e) => {
+      const aid = e.best!.asset_id;
+      const asset = coverAssets[aid] ?? null;
+      const media = mediaMap[aid] ?? null;
+      const thumbUrl = await resolveThumbUrl(
+        c,
+        supa,
+        uid,
+        aid,
+        media?.thumbnail_url
+          ?? media?.thumbnail_storage_path
+          ?? asset?.thumbnail_cache_key
+          ?? media?.preview_url
+          ?? media?.preview_storage_path
+          ?? asset?.proxy_cache_key
+          ?? null,
+      );
       const cover = thumbUrl
-        ? { face_crop: null, thumbnail_url: thumbUrl, face_bbox: validBbox,
-            width: asset?.width ?? null, height: asset?.height ?? null }
+        ? {
+            face_crop: null,
+            thumbnail_url: thumbUrl,
+            face_bbox: e.best?.face_bbox ?? null,
+            width: asset?.width ?? null,
+            height: asset?.height ?? null,
+          }
         : null;
       return { id: e.id, display_name: e.display_name, asset_count: e.asset_count, cover };
-    });
+    }));
 
-  // Suppress unused import warnings.
-  void faceQualityScore; void faceVisualSignature; void sanitizeFaceBox;
   return c.json({ people, face_processing_disabled: false });
 });
 
