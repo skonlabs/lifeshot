@@ -25,10 +25,10 @@ CREATE INDEX IF NOT EXISTS idx_asset_faces_person_id
 -- 2. Backfill: collapse duplicates per (user_id, display_name).
 DO $mig$
 DECLARE
-  r record;
+  rec record;
 BEGIN
-  FOR r IN
-    WITH ranked AS (
+  FOR rec IN
+    WITH rk AS (
       SELECT
         p.id,
         p.user_id,
@@ -44,38 +44,35 @@ BEGIN
       FROM public.people p
       WHERE p.user_id IS NOT NULL
     ),
-    survivors AS (
+    sv AS (
       SELECT DISTINCT ON (user_id, COALESCE(display_name, ''))
         id AS survivor_id, user_id, display_name
-      FROM ranked
+      FROM rk
       ORDER BY user_id, COALESCE(display_name, ''), quality DESC, id
-    ),
-    agg AS (
-      SELECT
-        s.survivor_id,
-        array_agg(DISTINCT r.face_id) FILTER (WHERE r.face_id IS NOT NULL) AS face_ids,
-        array_agg(r.id) AS group_ids
-      FROM survivors s
-      JOIN ranked r
-        ON r.user_id = s.user_id
-       AND COALESCE(r.display_name, '') = COALESCE(s.display_name, '')
-      GROUP BY s.survivor_id
     )
-    SELECT * FROM agg
+    SELECT
+      sv.survivor_id,
+      array_agg(DISTINCT rk.face_id) FILTER (WHERE rk.face_id IS NOT NULL) AS face_ids,
+      array_agg(rk.id) AS group_ids
+    FROM sv
+    JOIN rk
+      ON rk.user_id = sv.user_id
+     AND COALESCE(rk.display_name, '') = COALESCE(sv.display_name, '')
+    GROUP BY sv.survivor_id
   LOOP
     UPDATE public.people
-       SET face_ids   = COALESCE(r.face_ids, '{}'::text[]),
+       SET face_ids   = COALESCE(rec.face_ids, '{}'::text[]),
            updated_at = now()
-     WHERE id = r.survivor_id;
+     WHERE id = rec.survivor_id;
 
     UPDATE public.asset_faces af
-       SET person_id = r.survivor_id
-     WHERE af.person_id IS DISTINCT FROM r.survivor_id
-       AND af.face->>'FaceId' = ANY (COALESCE(r.face_ids, '{}'::text[]));
+       SET person_id = rec.survivor_id
+     WHERE af.person_id IS DISTINCT FROM rec.survivor_id
+       AND af.face->>'FaceId' = ANY (COALESCE(rec.face_ids, '{}'::text[]));
 
     DELETE FROM public.people
-     WHERE id = ANY (r.group_ids)
-       AND id <> r.survivor_id;
+     WHERE id = ANY (rec.group_ids)
+       AND id <> rec.survivor_id;
   END LOOP;
 END $mig$;
 
