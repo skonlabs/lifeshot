@@ -37,7 +37,6 @@ app.post("/consent", async (c) => {
     const svc = getServiceClient();
     await svc.from("asset_ai_enrichment").delete().eq("user_id", uid);
     await svc.from("asset_faces").delete().eq("user_id", uid);
-    await svc.from("face_clusters").delete().eq("user_id", uid);
     await svc.from("people").delete().eq("user_id", uid);
   }
   emitEvent(c, "privacy.consent", { scope: body.scope, granted: body.granted });
@@ -57,7 +56,6 @@ app.delete("/derived-data", async (c) => {
   if (body.scope === "asset" && body.target_id) fq = fq.eq("asset_id", body.target_id);
   await fq;
   if (body.scope === "all") {
-    await svc.from("face_clusters").delete().eq("user_id", uid);
     await svc.from("people").delete().eq("user_id", uid);
   }
   await cache.invalidateUser(uid);
