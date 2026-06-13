@@ -378,28 +378,26 @@ export async function storeFaceResults(opts: {
   const { analysis, faces } = opts;
   const { assetId, userId } = analysis;
 
-  // Delete existing rows for this asset so re-scans are idempotent.
-  const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
-  if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
-
   // Deduplicate by face_id within this asset.
   const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
 
-  if (uniqueFaces.length > 0) {
-    // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
-    const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
-      asset_id: assetId,
-      user_id:  userId,
-      face: {
-        FaceId:      f.face_id,
-        BoundingBox: f.bbox,
-        Confidence:  Math.round(f.confidence * 1000) / 10, // normalize back to 0-100 scale
-        FaceDetail:  f.attributes ?? {},
-        FaceCrop:    f.face_crop,
-      },
-    })));
-    if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
-  }
+  // Atomic replace via RPC: delete stale rows + upsert in one transaction.
+  // The (asset_id, face->>'FaceId') unique index guarantees concurrent
+  // enrichAI runs for the same asset converge instead of producing duplicates.
+  const payload = uniqueFaces.map((f) => ({
+    FaceId:      f.face_id,
+    BoundingBox: f.bbox,
+    Confidence:  Math.round(f.confidence * 1000) / 10, // 0-100 scale
+    FaceDetail:  f.attributes ?? {},
+    FaceCrop:    f.face_crop,
+  }));
+
+  const { error: rpcErr } = await sb.rpc("replace_asset_faces", {
+    p_asset_id: assetId,
+    p_user_id:  userId,
+    p_faces:    payload,
+  });
+  if (rpcErr) throw new Error(`storeFaceResults: replace_asset_faces failed: ${rpcErr.message}`);
 
   return { asset_faces: uniqueFaces.length };
 }
