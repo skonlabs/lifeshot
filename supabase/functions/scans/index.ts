@@ -78,8 +78,8 @@ app.get("/v1/:id/results", async (c) => {
   const uid = c.get("userId");
   const supa = c.get("supabase");
   const { data, error } = await supa.from("asset_source_refs")
-    .select("asset_id, source_asset_id, last_seen_at")
-    .eq("user_id", uid).order("last_seen_at", { ascending: false }).limit(200);
+    .select("asset_id, source_asset_id, source_last_seen_at")
+    .eq("user_id", uid).order("source_last_seen_at", { ascending: false }).limit(200);
   if (error) throw new ApiError("internal", error.message);
   return c.json({ results: data ?? [] });
 });
