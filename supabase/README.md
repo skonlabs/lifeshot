@@ -41,4 +41,4 @@ supabase gen types typescript --project-id vohevknnbvpaooletyts --schema public 
 - `merge_assets` / `split_source_ref` reversible and audited
 - `disconnect_source` / `delete_account` cascade and write audit completion
 - `source_providers` seeded with the 11 providers
-- `match_assets_by_embedding`, `hybrid_search`, `get_viewport`, `get_dashboard_counts`, `get_facets` return results on seed
+- `hybrid_search`, `get_viewport`, `get_dashboard_counts`, `get_facets` return results on seed
