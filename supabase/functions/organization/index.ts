@@ -509,8 +509,6 @@ app.post("/people/reset", async (c) => {
     .eq("user_id", uid)
     .or("media_type.in.(photo,live_photo,animation),mime_type.like.image/%");
   const assetIds = new Set((assetRows ?? []).map((a: { id: string }) => a.id));
-  const CHUNK = 100;
-
   const personIds = new Set<string>();
   const { data: ownedPeople, error: ownedPeopleErr } = await sb.from("people")
     .select("id")
