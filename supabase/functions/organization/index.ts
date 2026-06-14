@@ -550,7 +550,11 @@ app.post("/people/reset", async (c) => {
       if (afErr) throw new Error(`people/reset: asset_faces delete failed: ${afErr.message}`);
 
       const { error: enrichErr } = await sb.from("asset_ai_enrichment")
-        .update({ faces: [], face_count: 0 })
+        .update({
+          faces: [],
+          face_count: 0,
+          rekognition_response: [],
+        })
         .in("asset_id", chunk);
       if (enrichErr) throw new Error(`people/reset: asset_ai_enrichment reset failed: ${enrichErr.message}`);
 
