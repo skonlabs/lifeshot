@@ -540,7 +540,7 @@ app.post("/people/reset", async (c) => {
 
   if (allAssetIds.length > 0) {
     for (let i = 0; i < allAssetIds.length; i += POSTGREST_IN_FILTER_CHUNK) {
-      const chunk = allAssetIds.slice(i, i + CHUNK);
+      const chunk = allAssetIds.slice(i, i + POSTGREST_IN_FILTER_CHUNK);
 
       const { data: linkedPeople, error: linkedPeopleErr } = await sb.from("people")
         .select("id")
@@ -567,7 +567,7 @@ app.post("/people/reset", async (c) => {
   if (personIds.size > 0) {
     const ids = Array.from(personIds);
     for (let i = 0; i < ids.length; i += POSTGREST_IN_FILTER_CHUNK) {
-      const chunk = ids.slice(i, i + CHUNK);
+      const chunk = ids.slice(i, i + POSTGREST_IN_FILTER_CHUNK);
       const { error: peopleErr } = await sb.from("people").delete().in("id", chunk);
       if (peopleErr) throw new Error(`people/reset: people delete failed: ${peopleErr.message}`);
     }
@@ -622,7 +622,7 @@ app.post("/people/reset", async (c) => {
 
   if (allAssetIds.length > 0) {
     for (let i = 0; i < allAssetIds.length; i += POSTGREST_IN_FILTER_CHUNK) {
-      const chunk = allAssetIds.slice(i, i + CHUNK);
+      const chunk = allAssetIds.slice(i, i + POSTGREST_IN_FILTER_CHUNK);
       const { error: queueAssetErr } = await sb.from("job_queue")
         .delete()
         .eq("job_name", "enrichAI")
