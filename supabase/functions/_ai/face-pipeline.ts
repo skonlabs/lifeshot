@@ -209,11 +209,11 @@ export async function analyzeAssetFaces(opts: {
     .from("asset_faces")
     .select("face")
     .eq("user_id", opts.userId);
+  // All stored face IDs are treated as canonical — quality filtering is the
+  // exclusive responsibility of clusterPeople, not the dedup step here.
   const validKnownFaceIds = new Set(
     (knownRows ?? [])
-      .map((row: any) => row?.face)
-      .filter((face: any) => isUsableIndexedFace(face))
-      .map((face: any) => String(face?.FaceId ?? ""))
+      .map((row: any) => String(row?.face?.FaceId ?? ""))
       .filter(Boolean),
   );
 
@@ -234,10 +234,11 @@ export async function analyzeAssetFaces(opts: {
   const seen = new Set<string>();
   const faceRecords: Array<Record<string, unknown>> = [];
   for (const r of records) {
-    if (!isUsableIndexedFace({ Confidence: r.confidence, FaceDetail: r.attributes })) {
-      toDelete.add(r.faceId);
-      continue;
-    }
+    // Do NOT quality-gate here. All detected faces are stored in asset_faces.
+    // Quality filtering happens in clusterPeople (isUsableIndexedFace), so faces
+    // excluded there remain in asset_faces for future re-evaluation if quality
+    // thresholds change — and their FaceIds stay in the Rekognition collection
+    // so SearchFaces can still match them against qualifying faces.
 
     let canonicalFaceId = r.faceId;
     try {
