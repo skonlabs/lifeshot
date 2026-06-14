@@ -364,6 +364,26 @@ app.get("/v1/accounts", async (c) => {
       userId: row.user_id ?? uid,
     });
   }
+  const syncArtifactsByAccount = new Set<string>();
+  if (ids.length) {
+    const svc = getServiceClient();
+    const [syncJobsRes, cursorRes] = await Promise.all([
+      svc.from("source_sync_jobs")
+        .select("source_account_id")
+        .in("source_account_id", ids),
+      svc.from("source_sync_cursors")
+        .select("source_account_id")
+        .in("source_account_id", ids),
+    ]);
+    if (syncJobsRes.error) throw new ApiError("internal", syncJobsRes.error.message);
+    if (cursorRes.error) throw new ApiError("internal", cursorRes.error.message);
+    for (const row of (syncJobsRes.data ?? []) as Array<{ source_account_id: string | null }>) {
+      if (row.source_account_id) syncArtifactsByAccount.add(row.source_account_id);
+    }
+    for (const row of (cursorRes.data ?? []) as Array<{ source_account_id: string | null }>) {
+      if (row.source_account_id) syncArtifactsByAccount.add(row.source_account_id);
+    }
+  }
   const scopesByAccount = new Map<string, ContainerRefOut[]>();
   if (ids.length) {
     const { data: perms, error: permsError } = await supa.from("source_permissions")
@@ -385,6 +405,9 @@ app.get("/v1/accounts", async (c) => {
   const liveStatsByAccount = new Map<string, SourceSelectionStats>(await Promise.all(
     visibleAccounts.map(async (row: any) => {
       const b = breakdown[row.id] ?? { photo: 0, video: 0, document: 0, audio: 0, other: 0 };
+      const indexedCount = counts[row.id] ?? 0;
+      const hasSyncArtifacts = syncArtifactsByAccount.has(row.id);
+      const syncInFlight = row.status === "pending" || row.status === "syncing";
       const fallback: SourceSelectionStats = {
         folder_count: (scopesByAccount.get(row.id) ?? []).length,
         photo: b.photo,
@@ -396,6 +419,14 @@ app.get("/v1/accounts", async (c) => {
       const selectedContainers = scopesByAccount.get(row.id) ?? [];
       if (!selectedContainers.length || !row.provider?.kind) {
         return [row.id, fallback] as const;
+      }
+
+      // If the library was wiped but the source connection was intentionally
+      // kept, suppress provider-live media totals until a fresh sync recreates
+      // asset rows or sync job state. Otherwise the Sources page shows ghost
+      // Dropbox/OneDrive counts even though the indexed library is empty.
+      if (!indexedCount && !hasSyncArtifacts && !syncInFlight) {
+        return [row.id, { ...fallback, photo: 0, video: 0, document: 0, audio: 0, other: 0 }] as const;
       }
 
       const cacheKey = `v1:source-selection-stats:${row.id}`;
@@ -420,11 +451,15 @@ app.get("/v1/accounts", async (c) => {
   return c.json({
     accounts: visibleAccounts.map((r: any) => {
       const selectionStats = liveStatsByAccount.get(r.id) ?? ZERO_SELECTION_STATS;
+      const indexedCount = counts[r.id] ?? 0;
+      const hasSyncArtifacts = syncArtifactsByAccount.has(r.id);
+      const syncInFlight = r.status === "pending" || r.status === "syncing";
+      const shouldHideStaleSyncSummary = !indexedCount && !hasSyncArtifacts && !syncInFlight;
       return {
         id: r.id, provider_id: r.provider_id, provider_kind: r.provider?.kind ?? null,
         display_label: r.display_label, status: r.status,
         connected_at: r.connected_at, disconnected_at: r.disconnected_at,
-        asset_count: counts[r.id] ?? 0, last_sync_at: r.last_synced_at ?? null,
+        asset_count: indexedCount, last_sync_at: shouldHideStaleSyncSummary ? null : (r.last_synced_at ?? null),
         selected_container_count: selectionStats.folder_count,
         selected_containers: scopesByAccount.get(r.id) ?? [],
         counts_by_kind: breakdown[r.id] ?? ZERO_SELECTION_STATS,
