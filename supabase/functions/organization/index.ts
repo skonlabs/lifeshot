@@ -553,7 +553,6 @@ app.post("/people/reset", async (c) => {
         .update({
           faces: [],
           face_count: 0,
-          rekognition_response: [],
         })
         .in("asset_id", chunk);
       if (enrichErr) throw new Error(`people/reset: asset_ai_enrichment reset failed: ${enrichErr.message}`);
