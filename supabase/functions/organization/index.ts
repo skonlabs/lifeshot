@@ -533,9 +533,13 @@ app.post("/people/reset", async (c) => {
   for (const row of enrichAssetRows ?? []) if (row.asset_id) assetIds.add(row.asset_id as string);
 
   const allAssetIds = Array.from(assetIds);
+  // Keep PostgREST filter URLs comfortably below gateway/proxy limits.
+  // UUID lists are URL-encoded inside `.in(...)`, so even 100 ids can still
+  // produce edge-runtime fetch failures before PostgREST returns a 414.
+  const POSTGREST_IN_FILTER_CHUNK = 25;
 
   if (allAssetIds.length > 0) {
-    for (let i = 0; i < allAssetIds.length; i += CHUNK) {
+    for (let i = 0; i < allAssetIds.length; i += POSTGREST_IN_FILTER_CHUNK) {
       const chunk = allAssetIds.slice(i, i + CHUNK);
 
       const { data: linkedPeople, error: linkedPeopleErr } = await sb.from("people")
@@ -562,7 +566,7 @@ app.post("/people/reset", async (c) => {
 
   if (personIds.size > 0) {
     const ids = Array.from(personIds);
-    for (let i = 0; i < ids.length; i += CHUNK) {
+    for (let i = 0; i < ids.length; i += POSTGREST_IN_FILTER_CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       const { error: peopleErr } = await sb.from("people").delete().in("id", chunk);
       if (peopleErr) throw new Error(`people/reset: people delete failed: ${peopleErr.message}`);
@@ -617,7 +621,7 @@ app.post("/people/reset", async (c) => {
   }
 
   if (allAssetIds.length > 0) {
-    for (let i = 0; i < allAssetIds.length; i += CHUNK) {
+    for (let i = 0; i < allAssetIds.length; i += POSTGREST_IN_FILTER_CHUNK) {
       const chunk = allAssetIds.slice(i, i + CHUNK);
       const { error: queueAssetErr } = await sb.from("job_queue")
         .delete()
