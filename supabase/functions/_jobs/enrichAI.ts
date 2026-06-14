@@ -105,8 +105,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   //   2. parseDetectedFaces  — one parsed JSON object per face (with crop)
   //   5. storeFaceResults    — asset_ai_enrichment + asset_faces + people
   //      (applies qualifyFaceForPerson and findBestPersonMatch per face)
-  let rawFaces: Array<Record<string, unknown>> = [];
-
   if (!rekognitionConfigured()) {
     console.warn("enrichAI: Rekognition not configured — face detection skipped", { asset_id });
   } else {
@@ -119,7 +117,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     });
 
     if (analysis) {
-      rawFaces = analysis.faceRecords;
+      const rawFaces = analysis.faceRecords;
       console.log(`enrichAI: Rekognition returned ${rawFaces.length} face(s) for asset ${asset_id}`);
 
       const parsed = await parseDetectedFaces(analysis);
@@ -144,6 +142,28 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         },
       });
       console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
+
+      const preFaceWriteResetGuard = await checkFaceResetGuard(sb, {
+        userId: asset.user_id,
+        jobId: ctx.jobId,
+        resetAt: privacy?.face_pipeline_reset_at ?? null,
+      });
+      if (!preFaceWriteResetGuard.valid) {
+        return { asset_id, skipped: preFaceWriteResetGuard.reason };
+      }
+
+      // Write faces/face_count ONLY when face detection actually ran successfully
+      // this invocation. Otherwise we'd wipe previously-good face data on a re-run
+      // where Rekognition was momentarily unconfigured or unreachable.
+      const { error: facesUpsertErr } = await sb.from("asset_ai_enrichment").upsert({
+        asset_id,
+        user_id:    asset.user_id,
+        faces:      rawFaces,
+        face_count: rawFaces.length,
+      }, { onConflict: "asset_id" });
+      if (facesUpsertErr) {
+        console.error("enrichAI: asset_ai_enrichment faces upsert failed", { asset_id, error: facesUpsertErr.message });
+      }
     }
 
     const preFinalizeResetGuard = await checkFaceResetGuard(sb, {
@@ -182,14 +202,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     return { asset_id, skipped: preEnrichmentWriteResetGuard.reason };
   }
 
-  // ── Persist caption/tags/faces to asset_ai_enrichment ─────────────────────
+  // ── Persist caption/tags to asset_ai_enrichment ───────────────────────────
+  // Note: faces/face_count are written separately above, INSIDE the face
+  // detection block, so that a run where Rekognition is skipped does not
+  // overwrite previously-detected faces with an empty array.
   const { error: upsertErr } = await sb.from("asset_ai_enrichment").upsert({
     asset_id,
     user_id:    asset.user_id,
     caption,
     tags:       tags as unknown as string,   // stored as jsonb array
-    faces:      rawFaces,
-    face_count: rawFaces.length,
   }, { onConflict: "asset_id" });
   if (upsertErr) {
     console.error("enrichAI: asset_ai_enrichment upsert failed", { asset_id, error: upsertErr.message });
@@ -205,7 +226,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     const permanent = /invalid_image_format|unsupported image|image_parse_error|invalid image|circuit breaker open/i.test(visionError);
     if (permanent) {
       console.warn("enrichAI: permanent vision failure — not retrying", { asset_id, visionError });
-      return { asset_id, caption_len: 0, tags: 0, faces: rawFaces.length, vision_skipped: visionError.slice(0, 200) };
+      return { asset_id, caption_len: 0, tags: 0, vision_skipped: visionError.slice(0, 200) };
     }
     throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${visionError}`);
   }
@@ -214,6 +235,5 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     asset_id,
     caption_len: caption.length,
     tags:        tags.length,
-    faces:       rawFaces.length,
   };
 }
