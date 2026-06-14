@@ -158,15 +158,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
 
     // Enqueue clusterPeople so the People page is updated promptly.
-    // clusterPeople is a FULL per-user reconciliation pass, so the idempotency
-    // key must be scoped to the current sync/reset cycle, not a permanent
-    // per-asset key. Otherwise a past completed ledger row can block future
-    // reclusters forever, leaving stale people rows visible even after faces
-    // were re-detected successfully.
-    const reclusterScope = force_sync_run_id
-      ?? sync_run_id
-      ?? privacy?.face_pipeline_reset_at
-      ?? new Date().toISOString().slice(0, 13);
+    // Use a 5-minute time-window key so clusterPeople re-enqueues throughout a
+    // long force sync. A per-run key caused a race: the first enrichAI to
+    // complete would enqueue clusterPeople, it would run and write a ledger
+    // entry, then ALL remaining enrichAI completions found the ledger entry and
+    // skipped re-enqueueing — so faces from later assets were never clustered.
+    const fiveMinuteBucket = Math.floor(Date.now() / (5 * 60 * 1000));
+    const reclusterScope = `${fiveMinuteBucket}`;
 
     await enqueueJob("clusterPeople", {
       userId: asset.user_id,
