@@ -125,20 +125,35 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   //   2. parseDetectedFaces  — one parsed JSON object per face (with crop)
   //   5. storeFaceResults    — asset_ai_enrichment + asset_faces + people
   //      (applies qualifyFaceForPerson and findBestPersonMatch per face)
+  // Face detection requires at least preview quality. Thumbnails are too small —
+  // a 300 px-wide group photo yields ~40 px faces, below Rekognition's detection
+  // threshold. Originals must also be a Rekognition-supported format (not HEIC/RAW).
+  const REKOGNITION_SUPPORTED_MIME = new Set(["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]);
+  const originalMimeOk = REKOGNITION_SUPPORTED_MIME.has((asset.mime_type ?? "").toLowerCase());
+  const hasFaceImage = !!(previewImageUrl || (originalImageUrl && originalMimeOk));
+
   if (!rekognitionConfigured()) {
     console.warn("enrichAI: Rekognition not configured — face detection skipped", { asset_id });
     // Write face_count=0 so NULL always means "not yet processed / needs re-run".
-    // A future force sync will re-run this job with Rekognition configured and
-    // overwrite with the real count.
     await sb.from("asset_ai_enrichment").upsert(
       { asset_id, user_id: asset.user_id, face_count: 0 },
       { onConflict: "asset_id" },
     );
+  } else if (!hasFaceImage) {
+    // No preview yet and original is unsupported format — enqueue generateDerived
+    // to produce a JPEG preview, then leave face_count NULL so the next sync
+    // detects this asset and re-runs face detection once the preview exists.
+    console.warn("enrichAI: no suitable image for face detection — waiting for preview", { asset_id });
+    await enqueueJob("generateDerived", {
+      userId: ctx.userId,
+      payload: { asset_id },
+      idempotencyKey: `derived-face-wait:${asset_id}`,
+    });
   } else {
     const analysis = await analyzeAssetFaces({
-      originalImageUrl,
+      originalImageUrl: originalMimeOk ? originalImageUrl : null, // never send HEIC to Rekognition
       previewImageUrl,
-      thumbnailImageUrl,
+      thumbnailImageUrl: null, // intentionally excluded — thumbnail too small for reliable detection
       assetId: asset_id,
       userId: asset.user_id,
     });
