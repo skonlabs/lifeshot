@@ -63,17 +63,23 @@ export interface PersonMatch {
 // Image helpers (fetch / resize / landmark crop)
 // ---------------------------------------------------------------------------
 
-async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
+// Formats Rekognition IndexFaces accepts. Originals in HEIC/HEIF/TIFF/RAW
+// must be skipped — Rekognition silently returns 0 faces for unsupported types.
+const REKOGNITION_SUPPORTED_MIME = new Set([
+  "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp",
+]);
+
+async function fetchImage(url: string, requireSupportedMime = false): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
+    if (requireSupportedMime && !REKOGNITION_SUPPORTED_MIME.has(mime)) {
+      console.warn(`fetchImage: unsupported mime ${mime}, skipping URL`);
+      return null;
+    }
     const bytes = new Uint8Array(await resp.arrayBuffer());
     if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
-      // Image too large for Rekognition (>4.9 MB). Deno edge functions have no
-      // OffscreenCanvas so client-side resizing is not available. The caller
-      // should prefer the preview/thumbnail URL which generateDerived sizes to
-      // a safe resolution. If even the preview is oversized, skip this URL.
       console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), skipping URL`);
       return null;
     }
@@ -182,12 +188,14 @@ export async function analyzeAssetFaces(opts: {
     return null;
   }
 
+  // Original first for best resolution, but only if it's a supported MIME type.
+  // HEIC/HEIF/TIFF/RAW originals are skipped — Rekognition returns 0 faces for
+  // unsupported formats. Preview/thumbnail are always JPEG (from generateDerived)
+  // and are used as fallback.
   let image: { bytes: Uint8Array; mime: string } | null = null;
-  for (const url of [opts.originalImageUrl, opts.previewImageUrl, opts.thumbnailImageUrl]) {
-    if (!url) continue;
-    image = await fetchImage(url);
-    if (image) break;
-  }
+  if (opts.originalImageUrl) image = await fetchImage(opts.originalImageUrl, true);
+  if (!image && opts.previewImageUrl) image = await fetchImage(opts.previewImageUrl);
+  if (!image && opts.thumbnailImageUrl) image = await fetchImage(opts.thumbnailImageUrl);
   if (!image) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
 
   const collectionId = collectionIdForUser(opts.userId);
@@ -199,15 +207,17 @@ export async function analyzeAssetFaces(opts: {
   // is recreated.
 
   const sb = serviceClient();
+  // Select only the FaceId field — NOT the full face JSONB (which contains
+  // FaceCrop base64 ~50 KB each). Selecting full face for hundreds of assets
+  // easily exceeds Supabase's ~4 MB response limit and returns [] silently,
+  // breaking dedup and creating duplicate FaceIds on every re-scan.
   const { data: knownRows } = await sb
     .from("asset_faces")
-    .select("face")
+    .select("face->FaceId")
     .eq("user_id", opts.userId);
-  // All stored face IDs are treated as canonical — quality filtering is the
-  // exclusive responsibility of clusterPeople, not the dedup step here.
   const validKnownFaceIds = new Set(
     (knownRows ?? [])
-      .map((row: any) => String(row?.face?.FaceId ?? ""))
+      .map((row: any) => String(row?.FaceId ?? ""))
       .filter(Boolean),
   );
 
