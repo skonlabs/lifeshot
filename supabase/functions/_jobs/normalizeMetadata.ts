@@ -507,6 +507,24 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("hashAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `hash:${asset_id}${forceSuffix}` });
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
+
+  // Re-enqueue enrichAI with a face-retry suffix when the asset already has a
+  // caption but face_count is NULL — meaning a previous run completed before
+  // Rekognition was configured and the face detection block was silently skipped.
+  // Using a distinct idempotency key bypasses the existing completed-job dedup
+  // so Rekognition actually runs this time.
+  let aiSuffix = forceSuffix;
+  if (!forceSuffix) {
+    const { data: enrichment } = await serviceClient()
+      .from("asset_ai_enrichment")
+      .select("face_count, caption")
+      .eq("asset_id", asset_id)
+      .maybeSingle();
+    if (enrichment?.caption && enrichment.face_count === null) {
+      aiSuffix = `:face-retry:${asset_id}`;
+    }
+  }
+
   await enqueueJob("enrichAI", {
     userId: ctx.userId,
     payload: {
@@ -514,7 +532,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
       ...(sync_run_id ? { sync_run_id } : {}),
       ...(force_sync_run_id ? { force_sync_run_id } : {}),
     },
-    idempotencyKey: `ai:${asset_id}${forceSuffix}`,
+    idempotencyKey: `ai:${asset_id}${aiSuffix}`,
   });
   // indexSearchDocument is enqueued exactly once per asset by enrichAI (or ocrAsset
   // as a fallback) after enrichment data is available — see those handlers.

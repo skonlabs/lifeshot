@@ -127,6 +127,13 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   //      (applies qualifyFaceForPerson and findBestPersonMatch per face)
   if (!rekognitionConfigured()) {
     console.warn("enrichAI: Rekognition not configured — face detection skipped", { asset_id });
+    // Write face_count=0 so NULL always means "not yet processed / needs re-run".
+    // A future force sync will re-run this job with Rekognition configured and
+    // overwrite with the real count.
+    await sb.from("asset_ai_enrichment").upsert(
+      { asset_id, user_id: asset.user_id, face_count: 0 },
+      { onConflict: "asset_id" },
+    );
   } else {
     const analysis = await analyzeAssetFaces({
       originalImageUrl,
