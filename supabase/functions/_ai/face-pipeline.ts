@@ -96,17 +96,18 @@ async function fetchImage(url: string, requireSupportedMime = false): Promise<{ 
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
-    const bytes = new Uint8Array(await resp.arrayBuffer());
     if (requireSupportedMime && !REKOGNITION_SUPPORTED_MIME.has(mime)) {
       // application/octet-stream is a generic fallback — Supabase Storage uses it
-      // when no explicit content-type was set at upload time. Don't reject it;
-      // the bytes may still be a valid JPEG. True unsupported formats (image/heic,
-      // image/tiff) arrive with their own specific MIME from provider CDNs.
+      // when no explicit content-type was set at upload time. The bytes may still
+      // be a valid JPEG. True unsupported formats (image/heic, image/tiff) arrive
+      // with their own specific MIME from provider CDNs and are rejected here.
       if (mime !== "application/octet-stream") {
         console.warn(`fetchImage: unsupported mime ${mime}, skipping URL`);
         return null;
       }
     }
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
       console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), resizing`);
       return await resizeToFit(bytes, mime);
     }
@@ -421,18 +422,24 @@ export async function storeFaceResults(opts: {
   const { analysis, faces } = opts;
   const { assetId, userId } = analysis;
 
+  // Deduplicate by face_id within this asset before touching the DB.
+  const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
+
+  // Only replace existing rows when we actually detected faces. Writing 0 rows
+  // would delete previously-good data from a re-scan that returned 0 faces due
+  // to a transient image fetch issue or temporary Rekognition degradation.
+  if (uniqueFaces.length === 0) return { asset_faces: 0 };
+
   if (opts.beforeWrite) await opts.beforeWrite();
 
-  // Delete existing rows for this asset so re-scans are idempotent.
+  // Delete-then-insert is the idempotency pattern for re-scans. beforeWrite is
+  // called once before the delete (not twice) to avoid the window where delete
+  // has committed but insert hasn't — a second beforeWrite call after delete
+  // could throw and leave the asset with zero rows permanently.
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
-  // Deduplicate by face_id within this asset.
-  const uniqueFaces = [...new Map(faces.map((f) => [f.face_id, f])).values()];
-
-  if (uniqueFaces.length > 0) {
-    if (opts.beforeWrite) await opts.beforeWrite();
-    // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
+  // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
     const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
       asset_id: assetId,
       user_id:  userId,
@@ -440,7 +447,7 @@ export async function storeFaceResults(opts: {
         FaceId:      f.face_id,
         BoundingBox: f.bbox,
         Confidence:  Math.round(f.confidence * 1000) / 10, // normalize back to 0-100 scale
-        FaceDetail:  f.attributes ?? {},
+        FaceDetail:  f.attributes ?? null,
         FaceCrop:    f.face_crop,
       },
     })));

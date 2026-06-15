@@ -189,17 +189,19 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         return { asset_id, skipped: preFaceWriteResetGuard.reason };
       }
 
-      // Write faces/face_count ONLY when face detection actually ran successfully
-      // this invocation. Otherwise we'd wipe previously-good face data on a re-run
-      // where Rekognition was momentarily unconfigured or unreachable.
-      const { error: facesUpsertErr } = await sb.from("asset_ai_enrichment").upsert({
-        asset_id,
-        user_id:    asset.user_id,
-        faces:      rawFaces,
-        face_count: rawFaces.length,
-      }, { onConflict: "asset_id" });
-      if (facesUpsertErr) {
-        console.error("enrichAI: asset_ai_enrichment faces upsert failed", { asset_id, error: facesUpsertErr.message });
+      // Write faces/face_count only when Rekognition returned at least one face.
+      // Writing 0 would erase previously-correct data if a re-scan gets 0 faces
+      // due to a transient image fetch issue or provider returning a bad URL.
+      if (rawFaces.length > 0) {
+        const { error: facesUpsertErr } = await sb.from("asset_ai_enrichment").upsert({
+          asset_id,
+          user_id:    asset.user_id,
+          faces:      rawFaces,
+          face_count: rawFaces.length,
+        }, { onConflict: "asset_id" });
+        if (facesUpsertErr) {
+          console.error("enrichAI: asset_ai_enrichment faces upsert failed", { asset_id, error: facesUpsertErr.message });
+        }
       }
     }
 

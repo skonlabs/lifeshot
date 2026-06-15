@@ -153,7 +153,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   for (const row of qualifying) {
     // Abort if a reset has happened mid-run.
-    const guard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId });
+    const guard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
     if (!guard.valid) {
       return { user_id: uid, faces_processed: qualifying.length, people_created: created, detections_linked: linked, skipped, stopped: guard.reason };
     }
