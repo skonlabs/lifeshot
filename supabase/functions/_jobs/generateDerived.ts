@@ -30,7 +30,13 @@ async function fetchBytes(url: string, maxBytes = 4 * 1024 * 1024): Promise<{ by
     if (!res.ok) return null;
     const mime = res.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
     const buf = await res.arrayBuffer();
-    return { bytes: new Uint8Array(buf.slice(0, maxBytes)), mime };
+    // Do not slice — a truncated JPEG is a corrupt file that Rekognition and
+    // image decoders will reject. Return null so the caller falls back.
+    if (buf.byteLength > maxBytes) {
+      console.warn(`fetchBytes: response too large (${buf.byteLength} bytes > ${maxBytes}), skipping`);
+      return null;
+    }
+    return { bytes: new Uint8Array(buf), mime };
   } catch {
     return null;
   }
@@ -147,8 +153,26 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     }
   }
 
+  // Fallback 1: proxy_cache_key as HTTP URL
   if (!previewBytes && asset.proxy_cache_key && /^https?:\/\//.test(asset.proxy_cache_key)) {
     previewBytes = await fetchBytes(asset.proxy_cache_key, 8 * 1024 * 1024);
+  }
+
+  // Fallback 2: proxy_cache_key as a storage path in the derived bucket
+  // (set by a previous generateDerived run that generated preview successfully)
+  if (!previewBytes && asset.proxy_cache_key && !/^https?:\/\//.test(asset.proxy_cache_key)) {
+    const { data: signed } = await sb.storage
+      .from(STORAGE_BUCKETS.derived)
+      .createSignedUrl(asset.proxy_cache_key, 60);
+    if (signed?.signedUrl) {
+      previewBytes = await fetchBytes(signed.signedUrl, 8 * 1024 * 1024);
+    }
+  }
+
+  // Fallback 3: use the thumbnail bytes as the preview if nothing better is available.
+  // Better than no preview at all — enrichAI can at least run face detection.
+  if (!previewBytes && thumbBytes) {
+    previewBytes = thumbBytes;
   }
 
   if (previewBytes) {
