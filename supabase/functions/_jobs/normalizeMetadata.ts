@@ -10,6 +10,7 @@
  *     support range-fetch, best-effort inside its own isolated try-catch.
  */
 import { serviceClient } from "../_pipeline/clients.ts";
+import { rekognitionConfigured } from "../_ai/rekognition.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { nudgeWorkerDrain as wakeWorkerDrain } from "../_pipeline/worker-wake.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
@@ -508,19 +509,34 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
   await enqueueJob("generateDerived", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `derived:${asset_id}${forceSuffix}` });
   await enqueueJob("ocrAsset", { userId: ctx.userId, payload: { asset_id }, idempotencyKey: `ocr:${asset_id}${forceSuffix}` });
 
-  // Re-enqueue enrichAI with a face-retry suffix when the asset already has a
-  // caption but face_count is NULL — meaning a previous run completed before
-  // Rekognition was configured and the face detection block was silently skipped.
-  // Using a distinct idempotency key bypasses the existing completed-job dedup
-  // so Rekognition actually runs this time.
+  // Re-enqueue enrichAI with a distinct suffix when face detection needs to run
+  // or re-run. Two cases trigger this (both bypass existing completed-job dedup):
+  //
+  //   face_count IS NULL           — enrichAI completed but never wrote face_count
+  //                                  (ran before Rekognition was wired up)
+  //   face_count = 0 AND           — Rekognition was not configured when this ran;
+  //     face_scanned_at IS NULL      face_scanned_at is only written when Rekognition
+  //                                  actually executes, so NULL means it was skipped.
+  //                                  (face_count=0 WITH face_scanned_at set = Rekognition
+  //                                  ran and genuinely found no faces — don't re-run)
   let aiSuffix = forceSuffix;
-  if (!forceSuffix) {
-    const { data: enrichment } = await serviceClient()
-      .from("asset_ai_enrichment")
-      .select("face_count, caption")
-      .eq("asset_id", asset_id)
-      .maybeSingle();
-    if (enrichment?.caption && enrichment.face_count === null) {
+  if (!forceSuffix && rekognitionConfigured()) {
+    const [{ data: enrichment }, { data: assetMeta }] = await Promise.all([
+      serviceClient()
+        .from("asset_ai_enrichment")
+        .select("face_count, caption")
+        .eq("asset_id", asset_id)
+        .maybeSingle(),
+      serviceClient()
+        .from("assets")
+        .select("face_scanned_at")
+        .eq("id", asset_id)
+        .maybeSingle(),
+    ]);
+    const needsFaceRetry =
+      (enrichment?.caption && enrichment.face_count === null) ||
+      (enrichment?.face_count === 0 && !assetMeta?.face_scanned_at);
+    if (needsFaceRetry) {
       aiSuffix = `:face-retry:${asset_id}`;
     }
   }
