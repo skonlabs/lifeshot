@@ -9,7 +9,7 @@ import type {
   CanonicalMetadataRecord,
   MetadataBatch,
   BatchSummary,
-} from "../../../packages/core/metadata/types.ts";
+} from "../_core/metadata/types.ts";
 import { generateSearchDocument } from "./search-document.ts";
 
 type Svc = SupabaseClient;

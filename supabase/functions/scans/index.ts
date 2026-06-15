@@ -17,7 +17,7 @@ import {
   ScanRequestSchema,
   MetadataBatchSchema,
   type ScanProgress,
-} from "../../../packages/core/metadata/types.ts";
+} from "../_core/metadata/types.ts";
 import { ingestBatch } from "../_metadata/persistence.ts";
 
 const app = createApi("/scans");
