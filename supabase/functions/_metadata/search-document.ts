@@ -4,7 +4,7 @@
  * Metadata Engine. Produces a single human-readable text blob that
  * powers FTS and gives downstream AI a clean text view of the asset.
  */
-import type { CanonicalMetadataRecord } from "../../../packages/core/metadata/types.ts";
+import type { CanonicalMetadataRecord } from "../_core/metadata/types.ts";
 
 export function generateSearchDocument(rec: CanonicalMetadataRecord): string {
   const lines: string[] = [];

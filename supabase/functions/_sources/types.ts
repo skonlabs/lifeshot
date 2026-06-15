@@ -1,1 +1,1 @@
-export * from "../../../packages/core/sources/types.ts";
+export * from "../_core/sources/types.ts";
