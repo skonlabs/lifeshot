@@ -96,12 +96,17 @@ async function fetchImage(url: string, requireSupportedMime = false): Promise<{ 
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
-    if (requireSupportedMime && !REKOGNITION_SUPPORTED_MIME.has(mime)) {
-      console.warn(`fetchImage: unsupported mime ${mime}, skipping URL`);
-      return null;
-    }
     const bytes = new Uint8Array(await resp.arrayBuffer());
-    if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
+    if (requireSupportedMime && !REKOGNITION_SUPPORTED_MIME.has(mime)) {
+      // application/octet-stream is a generic fallback — Supabase Storage uses it
+      // when no explicit content-type was set at upload time. Don't reject it;
+      // the bytes may still be a valid JPEG. True unsupported formats (image/heic,
+      // image/tiff) arrive with their own specific MIME from provider CDNs.
+      if (mime !== "application/octet-stream") {
+        console.warn(`fetchImage: unsupported mime ${mime}, skipping URL`);
+        return null;
+      }
+    }
       console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), resizing`);
       return await resizeToFit(bytes, mime);
     }

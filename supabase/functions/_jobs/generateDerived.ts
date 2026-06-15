@@ -182,12 +182,18 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
       preview_url: previewKey && /^https?:\/\//.test(previewKey) ? previewKey : null,
       preview_storage_path: previewKey && !/^https?:\/\//.test(previewKey) ? previewKey : null,
     }, { onConflict: "asset_id" });
-    if (asset.thumbnail_cache_key || asset.proxy_cache_key) {
+    // Only reuse provider-served URLs when they are actual HTTP URLs.
+    // Storage paths (no http:// prefix) cannot be resolved by enrichAI via
+    // signDerivative because they live in a different bucket — returning early
+    // here would leave previewImageUrl permanently null.
+    const thumbIsUrl = asset.thumbnail_cache_key && /^https?:\/\//.test(asset.thumbnail_cache_key);
+    const previewIsUrl = asset.proxy_cache_key && /^https?:\/\//.test(asset.proxy_cache_key);
+    if (thumbIsUrl || previewIsUrl) {
       return {
         asset_id,
         derivatives: 0,
-        thumbnail: Boolean(asset.thumbnail_cache_key),
-        preview: Boolean(asset.proxy_cache_key),
+        thumbnail: Boolean(thumbIsUrl),
+        preview: Boolean(previewIsUrl),
         reused_provider_urls: true,
       };
     }
