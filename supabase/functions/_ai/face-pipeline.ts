@@ -69,6 +69,28 @@ const REKOGNITION_SUPPORTED_MIME = new Set([
   "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp",
 ]);
 
+/** Scale image bytes down to fit within REKOGNITION_MAX_BYTES using canvas. */
+async function resizeToFit(bytes: Uint8Array, mime: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  try {
+    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
+    const { width: W, height: H } = bitmap;
+    // Scale longest side to 2000 px — empirically keeps JPEG output well under 5 MB.
+    const scale = Math.min(1, 2000 / Math.max(W, H));
+    const sw = Math.round(W * scale);
+    const sh = Math.round(H * scale);
+    const canvas = new OffscreenCanvas(sw, sh);
+    (canvas.getContext("2d") as any).drawImage(bitmap, 0, 0, sw, sh);
+    for (const quality of [0.90, 0.75, 0.60]) {
+      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+      const resized = new Uint8Array(await blob.arrayBuffer());
+      if (resized.byteLength <= REKOGNITION_MAX_BYTES) return { bytes: resized, mime: "image/jpeg" };
+    }
+    return null; // couldn't squeeze it small enough
+  } catch {
+    return null;
+  }
+}
+
 async function fetchImage(url: string, requireSupportedMime = false): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
     const resp = await fetch(url);
@@ -80,8 +102,8 @@ async function fetchImage(url: string, requireSupportedMime = false): Promise<{ 
     }
     const bytes = new Uint8Array(await resp.arrayBuffer());
     if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
-      console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), skipping URL`);
-      return null;
+      console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), resizing`);
+      return await resizeToFit(bytes, mime);
     }
     return { bytes, mime };
   } catch {
