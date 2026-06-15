@@ -183,7 +183,7 @@ export async function analyzeAssetFaces(opts: {
   }
 
   let image: { bytes: Uint8Array; mime: string } | null = null;
-  for (const url of [opts.previewImageUrl, opts.thumbnailImageUrl, opts.originalImageUrl]) {
+  for (const url of [opts.originalImageUrl, opts.previewImageUrl, opts.thumbnailImageUrl]) {
     if (!url) continue;
     image = await fetchImage(url);
     if (image) break;
