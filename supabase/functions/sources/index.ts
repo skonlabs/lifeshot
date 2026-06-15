@@ -10,7 +10,7 @@ import { cache, keys } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { ENV } from "../_shared/env.ts";
 import { getConnector } from "../_sources/registry.ts";
-import { isStaleSyncQueueState } from "../../../src/lib/api/sync-status.logic.ts";
+import { isStaleSyncQueueState } from "../_core/shared/sync-status.logic.ts";
 import { nudgeWorkerDrain } from "../_pipeline/worker-wake.ts";
 
 // Batch helpers — PostgREST `?in.(...)` builds a single URL per query, so

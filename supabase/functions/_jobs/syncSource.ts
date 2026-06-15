@@ -7,7 +7,7 @@ import { LANES, laneFor } from "../_pipeline/lanes.ts";
 import { getConnector } from "../_sources/registry.ts";
 import { ConnectorAuthError, ConnectorRateLimitError } from "../_sources/types.ts";
 import type { JobContext } from "../_pipeline/runner.ts";
-import { shouldResyncAsset } from "../../../src/lib/api/sync-status.logic.ts";
+import { shouldResyncAsset } from "../_core/shared/sync-status.logic.ts";
 
 // Worker continuation enqueues the next page and nudges /worker/drain so the
 // queue keeps moving immediately instead of waiting for the next cron tick.
