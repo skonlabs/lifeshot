@@ -83,7 +83,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { data: allAssetFaces, error: afErr } = await sb
     .from("asset_faces")
     .select("id, asset_id, person_id, face")
-    .eq("user_id", uid);
+    .eq("user_id", uid)
+    .limit(50000); // PostgREST default is 1000 — must override or faces are silently truncated
   if (afErr) throw new Error(`clusterPeople: asset_faces load failed: ${afErr.message}`);
 
   interface AssetFaceRow { id: string; asset_id: string; person_id: string | null; face: any }
@@ -103,7 +104,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { data: existingPeople, error: peopleErr } = await sb
     .from("people")
     .select("id, display_name, asset_id, face, face_ids")
-    .eq("user_id", uid);
+    .eq("user_id", uid)
+    .limit(10000); // PostgREST default is 1000 — must override or people are silently truncated
   if (peopleErr) throw new Error(`clusterPeople: people load failed: ${peopleErr.message}`);
 
   interface PersonEntry { id: string; display_name: string | null; face_ids: string[]; face: any; asset_id: string | null }

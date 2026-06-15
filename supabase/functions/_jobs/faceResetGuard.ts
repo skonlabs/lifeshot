@@ -25,7 +25,10 @@ export async function checkFaceResetGuard(
   }
 
   if (!jobRow) {
-    return { valid: false, reason: "superseded_by_face_reset" };
+    // Job row not found — could be replication lag on a read replica. Fail open
+    // so valid enrichment runs are not silently abandoned on transient DB issues.
+    console.warn("faceResetGuard: job row not found, failing open", opts.jobId);
+    return { valid: true };
   }
 
   let resetAt = opts.resetAt ?? null;

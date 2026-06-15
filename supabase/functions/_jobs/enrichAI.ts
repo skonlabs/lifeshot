@@ -168,8 +168,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     }
 
     if (analysis) {
-      await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
-
       const rawFaces = analysis.faceRecords;
       console.log(`enrichAI: Rekognition returned ${rawFaces.length} face(s) for asset ${asset_id}`);
 
@@ -196,29 +194,25 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       });
       console.log(`enrichAI: stored ${stored.asset_faces} face row(s) to asset_faces for asset ${asset_id}`);
 
-      const preFaceWriteResetGuard = await checkFaceResetGuard(sb, {
-        userId: asset.user_id,
-        jobId: ctx.jobId,
-        resetAt: privacy?.face_pipeline_reset_at ?? null,
-      });
-      if (!preFaceWriteResetGuard.valid) {
-        return { asset_id, skipped: preFaceWriteResetGuard.reason };
+      // Always write face_count after Rekognition runs — NULL means "not yet scanned",
+      // 0 means "scanned, no faces found". Only preserve raw faces when detected.
+      const enrichmentUpdate: Record<string, unknown> = {
+        asset_id,
+        user_id:    asset.user_id,
+        face_count: rawFaces.length,
+      };
+      if (rawFaces.length > 0) {
+        enrichmentUpdate.faces = rawFaces;
+      }
+      const { error: facesUpsertErr } = await sb.from("asset_ai_enrichment").upsert(
+        enrichmentUpdate,
+        { onConflict: "asset_id" },
+      );
+      if (facesUpsertErr) {
+        console.error("enrichAI: asset_ai_enrichment faces upsert failed", { asset_id, error: facesUpsertErr.message });
       }
 
-      // Write faces/face_count only when Rekognition returned at least one face.
-      // Writing 0 would erase previously-correct data if a re-scan gets 0 faces
-      // due to a transient image fetch issue or provider returning a bad URL.
-      if (rawFaces.length > 0) {
-        const { error: facesUpsertErr } = await sb.from("asset_ai_enrichment").upsert({
-          asset_id,
-          user_id:    asset.user_id,
-          faces:      rawFaces,
-          face_count: rawFaces.length,
-        }, { onConflict: "asset_id" });
-        if (facesUpsertErr) {
-          console.error("enrichAI: asset_ai_enrichment faces upsert failed", { asset_id, error: facesUpsertErr.message });
-        }
-      }
+      await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
     }
 
     const preFinalizeResetGuard = await checkFaceResetGuard(sb, {

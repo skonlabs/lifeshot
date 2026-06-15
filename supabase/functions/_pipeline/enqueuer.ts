@@ -74,11 +74,13 @@ export async function enqueueJob(jobName: string, opts: EnqueueOpts = {}): Promi
   if (error) throw new Error(`enqueueJob(${jobName}): ${error.message}`);
   if (!data) {
     // Race: another worker inserted concurrently. Look it up.
-    const lookup = sb.from("job_queue")
+    // Must scope to user_id to avoid returning a row from a different user.
+    let lookup = sb.from("job_queue")
       .select("id")
       .eq("job_name", jobName)
       .order("created_at", { ascending: false })
       .limit(1);
+    if (opts.userId != null) lookup = lookup.eq("user_id", opts.userId);
     const { data: existing } = opts.idempotencyKey
       ? await lookup.eq("idempotency_key", opts.idempotencyKey).maybeSingle()
       : await lookup.is("idempotency_key", null).maybeSingle();
