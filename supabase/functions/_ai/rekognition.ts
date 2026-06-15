@@ -130,31 +130,22 @@ export interface RekFaceRecord {
   attributes: Record<string, unknown> | null; // Full FaceDetail JSON
 }
 
-// Collections confirmed to exist this process lifetime — avoids a
-// DescribeCollection API call (and its rate limit cost) on every enrichAI job.
-const knownCollections = new Set<string>();
-
 export async function ensureCollection(collectionId: string): Promise<void> {
-  if (knownCollections.has(collectionId)) return;
+  // Use CreateCollection and ignore "already exists" — one API call instead of
+  // DescribeCollection + conditional CreateCollection. Serverless isolates have
+  // no persistent memory so module-level caches don't help; calling
+  // DescribeCollection on every cold start was flooding the Rekognition TPS limit.
   const { region, accessKeyId, secretAccessKey } = getCredentials();
   try {
     await signedRequest({
       region, accessKeyId, secretAccessKey,
-      target: "RekognitionService.DescribeCollection",
+      target: "RekognitionService.CreateCollection",
       body: { CollectionId: collectionId },
     });
   } catch (e: any) {
-    if (String(e?.message ?? "").includes("ResourceNotFoundException")) {
-      await signedRequest({
-        region, accessKeyId, secretAccessKey,
-        target: "RekognitionService.CreateCollection",
-        body: { CollectionId: collectionId },
-      });
-    } else {
-      throw e;
-    }
+    // ResourceInUseException = collection already exists — that's fine.
+    if (!String(e?.message ?? "").includes("ResourceInUseException")) throw e;
   }
-  knownCollections.add(collectionId);
 }
 
 export async function indexFaces(opts: {

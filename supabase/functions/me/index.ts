@@ -4,6 +4,7 @@ import { parseBody } from "../_shared/validation.ts";
 import { sendError, ApiError } from "../_shared/errors.ts";
 import { enforceRateLimit } from "../_shared/ratelimit.ts";
 import { emitEvent } from "../_shared/observability.ts";
+import { ensureCollection, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 
 const PatchMe = z.object({
   display_name: z.string().min(1).max(120).optional(),
@@ -93,6 +94,11 @@ app.patch("/privacy-settings", async (c) => {
       granted_at: body.face_processing_enabled ? new Date().toISOString() : null,
       revoked_at: !body.face_processing_enabled ? new Date().toISOString() : null,
     });
+    // Create the Rekognition collection when face processing is enabled so
+    // enrichAI jobs never need to call DescribeCollection/CreateCollection.
+    if (body.face_processing_enabled && rekognitionConfigured()) {
+      try { await ensureCollection(collectionIdForUser(uid)); } catch { /* non-fatal */ }
+    }
   }
   emitEvent(c, "me.privacy_update", { aiChanged, faceChanged });
   return c.json(data);

@@ -191,7 +191,12 @@ export async function analyzeAssetFaces(opts: {
   if (!image) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
 
   const collectionId = collectionIdForUser(opts.userId);
-  await ensureCollection(collectionId);
+  // Do NOT call ensureCollection here — it fires a Rekognition API call on every
+  // job and causes ProvisionedThroughputExceededException under concurrent load.
+  // Collections are created at face-pipeline init time (privacy enable / reset).
+  // If the collection is missing, indexFaces throws ResourceNotFoundException
+  // which becomes a retryable error and the job retries after the collection
+  // is recreated.
 
   const sb = serviceClient();
   const { data: knownRows } = await sb
