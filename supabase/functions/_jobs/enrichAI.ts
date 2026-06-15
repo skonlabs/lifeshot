@@ -133,15 +133,22 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       { onConflict: "asset_id" },
     );
   } else {
+    // For face detection, prefer original → preview → thumbnail in that order.
+    // Thumbnail is a last resort — small images reduce detection accuracy — so
+    // when we fall back to thumbnail, also enqueue generateDerived to produce a
+    // proper preview that the next sync will use instead.
+    if (!previewImageUrl && !originalImageUrl) {
+      await enqueueJob("generateDerived", {
+        userId: ctx.userId,
+        payload: { asset_id },
+        idempotencyKey: `derived-face-wait:${asset_id}`,
+      });
+    }
+
     const analysis = await analyzeAssetFaces({
       originalImageUrl,
       previewImageUrl,
-      // Thumbnail intentionally excluded: too small for reliable Rekognition detection.
-      // A 300px-wide group photo yields ~40px faces, below Rekognition's threshold.
-      // fetchImage already rejects unsupported formats (HEIC/RAW) via Content-Type check.
-      // If neither original nor preview is fetchable, analyzeAssetFaces throws retryable
-      // so the job waits until generateDerived produces a usable preview.
-      thumbnailImageUrl: null,
+      thumbnailImageUrl, // restored: better than failing when no preview exists yet
       assetId: asset_id,
       userId: asset.user_id,
     });
