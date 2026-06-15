@@ -32,6 +32,17 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   if (assetErr) throw new Error(`retryable: asset lookup failed: ${assetErr.message}`);
   if (!asset) throw new Error("retryable: asset not ready yet");
 
+  // Videos cannot be processed by Rekognition IndexFaces (image-only API).
+  // Store a minimal enrichment record and exit — face detection is skipped entirely.
+  const isVideo = asset.media_type === "video" || (asset.mime_type ?? "").startsWith("video/");
+  if (isVideo) {
+    await sb.from("asset_ai_enrichment").upsert(
+      { asset_id, user_id: asset.user_id, face_count: 0 },
+      { onConflict: "asset_id", ignoreDuplicates: true },
+    );
+    return { asset_id, skipped: "video" };
+  }
+
   const { data: privacy } = await sb
     .from("privacy_settings")
     .select("face_pipeline_reset_at")
