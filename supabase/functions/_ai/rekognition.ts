@@ -130,7 +130,12 @@ export interface RekFaceRecord {
   attributes: Record<string, unknown> | null; // Full FaceDetail JSON
 }
 
+// Collections confirmed to exist this process lifetime — avoids a
+// DescribeCollection API call (and its rate limit cost) on every enrichAI job.
+const knownCollections = new Set<string>();
+
 export async function ensureCollection(collectionId: string): Promise<void> {
+  if (knownCollections.has(collectionId)) return;
   const { region, accessKeyId, secretAccessKey } = getCredentials();
   try {
     await signedRequest({
@@ -149,6 +154,7 @@ export async function ensureCollection(collectionId: string): Promise<void> {
       throw e;
     }
   }
+  knownCollections.add(collectionId);
 }
 
 export async function indexFaces(opts: {
