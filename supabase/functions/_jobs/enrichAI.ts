@@ -145,13 +145,27 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       });
     }
 
-    const analysis = await analyzeAssetFaces({
-      originalImageUrl,
-      previewImageUrl,
-      thumbnailImageUrl, // restored: better than failing when no preview exists yet
-      assetId: asset_id,
-      userId: asset.user_id,
-    });
+    let analysis: Awaited<ReturnType<typeof analyzeAssetFaces>>;
+    try {
+      analysis = await analyzeAssetFaces({
+        originalImageUrl,
+        previewImageUrl,
+        thumbnailImageUrl,
+        assetId: asset_id,
+        userId: asset.user_id,
+      });
+    } catch (e: any) {
+      // Signed URLs existed but all fetches returned non-OK (e.g. 404 — file missing
+      // from storage). Kick generateDerived to rebuild the derivatives then retry.
+      if (String(e?.message ?? e).includes("no fetchable image")) {
+        await enqueueJob("generateDerived", {
+          userId: ctx.userId,
+          payload: { asset_id },
+          idempotencyKey: `derived-missing:${asset_id}:${Math.floor(Date.now() / 300_000)}`,
+        });
+      }
+      throw e;
+    }
 
     if (analysis) {
       await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
