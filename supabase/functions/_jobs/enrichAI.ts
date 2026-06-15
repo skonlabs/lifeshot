@@ -154,6 +154,8 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     });
 
     if (analysis) {
+      await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
+
       const rawFaces = analysis.faceRecords;
       console.log(`enrichAI: Rekognition returned ${rawFaces.length} face(s) for asset ${asset_id}`);
 
@@ -213,8 +215,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     if (!preFinalizeResetGuard.valid) {
       return { asset_id, skipped: preFinalizeResetGuard.reason };
     }
-
-    await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
 
     // Enqueue clusterPeople so the People page is updated promptly.
     // Use a 5-minute time-window key so clusterPeople re-enqueues throughout a

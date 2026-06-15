@@ -440,19 +440,18 @@ export async function storeFaceResults(opts: {
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
   // Each row stores one unified face JSON with all Rekognition attributes + generated crop.
-    const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
-      asset_id: assetId,
-      user_id:  userId,
-      face: {
-        FaceId:      f.face_id,
-        BoundingBox: f.bbox,
-        Confidence:  Math.round(f.confidence * 1000) / 10, // normalize back to 0-100 scale
-        FaceDetail:  f.attributes ?? null,
-        FaceCrop:    f.face_crop,
-      },
-    })));
-    if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
-  }
+  const { error: insErr } = await sb.from("asset_faces").insert(uniqueFaces.map((f) => ({
+    asset_id: assetId,
+    user_id:  userId,
+    face: {
+      FaceId:      f.face_id,
+      BoundingBox: f.bbox,
+      Confidence:  Math.round(f.confidence * 1000) / 10, // normalize back to 0-100 scale
+      FaceDetail:  f.attributes ?? null,
+      FaceCrop:    f.face_crop,
+    },
+  })));
+  if (insErr) throw new Error(`storeFaceResults: asset_faces insert failed: ${insErr.message}`);
 
   return { asset_faces: uniqueFaces.length };
 }
