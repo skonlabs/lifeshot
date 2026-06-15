@@ -207,18 +207,12 @@ export async function analyzeAssetFaces(opts: {
   // is recreated.
 
   const sb = serviceClient();
-  // Select only the FaceId field — NOT the full face JSONB (which contains
-  // FaceCrop base64 ~50 KB each). Selecting full face for hundreds of assets
-  // easily exceeds Supabase's ~4 MB response limit and returns [] silently,
-  // breaking dedup and creating duplicate FaceIds on every re-scan.
-  const { data: knownRows } = await sb
-    .from("asset_faces")
-    .select("face->FaceId")
-    .eq("user_id", opts.userId);
+  // Use the RPC to fetch only FaceIds — selecting the full face JSONB would
+  // pull FaceCrop (~50 KB each), easily exceeding Supabase's response limit
+  // and returning [] silently which breaks dedup.
+  const { data: knownRows } = await sb.rpc("get_user_face_ids", { p_user_id: opts.userId });
   const validKnownFaceIds = new Set(
-    (knownRows ?? [])
-      .map((row: any) => String(row?.FaceId ?? ""))
-      .filter(Boolean),
+    (knownRows ?? []).map((row: any) => String(row ?? "")).filter(Boolean),
   );
 
   const records = await indexFaces({
