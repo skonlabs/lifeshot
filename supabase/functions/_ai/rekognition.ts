@@ -92,22 +92,31 @@ async function signedRequest(opts: {
 
   const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${sig}`;
 
-  const resp = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-amz-json-1.1",
-      "X-Amz-Date": amzDate,
-      "X-Amz-Target": target,
-      "Authorization": authHeader,
-    },
-    body: payload,
-  });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Date": amzDate,
+        "X-Amz-Target": target,
+        "Authorization": authHeader,
+      },
+      body: payload,
+    });
 
-  if (!resp.ok) {
+    if (resp.ok) return resp.json();
+
     const err = await resp.text();
+
+    // Retry on throttling with exponential backoff (1s, 2s, 4s, 8s).
+    if (resp.status === 400 && err.includes("ProvisionedThroughputExceededException") && attempt < 4) {
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      continue;
+    }
+
     throw new Error(`Rekognition ${target} failed (${resp.status}): ${err}`);
   }
-  return resp.json();
+  throw new Error(`Rekognition ${target} failed: max retries exceeded`);
 }
 
 // ---------------------------------------------------------------------------

@@ -22,8 +22,7 @@ import {
 import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
 
-// Only resize images larger than 4 MB before sending to Rekognition.
-const REKOGNITION_MAX_BYTES = 4_000_000;
+const REKOGNITION_MAX_BYTES = 4_900_000; // Rekognition hard limit is 5 MB; stay safely under
 const DEDUP_SIMILARITY = 98;   // reuse existing indexed face only for near-identical rescans
 const PRIMARY_THRESHOLD = 90;  // confident person match
 const FALLBACK_THRESHOLD = 90; // acceptable person match
@@ -64,31 +63,20 @@ export interface PersonMatch {
 // Image helpers (fetch / resize / landmark crop)
 // ---------------------------------------------------------------------------
 
-async function resizeToFit(bytes: Uint8Array, mime: string, maxBytes: number): Promise<Uint8Array> {
-  if (bytes.byteLength <= maxBytes) return bytes;
-  const scale = Math.sqrt(maxBytes / bytes.byteLength) * 0.90;
-  try {
-    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
-    const w = Math.max(1, Math.floor(bitmap.width * scale));
-    const h = Math.max(1, Math.floor(bitmap.height * scale));
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext("2d") as any;
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.90 });
-    const out = new Uint8Array(await blob.arrayBuffer());
-    return out.byteLength > maxBytes ? resizeToFit(out, "image/jpeg", maxBytes) : out;
-  } catch {
-    return bytes;
-  }
-}
-
 async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
-    const raw = new Uint8Array(await resp.arrayBuffer());
-    const bytes = await resizeToFit(raw, mime, REKOGNITION_MAX_BYTES);
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
+      // Image too large for Rekognition (>4.9 MB). Deno edge functions have no
+      // OffscreenCanvas so client-side resizing is not available. The caller
+      // should prefer the preview/thumbnail URL which generateDerived sizes to
+      // a safe resolution. If even the preview is oversized, skip this URL.
+      console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), skipping URL`);
+      return null;
+    }
     return { bytes, mime };
   } catch {
     return null;
