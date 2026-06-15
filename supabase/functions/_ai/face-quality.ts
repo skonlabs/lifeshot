@@ -4,10 +4,10 @@ export const FACE_CLUSTER_QUALITY = {
   minConfidence: 90,
   minEyesOpenConfidence: 90,
   minFaceOccludedConfidence: 90,
-  maxYaw: 30,
-  maxPitch: 25,
-  minSharpness: 35,
-  minBrightness: 25,
+  maxYaw: 45,        // relaxed from 30 — slightly-turned faces are still usable
+  maxPitch: 35,      // relaxed from 25
+  minSharpness: 20,  // relaxed from 35 — slightly soft photos still cluster well
+  minBrightness: 15, // relaxed from 25
 };
 
 function toNumber(value: unknown): number | null {
@@ -29,10 +29,19 @@ export function isUsableFaceDetail(faceDetail: any): boolean {
   const pitch = Math.abs(toNumber(faceDetail?.Pose?.Pitch) ?? Number.POSITIVE_INFINITY);
   const sharpness = toNumber(faceDetail?.Quality?.Sharpness) ?? Number.NEGATIVE_INFINITY;
   const brightness = toNumber(faceDetail?.Quality?.Brightness) ?? Number.NEGATIVE_INFINITY;
-  const notOccluded = toBoolean(faceDetail?.FaceOccluded?.Value) === false;
-  const notOccludedConfidence = toNumber(faceDetail?.FaceOccluded?.Confidence) ?? 100;
-  const eyesOpen = toBoolean(faceDetail?.EyesOpen?.Value) === true;
-  const eyesOpenConfidence = toNumber(faceDetail?.EyesOpen?.Confidence) ?? 100;
+  // Treat absent field as passing — Rekognition does not always return EyesOpen/
+  // FaceOccluded for every detection. Requiring === true/=== false would silently
+  // exclude all faces where the attribute was not returned.
+  const faceOccludedValue = toBoolean(faceDetail?.FaceOccluded?.Value);
+  const notOccluded = faceOccludedValue !== true; // absent → passes
+  const notOccludedConfidence = faceOccludedValue === false
+    ? (toNumber(faceDetail?.FaceOccluded?.Confidence) ?? 100)
+    : 100;
+  const eyesOpenValue = toBoolean(faceDetail?.EyesOpen?.Value);
+  const eyesOpen = eyesOpenValue !== false; // absent → passes
+  const eyesOpenConfidence = eyesOpenValue === true
+    ? (toNumber(faceDetail?.EyesOpen?.Confidence) ?? 100)
+    : 100;
 
   return notOccluded
     && notOccludedConfidence >= FACE_CLUSTER_QUALITY.minFaceOccludedConfidence
