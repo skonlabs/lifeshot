@@ -64,14 +64,19 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       .select("preview_url, preview_storage_path, thumbnail_url, thumbnail_storage_path")
       .eq("asset_id", asset_id)
       .maybeSingle();
+    // Prefer storage path (our bucket, long-lived signed URL) over direct provider
+    // URL — provider URLs (Google Photos, Dropbox etc.) expire in ~1 hour and
+    // cause "no fetchable image" errors when enrichAI runs after expiry.
+    const storagePath = kind === "preview" ? mm?.preview_storage_path : mm?.thumbnail_storage_path;
+    if (storagePath) {
+      const { data: signed } = await sb.storage
+        .from(STORAGE_BUCKETS.derived)
+        .createSignedUrl(storagePath, 600);
+      if (signed?.signedUrl) return signed.signedUrl;
+    }
     const directUrl = kind === "preview" ? mm?.preview_url : mm?.thumbnail_url;
     if (directUrl && /^https?:\/\//.test(directUrl)) return directUrl;
-    const storagePath = kind === "preview" ? mm?.preview_storage_path : mm?.thumbnail_storage_path;
-    if (!storagePath) return null;
-    const { data: signed } = await sb.storage
-      .from(STORAGE_BUCKETS.derived)
-      .createSignedUrl(storagePath, 600);
-    return signed?.signedUrl ?? null;
+    return null;
   }
 
   async function resolveKey(key: string | null): Promise<string | null> {

@@ -232,14 +232,18 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     kind: w.kind, storage_bucket: STORAGE_BUCKETS.derived,
     storage_path: w.path, mime_type: w.mime, blurhash: w.blurhash ?? null,
   }));
-  const { error: mmErr } = await sb.from("asset_media_metadata").upsert({
+  // Only update storage paths for derivatives we actually generated — do not
+  // null out a path we didn't regenerate, as that would destroy the reference
+  // to a previously-stored file and cause "no fetchable image" on the next run.
+  const mmPayload: Record<string, unknown> = {
     asset_id, user_id: asset.user_id,
     blurhash: thumb?.blurhash ?? preview?.blurhash ?? null,
-    thumbnail_storage_path: thumb?.path ?? null,
-    preview_storage_path: preview?.path ?? null,
     derivatives,
     thumbnails: derivatives,
-  }, { onConflict: "asset_id" });
+  };
+  if (thumb)    mmPayload.thumbnail_storage_path = thumb.path;
+  if (preview)  mmPayload.preview_storage_path   = preview.path;
+  const { error: mmErr } = await sb.from("asset_media_metadata").upsert(mmPayload, { onConflict: "asset_id" });
   if (mmErr) console.error("generateDerived: asset_media_metadata upsert failed", { asset_id, error: mmErr.message });
 
   // Update asset row — only overwrite if we have storage-backed paths now.
