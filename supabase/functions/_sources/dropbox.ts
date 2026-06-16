@@ -203,6 +203,48 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
     return json.link as string | undefined;
   }
 
+  // Fetch a scaled JPEG from Dropbox's content API and return it as a data: URL.
+  // Used for thumbnail/preview derivatives so we never download multi-MB
+  // originals just to slice/resize them locally (Deno Edge has no canvas).
+  async function getThumbnailDataUrl(
+    path: string,
+    size: "w64h64" | "w128h128" | "w256h256" | "w480h320" | "w640h480" | "w960h640" | "w1024h768" | "w2048h1536",
+  ): Promise<string | null> {
+    try {
+      const token = await getAccessToken();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), DROPBOX_REQUEST_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch("https://content.dropboxapi.com/2/files/get_thumbnail_v2", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "Dropbox-API-Arg": JSON.stringify({
+              resource: { ".tag": "path", path },
+              format: { ".tag": "jpeg" },
+              size: { ".tag": size },
+              mode: { ".tag": "strict" },
+            }),
+          },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.byteLength === 0) return null;
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+      return `data:image/jpeg;base64,${btoa(bin)}`;
+    } catch {
+      return null;
+    }
+  }
+
   async function mapEntry(entry: any): Promise<AssetRecord | null> {
     const name = entry.name as string;
     const mimeType = inferMimeType(name);
@@ -343,11 +385,15 @@ export const dropboxFactory = (ctx: ConnectorContext, supabase: any): SourceConn
       return mapped;
     },
     getThumbnail: async (providerAssetId) => {
+      const dataUrl = await getThumbnailDataUrl(providerAssetId, "w256h256");
+      if (dataUrl) return { url: dataUrl };
       const url = await getTemporaryLink(providerAssetId);
       if (!url) throw new Error("temporary link unavailable");
       return { url };
     },
     getPreview: async (providerAssetId) => {
+      const dataUrl = await getThumbnailDataUrl(providerAssetId, "w2048h1536");
+      if (dataUrl) return { url: dataUrl };
       const url = await getTemporaryLink(providerAssetId);
       if (!url) throw new Error("temporary link unavailable");
       return { url };
