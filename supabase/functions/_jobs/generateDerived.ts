@@ -36,7 +36,19 @@ async function fetchBytes(url: string, maxBytes = 4 * 1024 * 1024): Promise<{ by
       console.warn(`fetchBytes: response too large (${buf.byteLength} bytes > ${maxBytes}), skipping`);
       return null;
     }
-    return { bytes: new Uint8Array(buf), mime };
+    const bytes = new Uint8Array(buf);
+    // Reject obviously-truncated JPEGs (no EOI marker). Some past runs persisted
+    // sliced bytes; surface them as "no bytes" so callers retry from a different
+    // source rather than uploading a corrupt derivative.
+    if ((mime === "image/jpeg" || mime === "image/jpg") && bytes.byteLength >= 4) {
+      const startsJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+      const endsJpeg = bytes[bytes.byteLength - 2] === 0xff && bytes[bytes.byteLength - 1] === 0xd9;
+      if (startsJpeg && !endsJpeg) {
+        console.warn(`fetchBytes: jpeg missing EOI marker (${bytes.byteLength} bytes), treating as truncated`);
+        return null;
+      }
+    }
+    return { bytes, mime };
   } catch {
     return null;
   }
