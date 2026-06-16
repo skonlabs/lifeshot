@@ -107,18 +107,20 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   );
 
   // ── Vision analysis (caption + tags + objects) ─────────────────────────────
+  // TEMPORARILY DISABLED — uncomment to re-enable OpenAI vision calls.
   let caption = "";
   let tags: string[] = [];
   let visionError: string | null = null;
+  void visionError; // suppress unused-variable lint
 
-  try {
-    const capResult = await providers.ai.caption({ url });
-    caption = capResult.caption;
-    tags = capResult.tags ?? [];
-  } catch (e: any) {
-    visionError = String(e?.message ?? e);
-    console.error("enrichAI: vision failed", { asset_id, error: visionError });
-  }
+  // try {
+  //   const capResult = await providers.ai.caption({ url });
+  //   caption = capResult.caption;
+  //   tags = capResult.tags ?? [];
+  // } catch (e: any) {
+  //   visionError = String(e?.message ?? e);
+  //   console.error("enrichAI: vision failed", { asset_id, error: visionError });
+  // }
 
   // ── Face detection & storage (face-pipeline.ts) ────────────────────────────
   //   1. analyzeAssetFaces   — Rekognition IndexFaces, raw face JSON
@@ -249,41 +251,15 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     return { asset_id, skipped: preEnrichmentWriteResetGuard.reason };
   }
 
-  // ── Retryable vision failure: throw before writing partial data ───────────
-  // The asset_ai_enrichment row already exists (written above). Throw here so
-  // the runner retries and the row is updated with real data on success.
-  if (visionError) {
-    const permanent = /invalid_image_format|unsupported image|image_parse_error|invalid image|circuit breaker open/i.test(visionError);
-    if (permanent) {
-      console.warn("enrichAI: permanent vision failure — not retrying", { asset_id, visionError });
-      // Still write empty caption/tags so the row is complete.
-      await sb.from("asset_ai_enrichment").upsert({
-        asset_id, user_id: asset.user_id, caption: "", tags: [] as unknown as string,
-      }, { onConflict: "asset_id" });
-      return { asset_id, caption_len: 0, tags: 0, vision_skipped: visionError.slice(0, 200) };
-    }
-    throw new Error(`retryable: AI enrichment failed for ${asset_id}: ${visionError}`);
-  }
+  // Vision error handling and caption/tags write are temporarily disabled
+  // while OpenAI calls are commented out above. Re-enable both when vision is
+  // turned back on.
 
-  // ── Persist caption/tags to asset_ai_enrichment ───────────────────────────
-  // faces/face_count are written separately above inside the face detection
-  // block so a run where Rekognition is skipped does not overwrite previously
-  // detected faces with an empty array.
-  const { error: upsertErr } = await sb.from("asset_ai_enrichment").upsert({
-    asset_id,
-    user_id: asset.user_id,
-    caption,
-    tags:    tags as unknown as string,
-  }, { onConflict: "asset_id" });
-  if (upsertErr) {
-    console.error("enrichAI: asset_ai_enrichment upsert failed", { asset_id, error: upsertErr.message });
-  }
-
-  await enqueueJob("indexSearchDocument", {
-    userId: ctx.userId,
-    payload: { asset_id },
-    idempotencyKey: `index:${asset_id}`,
-  });
+  // await enqueueJob("indexSearchDocument", {
+  //   userId: ctx.userId,
+  //   payload: { asset_id },
+  //   idempotencyKey: `index:${asset_id}`,
+  // });
 
   return {
     asset_id,
