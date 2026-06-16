@@ -29,6 +29,26 @@ export type JobHandler = (ctx: JobContext) => Promise<unknown>;
 
 const WORKER_ID = `worker-${crypto.randomUUID().slice(0, 8)}`;
 const DEFAULT_BATCH = 16;
+// Soft per-job deadline. Supabase Edge Functions have a hard wall-time limit
+// (~150s CPU). We race the handler against a shorter deadline so we can call
+// fail_job ourselves with a meaningful error instead of letting the runtime
+// kill the process — which leaves the row status='running', locked_at=set,
+// last_error=null and forces sweep_stuck_jobs to clean up ~10 min later.
+const JOB_SOFT_DEADLINE_MS = 120_000;
+
+class JobTimeoutError extends Error {
+  constructor(ms: number) { super(`retryable: job exceeded soft deadline ${ms}ms`); }
+}
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new JobTimeoutError(ms)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
 
 export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {}): Promise<{ claimed: number; ok: number; failed: number }> {
   await ensureBuckets();
@@ -50,10 +70,13 @@ export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {})
       failed += 1; return;
     }
     try {
-      const result = await timed("job", { name: job.job_name, lane: job.lane }, () => handler({
-        jobId: job.id, userId: job.user_id, payload: job.payload ?? {},
-        attempt: job.attempts, idempotencyKey: job.idempotency_key,
-      }));
+      const result = await withDeadline(
+        timed("job", { name: job.job_name, lane: job.lane }, () => handler({
+          jobId: job.id, userId: job.user_id, payload: job.payload ?? {},
+          attempt: job.attempts, idempotencyKey: job.idempotency_key,
+        })),
+        JOB_SOFT_DEADLINE_MS,
+      );
       await sb.rpc("complete_job", { _id: job.id, _result: result ?? {} });
       if (job.idempotency_key) await recordLedger(job.job_name, job.idempotency_key, job.user_id, result);
       metric("job.completed", 1, { name: job.job_name });
