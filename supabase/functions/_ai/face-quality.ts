@@ -2,8 +2,8 @@
 
 export const FACE_CLUSTER_QUALITY = {
   minConfidence: 90,
-  minEyesOpenConfidence: 90,
-  minFaceOccludedConfidence: 90,
+  minEyesOpenConfidence: 60,       // Rekognition attribute confidence, not detection confidence
+  minFaceOccludedConfidence: 60,   // Rekognition attribute confidence, not detection confidence
   maxYaw: 30,
   maxPitch: 25,
   minSharpness: 35,
