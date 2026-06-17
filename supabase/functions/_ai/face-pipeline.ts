@@ -333,8 +333,8 @@ export async function analyzeAssetFaces(opts: {
     userId: opts.userId,
     collectionId,
     faceRecords,
-    imageBytes: rekognitionImage.bytes,  // JPEG — same image Rekognition accepted, always canvas-decodable
-    imageMime: rekognitionImage.mime,
+    imageBytes: rekognitionSource.bytes,  // full-res JPEG for sharp crops (not the resized Rekognition copy)
+    imageMime: rekognitionSource.mime,
   };
 }
 
