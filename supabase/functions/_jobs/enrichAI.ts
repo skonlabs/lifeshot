@@ -110,8 +110,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   // This upsert is intentionally minimal and runs unconditionally so that
   // every active asset always has a record — even if vision or face detection
   // fails. Subsequent upserts below fill in caption/tags/faces as they succeed.
+  // Explicit face_count: null avoids inheriting a DEFAULT 0 from the schema
+  // on databases where the nullable migration hasn't been applied yet.
+  // ignoreDuplicates: true ensures an existing row (with real face_count) is
+  // never overwritten by this bootstrap insert.
   await sb.from("asset_ai_enrichment").upsert(
-    { asset_id, user_id: asset.user_id },
+    { asset_id, user_id: asset.user_id, face_count: null },
     { onConflict: "asset_id", ignoreDuplicates: true },
   );
 

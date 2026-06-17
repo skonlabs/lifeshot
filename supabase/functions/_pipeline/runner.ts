@@ -53,7 +53,19 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {}): Promise<{ claimed: number; ok: number; failed: number }> {
   await ensureBuckets();
   const sb = serviceClient();
-  const batch = opts.batch ?? DEFAULT_BATCH;
+
+  // Global concurrency cap: never run more than 25 jobs simultaneously across
+  // all worker invocations. Count currently-running jobs and only claim enough
+  // to stay at or under the cap.
+  const MAX_CONCURRENT = 25;
+  const { count: runningCount } = await sb
+    .from("job_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "running");
+  const canClaim = Math.max(0, MAX_CONCURRENT - (runningCount ?? 0));
+  if (canClaim === 0) return { claimed: 0, ok: 0, failed: 0 };
+
+  const batch = Math.min(opts.batch ?? DEFAULT_BATCH, canClaim);
   const lanes = opts.lanes ?? null;
   const { data, error } = await sb.rpc("claim_pending_jobs", {
     _limit: batch, _worker_id: WORKER_ID, _lanes: lanes,
