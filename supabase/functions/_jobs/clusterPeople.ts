@@ -153,13 +153,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // as the initial cover for a new person, and subsequent lower-quality matches
   // are simply linked without displacing the cover.
 
-  for (const row of qualifying) {
-    // Abort if a reset has happened mid-run.
-    const guard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
-    if (!guard.valid) {
-      return { user_id: uid, faces_processed: qualifying.length, people_created: created, detections_linked: linked, skipped, stopped: guard.reason };
-    }
+  // Check reset guard once before the loop — O(n) per-face DB calls caused
+  // timeouts on accounts with thousands of qualifying faces.
+  const preLoopGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
+  if (!preLoopGuard.valid) {
+    return { user_id: uid, faces_processed: 0, people_created: 0, detections_linked: 0, skipped: qualifying.length, stopped: preLoopGuard.reason };
+  }
 
+  for (const row of qualifying) {
     const faceId = row.face.FaceId as string;
 
     // (a) Already assigned to a person.

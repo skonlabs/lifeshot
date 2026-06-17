@@ -113,18 +113,36 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // 2. Fall back to existing thumbnail_cache_key (if it's a URL, download it).
+  // 2a. thumbnail_cache_key as HTTP URL
   if (!thumbBytes && asset.thumbnail_cache_key && /^https?:\/\//.test(asset.thumbnail_cache_key)) {
     thumbBytes = await fetchBytes(asset.thumbnail_cache_key, 2 * 1024 * 1024);
   }
 
-  // 3. Last resort: when there's no thumbnail URL at all, fetch the preview
-  //    URL and use it as the thumbnail too. This unblocks assets where the
-  //    listing step only populated `proxy_cache_key` (the original/full-res
-  //    URL) without a separate small thumbnail — common for Dropbox, OneDrive
-  //    and any source that doesn't expose a dedicated thumbnail endpoint.
+  // 2b. thumbnail_cache_key as storage path (local_ios / export_import uploads)
+  if (!thumbBytes && asset.thumbnail_cache_key && !/^https?:\/\//.test(asset.thumbnail_cache_key)) {
+    for (const bucket of [STORAGE_BUCKETS.uploads, STORAGE_BUCKETS.derived]) {
+      const { data: signed } = await sb.storage.from(bucket).createSignedUrl(asset.thumbnail_cache_key, 60);
+      if (signed?.signedUrl) {
+        thumbBytes = await fetchBytes(signed.signedUrl, 2 * 1024 * 1024);
+        if (thumbBytes) break;
+      }
+    }
+  }
+
+  // 3a. proxy_cache_key as HTTP URL — last resort thumbnail fallback.
   if (!thumbBytes && asset.proxy_cache_key && /^https?:\/\//.test(asset.proxy_cache_key)) {
     thumbBytes = await fetchBytes(asset.proxy_cache_key, 2 * 1024 * 1024);
+  }
+
+  // 3b. proxy_cache_key as storage path
+  if (!thumbBytes && asset.proxy_cache_key && !/^https?:\/\//.test(asset.proxy_cache_key)) {
+    for (const bucket of [STORAGE_BUCKETS.uploads, STORAGE_BUCKETS.derived]) {
+      const { data: signed } = await sb.storage.from(bucket).createSignedUrl(asset.proxy_cache_key, 60);
+      if (signed?.signedUrl) {
+        thumbBytes = await fetchBytes(signed.signedUrl, 2 * 1024 * 1024);
+        if (thumbBytes) break;
+      }
+    }
   }
 
   if (thumbBytes) {
@@ -170,14 +188,15 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     previewBytes = await fetchBytes(asset.proxy_cache_key, 8 * 1024 * 1024);
   }
 
-  // Fallback 2: proxy_cache_key as a storage path in the derived bucket
-  // (set by a previous generateDerived run that generated preview successfully)
+  // Fallback 2: proxy_cache_key as a storage path — try uploads first (local_ios /
+  // export_import originals), then derived (a previous generateDerived run).
   if (!previewBytes && asset.proxy_cache_key && !/^https?:\/\//.test(asset.proxy_cache_key)) {
-    const { data: signed } = await sb.storage
-      .from(STORAGE_BUCKETS.derived)
-      .createSignedUrl(asset.proxy_cache_key, 60);
-    if (signed?.signedUrl) {
-      previewBytes = await fetchBytes(signed.signedUrl, 8 * 1024 * 1024);
+    for (const bucket of [STORAGE_BUCKETS.uploads, STORAGE_BUCKETS.derived]) {
+      const { data: signed } = await sb.storage.from(bucket).createSignedUrl(asset.proxy_cache_key, 60);
+      if (signed?.signedUrl) {
+        previewBytes = await fetchBytes(signed.signedUrl, 8 * 1024 * 1024);
+        if (previewBytes) break;
+      }
     }
   }
 

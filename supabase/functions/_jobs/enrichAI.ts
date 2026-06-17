@@ -69,10 +69,10 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // cause "no fetchable image" errors when enrichAI runs after expiry.
     const storagePath = kind === "preview" ? mm?.preview_storage_path : mm?.thumbnail_storage_path;
     if (storagePath) {
-      const { data: signed } = await sb.storage
-        .from(STORAGE_BUCKETS.derived)
-        .createSignedUrl(storagePath, 600);
-      if (signed?.signedUrl) return signed.signedUrl;
+      for (const bucket of [STORAGE_BUCKETS.derived, STORAGE_BUCKETS.uploads]) {
+        const { data: signed } = await sb.storage.from(bucket).createSignedUrl(storagePath, 600);
+        if (signed?.signedUrl) return signed.signedUrl;
+      }
     }
     const directUrl = kind === "preview" ? mm?.preview_url : mm?.thumbnail_url;
     if (directUrl && /^https?:\/\//.test(directUrl)) return directUrl;
@@ -82,10 +82,14 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
   async function resolveKey(key: string | null): Promise<string | null> {
     if (!key) return null;
     if (/^https?:\/\//.test(key)) return key;
-    const { data: signed } = await sb.storage
-      .from(STORAGE_BUCKETS.derived)
-      .createSignedUrl(key, 600);
-    return signed?.signedUrl ?? null;
+    // Try derived bucket first (generated thumbnails/previews), then uploads
+    // bucket (original device uploads). local_ios and export_import assets store
+    // originals in the uploads bucket, not derived.
+    for (const bucket of [STORAGE_BUCKETS.derived, STORAGE_BUCKETS.uploads]) {
+      const { data: signed } = await sb.storage.from(bucket).createSignedUrl(key, 600);
+      if (signed?.signedUrl) return signed.signedUrl;
+    }
+    return null;
   }
 
   const originalImageUrl  = await resolveKey(asset.proxy_cache_key);
@@ -137,7 +141,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // Write face_count=0 so NULL always means "not yet processed / needs re-run".
     await sb.from("asset_ai_enrichment").upsert(
       { asset_id, user_id: asset.user_id, face_count: 0 },
-      { onConflict: "asset_id" },
+      { onConflict: "asset_id", ignoreDuplicates: true },
     );
   } else {
     // For face detection, prefer original → preview → thumbnail in that order.
@@ -222,16 +226,10 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       await sb.from("assets").update({ face_scanned_at: new Date().toISOString() }).eq("id", asset_id);
     }
 
-    const preFinalizeResetGuard = await checkFaceResetGuard(sb, {
-      userId: asset.user_id,
-      jobId: ctx.jobId,
-      resetAt: privacy?.face_pipeline_reset_at ?? null,
-    });
-    if (!preFinalizeResetGuard.valid) {
-      return { asset_id, skipped: preFinalizeResetGuard.reason };
-    }
-
     // Enqueue clusterPeople so the People page is updated promptly.
+    // NOTE: we intentionally do NOT re-check the reset guard here. Face writes
+    // are already committed above; skipping clusterPeople would leave asset_faces
+    // rows that are never clustered into people. A reset clears people separately.
     // Use a 5-minute time-window key so clusterPeople re-enqueues throughout a
     // long force sync. A per-run key caused a race: the first enrichAI to
     // complete would enqueue clusterPeople, it would run and write a ledger
@@ -245,15 +243,6 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       payload: { user_id: asset.user_id, asset_id },
       idempotencyKey: `people:${asset.user_id}:${reclusterScope}`,
     });
-  }
-
-  const preEnrichmentWriteResetGuard = await checkFaceResetGuard(sb, {
-    userId: asset.user_id,
-    jobId: ctx.jobId,
-    resetAt: privacy?.face_pipeline_reset_at ?? null,
-  });
-  if (!preEnrichmentWriteResetGuard.valid) {
-    return { asset_id, skipped: preEnrichmentWriteResetGuard.reason };
   }
 
   // Vision error handling and caption/tags write are temporarily disabled

@@ -534,7 +534,7 @@ export async function normalizeMetadata(ctx: JobContext): Promise<unknown> {
         .maybeSingle(),
     ]);
     const needsFaceRetry =
-      (enrichment?.caption && enrichment.face_count === null) ||
+      enrichment?.face_count === null ||
       (enrichment?.face_count === 0 && !assetMeta?.face_scanned_at);
     if (needsFaceRetry) {
       aiSuffix = `:face-retry:${asset_id}`;
