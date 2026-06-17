@@ -223,20 +223,23 @@ export async function analyzeAssetFaces(opts: {
     return null;
   }
 
-  // Fetch full-resolution image for crop generation (original → preview → thumbnail).
-  // Original and preview are preferred — thumbnails produce lower-quality crops
-  // but are kept as a last resort so assets without a preview can still be processed.
-  let cropImage: { bytes: Uint8Array; mime: string } | null = null;
-  if (opts.originalImageUrl) cropImage = await fetchImageFull(opts.originalImageUrl, true);
-  if (!cropImage && opts.previewImageUrl) cropImage = await fetchImageFull(opts.previewImageUrl);
-  if (!cropImage && opts.thumbnailImageUrl) cropImage = await fetchImageFull(opts.thumbnailImageUrl);
-  if (!cropImage) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
+  // Fetch image for Rekognition — must be JPEG/PNG/WebP (not HEIC).
+  // Priority: original (if supported mime) → preview → thumbnail.
+  // The image that Rekognition successfully accepts is guaranteed to be
+  // canvas-decodable, so we reuse it for face crop generation too.
+  let rekognitionSource: { bytes: Uint8Array; mime: string } | null = null;
+  if (opts.originalImageUrl) rekognitionSource = await fetchImageFull(opts.originalImageUrl, true);
+  if (!rekognitionSource && opts.previewImageUrl) rekognitionSource = await fetchImageFull(opts.previewImageUrl, true);
+  if (!rekognitionSource && opts.thumbnailImageUrl) rekognitionSource = await fetchImageFull(opts.thumbnailImageUrl, true);
+  if (!rekognitionSource) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
 
-  // Resize for Rekognition if the full-res image exceeds the 5 MB API limit.
-  let rekognitionImage: { bytes: Uint8Array; mime: string } = cropImage;
-  if (cropImage.bytes.byteLength > REKOGNITION_MAX_BYTES) {
-    console.warn(`analyzeAssetFaces: resizing image (${cropImage.bytes.byteLength} bytes) for Rekognition`);
-    const resized = await resizeToFit(cropImage.bytes, cropImage.mime);
+  // Resize for Rekognition if the image exceeds the 5 MB API limit.
+  // Output of resizeToFit is always JPEG, so after this point rekognitionImage
+  // is guaranteed to be a canvas-decodable JPEG regardless of original format.
+  let rekognitionImage: { bytes: Uint8Array; mime: string } = rekognitionSource;
+  if (rekognitionSource.bytes.byteLength > REKOGNITION_MAX_BYTES) {
+    console.warn(`analyzeAssetFaces: resizing image (${rekognitionSource.bytes.byteLength} bytes) for Rekognition`);
+    const resized = await resizeToFit(rekognitionSource.bytes, rekognitionSource.mime);
     if (!resized) throw new Error(`retryable: analyzeAssetFaces: could not resize image for asset ${opts.assetId}`);
     rekognitionImage = resized;
   }
@@ -330,8 +333,8 @@ export async function analyzeAssetFaces(opts: {
     userId: opts.userId,
     collectionId,
     faceRecords,
-    imageBytes: cropImage.bytes,  // full-res for sharp crops
-    imageMime: cropImage.mime,
+    imageBytes: rekognitionImage.bytes,  // JPEG — same image Rekognition accepted, always canvas-decodable
+    imageMime: rekognitionImage.mime,
   };
 }
 
