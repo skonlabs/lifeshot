@@ -4,10 +4,10 @@ export const FACE_CLUSTER_QUALITY = {
   minConfidence: 90,
   minEyesOpenConfidence: 90,
   minFaceOccludedConfidence: 90,
-  maxYaw: 45,        // relaxed from 30 — slightly-turned faces are still usable
-  maxPitch: 35,      // relaxed from 25
-  minSharpness: 20,  // relaxed from 35 — slightly soft photos still cluster well
-  minBrightness: 15, // relaxed from 25
+  maxYaw: 30,
+  maxPitch: 25,
+  minSharpness: 35,
+  minBrightness: 25,
 };
 
 function toNumber(value: unknown): number | null {
