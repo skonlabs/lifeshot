@@ -210,7 +210,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       aria-label="Face thumbnail"
     >
       <img
-        src={cover.thumbnail_url}
+        src={zoomSrc}
         alt=""
         loading="lazy"
         decoding="async"
