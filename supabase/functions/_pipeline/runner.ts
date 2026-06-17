@@ -54,10 +54,10 @@ export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {})
   await ensureBuckets();
   const sb = serviceClient();
 
-  // Global concurrency cap: never run more than 25 jobs simultaneously across
+  // Global concurrency cap: never run more than 50 jobs simultaneously across
   // all worker invocations. Count currently-running jobs and only claim enough
   // to stay at or under the cap.
-  const MAX_CONCURRENT = 25;
+  const MAX_CONCURRENT = 50;
   const { count: runningCount } = await sb
     .from("job_queue")
     .select("id", { count: "exact", head: true })

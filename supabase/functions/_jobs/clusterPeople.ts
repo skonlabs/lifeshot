@@ -6,7 +6,9 @@ import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
 // Faces must exceed this Rekognition similarity to be merged into the same person.
-const SIMILARITY_THRESHOLD = 90;
+// 80% balances recall (same person across different photos/lighting/ages) against
+// precision (avoiding false merges of different people who look similar).
+const SIMILARITY_THRESHOLD = 80;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
