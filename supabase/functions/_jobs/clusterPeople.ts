@@ -290,7 +290,48 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // ── 4. Unlink asset_faces that no longer pass the quality gate ───────────────
+  // ── 4. Merge duplicate people (same physical person split across two rows) ────
+  // Two person rows can exist for the same physical person when concurrent
+  // clusterPeople runs both created a "new person" for the same face before
+  // either run had written the other's person_id to faceIdToPersonId.
+  // Strategy: for each person, SearchFaces for their representative face. If the
+  // result points to a DIFFERENT person in peopleById, merge the lower-quality
+  // person into the higher-quality one (copy face_ids, delete the loser).
+  const mergedPersonIds = new Set<string>(); // already absorbed — skip as source
+  for (const [pid, person] of peopleById) {
+    if (mergedPersonIds.has(pid) || !person.face?.FaceId) continue;
+    let matches: Array<{ faceId: string; similarity: number }> = [];
+    try {
+      matches = await searchFaces({
+        collectionId,
+        faceId: person.face.FaceId as string,
+        faceMatchThreshold: SIMILARITY_THRESHOLD,
+        maxFaces: 10,
+      });
+    } catch { continue; }
+    for (const m of matches) {
+      if (m.faceId === person.face.FaceId || m.similarity < SIMILARITY_THRESHOLD) continue;
+      const otherPersonId = faceIdToPersonId.get(m.faceId);
+      if (!otherPersonId || otherPersonId === pid || mergedPersonIds.has(otherPersonId)) continue;
+      const other = peopleById.get(otherPersonId);
+      if (!other) continue;
+      // Keep the higher-quality person as winner; absorb the other.
+      const keepId   = faceQualityRank(person.face) >= faceQualityRank(other.face) ? pid : otherPersonId;
+      const dropId   = keepId === pid ? otherPersonId : pid;
+      const keepPerson = peopleById.get(keepId)!;
+      const dropPerson = peopleById.get(dropId)!;
+      const merged = uniqueFaceIds([...keepPerson.face_ids, ...dropPerson.face_ids]);
+      keepPerson.face_ids = merged;
+      for (const fid of merged) faceIdToPersonId.set(fid, keepId);
+      await sb.from("people").update({ face_ids: merged, updated_at: now }).eq("id", keepId);
+      await sb.from("asset_faces").update({ person_id: keepId, updated_at: now }).eq("person_id", dropId).eq("user_id", uid);
+      await sb.from("people").delete().eq("id", dropId);
+      mergedPersonIds.add(dropId);
+      peopleById.delete(dropId);
+    }
+  }
+
+  // ── 6. Unlink asset_faces that no longer pass the quality gate ───────────────
   const disqualifiedRows = assetFaceRows.filter(
     (r) => r.person_id && !isUsableIndexedFace(r.face),
   );
@@ -299,7 +340,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     await sb.from("asset_faces").update({ person_id: null, updated_at: now }).in("id", ids);
   }
 
-  // ── 5. Delete people rows with no qualifying linked faces (orphans) ───────────
+  // ── 7. Delete people rows with no qualifying linked faces (orphans) ───────────
   const linkedPersonIds = new Set(
     assetFaceRows
       .filter((r) => r.person_id && isUsableIndexedFace(r.face))
@@ -317,6 +358,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     people_created:     created,
     detections_linked:  linked,
     skipped,
+    duplicates_merged:  mergedPersonIds.size,
     orphans_removed:    orphanIds.length,
   };
 }
