@@ -220,12 +220,13 @@ export async function analyzeAssetFaces(opts: {
     return null;
   }
 
-  // Fetch full-resolution image for crop generation (original → preview).
-  // Thumbnails are intentionally excluded — they are too small to produce
-  // sharp face crops. Rekognition accuracy also improves with higher-res input.
+  // Fetch full-resolution image for crop generation (original → preview → thumbnail).
+  // Original and preview are preferred — thumbnails produce lower-quality crops
+  // but are kept as a last resort so assets without a preview can still be processed.
   let cropImage: { bytes: Uint8Array; mime: string } | null = null;
   if (opts.originalImageUrl) cropImage = await fetchImageFull(opts.originalImageUrl, true);
   if (!cropImage && opts.previewImageUrl) cropImage = await fetchImageFull(opts.previewImageUrl);
+  if (!cropImage && opts.thumbnailImageUrl) cropImage = await fetchImageFull(opts.thumbnailImageUrl);
   if (!cropImage) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
 
   // Resize for Rekognition if the full-res image exceeds the 5 MB API limit.
