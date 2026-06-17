@@ -226,11 +226,29 @@ app.get("/people", async (c) => {
           ?? asset?.proxy_cache_key
           ?? null,
       );
+      // High-res URL for CSS zoom fallback — preview first (full-res), then thumbnail.
+      // When face_crop is null the browser zooms this image to isolate the face region;
+      // using a small thumbnail causes a 12× upscale → blurry. Preview is the original
+      // re-hosted at full resolution and produces a sharp crop even for small faces.
+      const zoomUrl = await resolveThumbUrl(
+        c,
+        supa,
+        uid,
+        aid,
+        media?.preview_storage_path
+          ?? media?.preview_url
+          ?? asset?.proxy_cache_key
+          ?? media?.thumbnail_storage_path
+          ?? media?.thumbnail_url
+          ?? asset?.thumbnail_cache_key
+          ?? null,
+      );
       const faceCrop = e.best?.face_crop ?? null;
       const cover = (faceCrop || thumbUrl)
         ? {
             face_crop: faceCrop,
             thumbnail_url: thumbUrl,
+            zoom_url: zoomUrl ?? thumbUrl,
             face_bbox: e.best?.face_bbox ?? null,
             width: asset?.width ?? null,
             height: asset?.height ?? null,
