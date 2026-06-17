@@ -9,6 +9,10 @@ import { checkFaceResetGuard } from "./faceResetGuard.ts";
 // 80% balances recall (same person across different photos/lighting/ages) against
 // precision (avoiding false merges of different people who look similar).
 const SIMILARITY_THRESHOLD = 80;
+// Lower threshold used only in the post-loop duplicate-person merge pass.
+// Two person rows that already exist can be merged more aggressively because
+// both faces have passed the quality gate independently.
+const MERGE_SIMILARITY_THRESHOLD = 70;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
@@ -307,12 +311,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       matches = await searchFaces({
         collectionId,
         faceId: person.face.FaceId as string,
-        faceMatchThreshold: SIMILARITY_THRESHOLD,
+        faceMatchThreshold: MERGE_SIMILARITY_THRESHOLD,
         maxFaces: 10,
       });
     } catch { continue; }
     for (const m of matches) {
-      if (m.faceId === person.face.FaceId || m.similarity < SIMILARITY_THRESHOLD) continue;
+      if (m.faceId === person.face.FaceId || m.similarity < MERGE_SIMILARITY_THRESHOLD) continue;
       const otherPersonId = faceIdToPersonId.get(m.faceId);
       if (!otherPersonId || otherPersonId === pid || mergedPersonIds.has(otherPersonId)) continue;
       const other = peopleById.get(otherPersonId);
