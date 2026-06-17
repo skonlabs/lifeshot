@@ -178,7 +178,10 @@ async function cropFace(
     const sw = Math.min(W, cx + half) - sx;
     const sh = Math.min(H, cy + half) - sy;
 
-    const size = Math.min(512, Math.round(Math.max(sw, sh)));
+    // Always output at exactly 512×512. For large faces this downscales,
+    // for small faces (group photos) this upscales — canvas handles both.
+    // Using Math.min here was the bug: small faces produced tiny blurry crops.
+    const size = 512;
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d") as any;
     ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
