@@ -276,7 +276,12 @@ export async function analyzeAssetFaces(opts: {
         .filter((m) => {
           if (m.faceId === r.faceId || m.similarity < DEDUP_SIMILARITY || seen.has(m.faceId)) return false;
           if (validKnownFaceIds.has(m.faceId)) return true;
-          toDelete.add(m.faceId);
+          // RACE-SAFE: m.faceId is unknown to us — it may belong to another
+          // asset_faces row written by a concurrent enrichAI job between when
+          // we snapshotted validKnownFaceIds and now. NEVER delete it from
+          // the Rekognition collection: that would orphan the other asset's
+          // FaceId and break clusterPeople's SearchFaces forever. Just skip
+          // it as a dedup candidate.
           return false;
         })
         .sort((a, b) => b.similarity - a.similarity)[0];
