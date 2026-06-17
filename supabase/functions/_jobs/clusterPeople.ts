@@ -6,13 +6,12 @@ import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
 
 // Faces must exceed this Rekognition similarity to be merged into the same person.
-// 80% balances recall (same person across different photos/lighting/ages) against
-// precision (avoiding false merges of different people who look similar).
-const SIMILARITY_THRESHOLD = 80;
+// 70% is the right balance for a family photo album: same person across different
+// years, lighting, and expressions commonly scores 70-85% in Rekognition.
+// 80%+ is too strict and splits one real person into many entries.
+const SIMILARITY_THRESHOLD = 70;
 // Lower threshold used only in the post-loop duplicate-person merge pass.
-// Two person rows that already exist can be merged more aggressively because
-// both faces have passed the quality gate independently.
-const MERGE_SIMILARITY_THRESHOLD = 70;
+const MERGE_SIMILARITY_THRESHOLD = 65;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
