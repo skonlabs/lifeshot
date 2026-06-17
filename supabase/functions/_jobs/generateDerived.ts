@@ -230,12 +230,17 @@ export async function generateDerived(ctx: JobContext): Promise<unknown> {
     // asset_media_metadata so enrichAI / ocrAsset can still resolve them.
     const thumbKey = asset.thumbnail_cache_key ?? asset.proxy_cache_key ?? null;
     const previewKey = asset.proxy_cache_key ?? null;
+    // Only write HTTP URLs here. Non-http paths belong to the uploads bucket
+    // (local_ios / export_import originals) — writing them to _storage_path
+    // fields would confuse signDerivative, which signs against the derived
+    // bucket and can't distinguish which bucket a bare path belongs to.
+    // enrichAI.resolveKey handles non-http asset keys directly via both buckets.
     await sb.from("asset_media_metadata").upsert({
       asset_id, user_id: asset.user_id,
       thumbnail_url: thumbKey && /^https?:\/\//.test(thumbKey) ? thumbKey : null,
-      thumbnail_storage_path: thumbKey && !/^https?:\/\//.test(thumbKey) ? thumbKey : null,
+      thumbnail_storage_path: null,
       preview_url: previewKey && /^https?:\/\//.test(previewKey) ? previewKey : null,
-      preview_storage_path: previewKey && !/^https?:\/\//.test(previewKey) ? previewKey : null,
+      preview_storage_path: null,
     }, { onConflict: "asset_id" });
     // Only reuse provider-served URLs when they are actual HTTP URLs.
     // Storage paths (no http:// prefix) cannot be resolved by enrichAI via

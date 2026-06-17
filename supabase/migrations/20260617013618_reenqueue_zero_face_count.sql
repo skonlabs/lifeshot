@@ -3,12 +3,10 @@
 -- After the code fix that tries both derived and uploads storage buckets,
 -- these assets should now resolve their images and complete Rekognition.
 --
--- Targets:
---   1. face_count=0 regardless of face_scanned_at (Rekognition may have run
---      on a bad/missing image and returned 0 faces).
---   2. face_count IS NULL (bootstrap-only rows — job was killed before Rekognition).
---
--- Only photo/live_photo/animation — videos are legitimately face_count=0.
+-- IMPORTANT: Only insert new jobs for assets that have NO existing
+-- pending/running enrichAI job. Two concurrent enrichAI jobs for the same
+-- asset both call Rekognition IndexFaces, creating duplicate FaceIds that
+-- become permanently orphaned in the collection and corrupt clusterPeople.
 
 insert into public.job_queue (
   user_id, job_name, payload, lane, priority,
@@ -28,6 +26,15 @@ from public.assets a
 join public.asset_ai_enrichment e on e.asset_id = a.id
 where a.media_type in ('photo', 'live_photo', 'animation')
   and (e.face_count = 0 or e.face_count is null)
+  -- Skip assets that already have a pending or running enrichAI job — running
+  -- two IndexFaces calls concurrently for the same asset orphans FaceIds in
+  -- the Rekognition collection and causes duplicate people records.
+  and not exists (
+    select 1 from public.job_queue jq
+    where jq.job_name = 'enrichAI'
+      and jq.status in ('pending', 'running')
+      and jq.payload->>'asset_id' = a.id::text
+  )
 on conflict (idempotency_key) do nothing;
 
 -- Also enqueue generateDerived to rebuild derivatives from the uploads bucket
@@ -52,6 +59,12 @@ left join public.asset_media_metadata mm on mm.asset_id = a.id
 where a.media_type in ('photo', 'live_photo', 'animation')
   and (e.face_count = 0 or e.face_count is null)
   and mm.preview_storage_path is null
+  and not exists (
+    select 1 from public.job_queue jq
+    where jq.job_name = 'generateDerived'
+      and jq.status in ('pending', 'running')
+      and jq.payload->>'asset_id' = a.id::text
+  )
 on conflict (idempotency_key) do nothing;
 
 select

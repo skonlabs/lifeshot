@@ -155,12 +155,25 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   // Check reset guard once before the loop — O(n) per-face DB calls caused
   // timeouts on accounts with thousands of qualifying faces.
+  // Also re-check every 50 faces so a reset triggered mid-run is detected
+  // within one batch rather than after the full loop completes.
   const preLoopGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
   if (!preLoopGuard.valid) {
     return { user_id: uid, faces_processed: 0, people_created: 0, detections_linked: 0, skipped: qualifying.length, stopped: preLoopGuard.reason };
   }
 
-  for (const row of qualifying) {
+  for (let faceIdx = 0; faceIdx < qualifying.length; faceIdx++) {
+    const row = qualifying[faceIdx];
+
+    // Re-check reset guard every 50 faces to catch mid-run resets without
+    // incurring a DB round-trip on every iteration.
+    if (faceIdx > 0 && faceIdx % 50 === 0) {
+      const midGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
+      if (!midGuard.valid) {
+        return { user_id: uid, faces_processed: faceIdx, people_created: created, detections_linked: linked, skipped, stopped: midGuard.reason };
+      }
+    }
+
     const faceId = row.face.FaceId as string;
 
     // (a) Already assigned to a person.

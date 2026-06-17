@@ -67,12 +67,12 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     // Prefer storage path (our bucket, long-lived signed URL) over direct provider
     // URL — provider URLs (Google Photos, Dropbox etc.) expire in ~1 hour and
     // cause "no fetchable image" errors when enrichAI runs after expiry.
+    // _storage_path fields are always derived-bucket paths (generateDerived
+    // no longer writes uploads-bucket paths to asset_media_metadata).
     const storagePath = kind === "preview" ? mm?.preview_storage_path : mm?.thumbnail_storage_path;
     if (storagePath) {
-      for (const bucket of [STORAGE_BUCKETS.derived, STORAGE_BUCKETS.uploads]) {
-        const { data: signed } = await sb.storage.from(bucket).createSignedUrl(storagePath, 600);
-        if (signed?.signedUrl) return signed.signedUrl;
-      }
+      const { data: signed } = await sb.storage.from(STORAGE_BUCKETS.derived).createSignedUrl(storagePath, 600);
+      if (signed?.signedUrl) return signed.signedUrl;
     }
     const directUrl = kind === "preview" ? mm?.preview_url : mm?.thumbnail_url;
     if (directUrl && /^https?:\/\//.test(directUrl)) return directUrl;
