@@ -10,6 +10,7 @@ import {
   parseDetectedFaces,
   storeFaceResults,
 } from "../_ai/face-pipeline.ts";
+import { getConnector } from "../_sources/registry.ts";
 
 export async function enrichAI(ctx: JobContext): Promise<unknown> {
   const sb = serviceClient();
@@ -160,12 +161,54 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       });
     }
 
+    // Resolve a TRUE full-resolution original URL via the source connector
+    // (e.g. Google Photos =d). Used only as the source bytes for face crop
+    // generation — Rekognition detection still runs on the smaller preview.
+    // Best-effort: any failure here silently falls back to today's behavior.
+    let cropSourceUrl: string | null = null;
+    try {
+      const { data: ref } = await sb.from("asset_source_refs")
+        .select("source_account_id, source_asset_id")
+        .eq("asset_id", asset_id)
+        .order("is_primary", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (ref?.source_account_id && ref?.source_asset_id) {
+        const { data: acct } = await sb.from("source_accounts")
+          .select("provider_id, provider_kind")
+          .eq("id", ref.source_account_id)
+          .single();
+        let providerKind: any = acct?.provider_kind;
+        if (!providerKind && acct?.provider_id) {
+          const { data: pr } = await sb.from("source_providers")
+            .select("kind").eq("id", acct.provider_id).single();
+          providerKind = pr?.kind;
+        }
+        // Skip connectors whose "original" already lives in our uploads bucket
+        // (proxy_cache_key already points at the full-res file).
+        if (providerKind && providerKind !== "local_ios" && providerKind !== "export_import") {
+          const conn = getConnector(providerKind, {
+            source_account_id: ref.source_account_id,
+            user_id: asset.user_id,
+            provider_kind: providerKind,
+          }, sb);
+          const token = await conn.getOriginalAccessToken(ref.source_asset_id).catch(() => null);
+          if (token?.url) cropSourceUrl = token.url;
+        }
+      }
+    } catch (e: any) {
+      console.warn("enrichAI: hi-res crop source lookup failed (non-fatal)", {
+        asset_id, error: String(e?.message ?? e),
+      });
+    }
+
     let analysis: Awaited<ReturnType<typeof analyzeAssetFaces>>;
     try {
       analysis = await analyzeAssetFaces({
         originalImageUrl,
         previewImageUrl,
         thumbnailImageUrl,
+        cropSourceUrl,
         assetId: asset_id,
         userId: asset.user_id,
       });
