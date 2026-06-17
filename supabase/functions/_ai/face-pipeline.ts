@@ -215,6 +215,14 @@ export async function analyzeAssetFaces(opts: {
   originalImageUrl: string | null;
   previewImageUrl: string | null;
   thumbnailImageUrl: string | null;
+  /**
+   * Optional URL to the TRUE full-resolution original (e.g. Google Photos
+   * `=d`, Dropbox direct download). Used ONLY as the source bytes for face
+   * crop generation — not for Rekognition (which keeps using the smaller
+   * preview to stay under the 5 MB API limit). Best-effort: on fetch failure
+   * or unsupported MIME, falls back to the Rekognition source bytes.
+   */
+  cropSourceUrl?: string | null;
   assetId: string;
   userId: string;
 }): Promise<FaceAnalysis | null> {
@@ -328,13 +336,36 @@ export async function analyzeAssetFaces(opts: {
     }
   }
 
+  // Prefer the true full-resolution original for crop generation when
+  // available. The Rekognition source (provider preview, typically ~2048 px)
+  // produces soft crops for small faces in group photos because cropFace
+  // upscales to 512×512. Fetching the original on-demand gives sharp crops
+  // without changing detection behavior.
+  let cropBytes = rekognitionSource.bytes;
+  let cropMime = rekognitionSource.mime;
+  if (opts.cropSourceUrl) {
+    const hi = await fetchImageFull(opts.cropSourceUrl, true);
+    if (hi) {
+      cropBytes = hi.bytes;
+      cropMime = hi.mime;
+      console.log(
+        `analyzeAssetFaces: using hi-res crop source (${hi.bytes.byteLength} bytes, ${hi.mime})`,
+        { assetId: opts.assetId },
+      );
+    } else {
+      console.warn("analyzeAssetFaces: hi-res crop source fetch failed, falling back to preview", {
+        assetId: opts.assetId,
+      });
+    }
+  }
+
   return {
     assetId: opts.assetId,
     userId: opts.userId,
     collectionId,
     faceRecords,
-    imageBytes: rekognitionSource.bytes,  // full-res JPEG for sharp crops (not the resized Rekognition copy)
-    imageMime: rekognitionSource.mime,
+    imageBytes: cropBytes,  // hi-res original when available, else Rekognition source
+    imageMime: cropMime,
   };
 }
 
