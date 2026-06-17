@@ -582,14 +582,14 @@ app.get("/v1/:id/status", async (c) => {
   let jobStats = { ...persistedJobStats, ...queueJobStats };
   let persistedStage = typeof jobStats.stage === "string" ? jobStats.stage : null;
   const syncRunId = typeof jobStats.sync_run_id === "string" ? jobStats.sync_run_id : queueSyncRunId;
-  const activeNormalizeRes = await svc.from("job_queue")
+  const activeNormalizeQuery = svc.from("job_queue")
     .select("id", { count: "exact", head: true })
     .eq("job_name", "normalizeMetadata")
     .in("status", ["pending", "running"])
-    .contains("payload", {
-      source_account_id: id,
-      ...(syncRunId ? { sync_run_id: syncRunId } : {}),
-    });
+    .contains("payload", { source_account_id: id });
+  const activeNormalizeRes = syncRunId
+    ? await activeNormalizeQuery.contains("payload", { sync_run_id: syncRunId })
+    : await activeNormalizeQuery;
   if (activeNormalizeRes.error) throw new ApiError("internal", activeNormalizeRes.error.message);
   const activeNormalizeCount = activeNormalizeRes.count ?? 0;
   const hasLiveQueueProgress = !!queueJob && !queueLooksStale;
