@@ -173,18 +173,31 @@ async function cropFace(
     const cx   = (left + right) / 2;
     const cy   = (top  + bottom) / 2;
     const half = Math.max(right - left, bottom - top) / 2;
-    const sx = Math.max(0, cx - half);
-    const sy = Math.max(0, cy - half);
-    const sw = Math.min(W, cx + half) - sx;
-    const sh = Math.min(H, cy + half) - sy;
 
-    // Always output at exactly 512×512. For large faces this downscales,
-    // for small faces (group photos) this upscales — canvas handles both.
-    // Using Math.min here was the bug: small faces produced tiny blurry crops.
+    // Compute in-plane roll so the face is upright in the crop. Photos taken
+    // sideways (or faces tilted in frame) otherwise produce horizontal crops.
+    // Prefer the eye-line landmarks; fall back to Rekognition's Pose.Roll;
+    // default to 0 when neither is available.
+    const eyeL = landmarks ? findLandmark(landmarks, "eyeLeft")  : null;
+    const eyeR = landmarks ? findLandmark(landmarks, "eyeRight") : null;
+    let angle = 0;
+    if (eyeL && eyeR) {
+      angle = Math.atan2((eyeR.y - eyeL.y) * H, (eyeR.x - eyeL.x) * W);
+    }
+
+    // Always output at exactly 512×512. Rotate around the face center so the
+    // eye-line is horizontal in the destination, then scale the square crop
+    // window (side = 2*half in source px) to fill the canvas.
     const size = 512;
+    const scale = size / (half * 2);
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d") as any;
-    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
+    ctx.translate(size / 2, size / 2);
+    ctx.scale(scale, scale);
+    ctx.rotate(-angle);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(bitmap, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 });
     const buf = new Uint8Array(await blob.arrayBuffer());
     let b64 = "";
