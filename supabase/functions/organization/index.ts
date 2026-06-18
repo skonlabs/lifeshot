@@ -151,13 +151,15 @@ app.get("/people", async (c) => {
       .select("person_id, asset_id, face")
       .in("person_id", ids);
 
-    const usableRows = (linkRows ?? []).filter((row: any) => (
-      row.person_id && row.asset_id && isUsableIndexedFace(row.face)
-    ));
+    // Count every linked face row so the People page reflects the same total
+    // as the `people` table. The quality gate is only used to *prefer* a
+    // sharper cover; it must not drop people whose detections all failed it.
+    const linkedRows = (linkRows ?? []).filter((row: any) => row.person_id && row.asset_id);
+    const usableRows = linkedRows.filter((row: any) => isUsableIndexedFace(row.face));
 
     const perPerson = new Map<string, Set<string>>();
     const facesPerAsset = new Map<string, number>();
-    for (const r of usableRows) {
+    for (const r of linkedRows) {
       if (!r.person_id || !r.asset_id) continue;
       let s = perPerson.get(r.person_id);
       if (!s) { s = new Set<string>(); perPerson.set(r.person_id, s); }
@@ -166,8 +168,26 @@ app.get("/people", async (c) => {
     }
 
     const bestByPerson = new Map<string, PersonCoverCandidate>();
+    // First pass: pick the best *usable* (sharp, well-posed) face per person.
     for (const row of usableRows) {
       const personId = row.person_id as string;
+      const assetId = row.asset_id as string;
+      const bbox = sanitizeFaceBox(row.face?.BoundingBox ?? null);
+      const score = faceQualityScore(
+        bbox,
+        Number(row.face?.Confidence ?? 0),
+        facesPerAsset.get(assetId) ?? 1,
+      );
+      const current = bestByPerson.get(personId);
+      if (!current || score > current.score) {
+        bestByPerson.set(personId, { asset_id: assetId, face_bbox: bbox, score, face_crop: row.face?.FaceCrop ?? null });
+      }
+    }
+    // Fallback pass: for people with no usable face, still pick a cover from
+    // any linked face so they appear on the /people grid.
+    for (const row of linkedRows) {
+      const personId = row.person_id as string;
+      if (bestByPerson.has(personId)) continue;
       const assetId = row.asset_id as string;
       const bbox = sanitizeFaceBox(row.face?.BoundingBox ?? null);
       const score = faceQualityScore(
