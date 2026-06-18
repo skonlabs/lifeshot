@@ -230,6 +230,23 @@ app.get("/debug/asset", async (c) => {
   return c.json({ count: results.length, results });
 });
 
+/** TEMP: reset person clusters for a user, then enqueue a fresh clusterPeople run. */
+app.post("/debug/reset-clusters", async (c) => {
+  const sb = serviceClient();
+  const url = new URL(c.req.url);
+  let uid = url.searchParams.get("user_id");
+  if (!uid) {
+    const { data } = await sb.from("people").select("user_id").limit(1).maybeSingle();
+    uid = (data as any)?.user_id ?? null;
+  }
+  if (!uid) return c.json({ error: "no user_id" }, 400);
+  const { error: e1 } = await sb.from("asset_faces").update({ person_id: null }).eq("user_id", uid).not("person_id", "is", null);
+  const { error: e2 } = await sb.from("people").delete().eq("user_id", uid);
+  if (e1 || e2) return c.json({ error: e1?.message ?? e2?.message }, 500);
+  await enqueueJob("clusterPeople", { userId: uid, payload: { user_id: uid }, idempotencyKey: `reset-clusters:${uid}:${Date.now()}` });
+  return c.json({ ok: true, user_id: uid, reset: true });
+});
+
 /** Drain pending jobs. Called by pg_cron every 15s and as a nudge from
  * /sources/.../sync. Budget is generous (50s of the 60s Edge Function limit)
  * so a single Dropbox list_folder call (~20s timeout) plus DB writes fits
