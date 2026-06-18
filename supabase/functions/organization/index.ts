@@ -523,7 +523,6 @@ app.post("/assets/bulk", async (c) => {
  * The pipeline will re-detect and re-cluster everything from scratch.
  */
 app.post("/people/reset", async (c) => {
-  // (recluster route inserted above)
   const uid = c.get("userId") as string;
   const resetAt = new Date().toISOString();
   const sb = getServiceClient();
