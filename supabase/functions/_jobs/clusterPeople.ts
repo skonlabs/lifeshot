@@ -10,9 +10,9 @@ import { enqueueJob } from "../_pipeline/enqueuer.ts";
 // 70% is the right balance for a family photo album: same person across different
 // years, lighting, and expressions commonly scores 70-85% in Rekognition.
 // 80%+ is too strict and splits one real person into many entries.
-const SIMILARITY_THRESHOLD = 70;
+const SIMILARITY_THRESHOLD = 92;
 // Lower threshold used only in the post-loop duplicate-person merge pass.
-const MERGE_SIMILARITY_THRESHOLD = 65;
+const MERGE_SIMILARITY_THRESHOLD = 94;
 // SearchFaces returns only the top N matches. Some people already have many
 // linked detections, so MaxFaces=10 can be exhausted by faces that are already
 // in the same person row and never expose an equally strong match in another
