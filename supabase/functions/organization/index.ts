@@ -19,6 +19,35 @@ const ListPage = z.object({
 });
 
 const app = authed(createApi("/organization/v1"));
+const DB_PAGE_SIZE = 1000;
+
+async function loadAssetFacesForPeople(supa: any, personIds: string[]) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("person_id, asset_id, face")
+      .in("person_id", personIds)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function loadPersonOccurrences(supa: any, personId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("id, asset_id, face")
+      .eq("person_id", personId)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
 
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
