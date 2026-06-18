@@ -349,6 +349,42 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const orphanIds = Array.from(peopleById.keys()).filter((id) => !linkedPersonIds.has(id));
   if (orphanIds.length) {
     await sb.from("people").delete().in("id", orphanIds);
+    for (const id of orphanIds) peopleById.delete(id);
+  }
+
+  // ── 8. Deterministic cover pass ─────────────────────────────────────────────
+  // For every surviving person, pick the cover as the single highest-quality
+  // asset_face currently linked to that person AND passing the usability gate.
+  // This makes covers stable across force syncs: regardless of processing order
+  // or whether canonical FaceIds shifted on rescan, the chosen cover is always
+  // the best face we actually have for the person right now.
+  const bestByPerson = new Map<string, AssetFaceRow>();
+  for (const r of assetFaceRows) {
+    if (!r.person_id || !peopleById.has(r.person_id)) continue;
+    if (!isUsableIndexedFace(r.face)) continue;
+    const current = bestByPerson.get(r.person_id);
+    if (!current || faceQualityRank(r.face) > faceQualityRank(current.face)) {
+      bestByPerson.set(r.person_id, r);
+    }
+  }
+  let covers_updated = 0;
+  for (const [pid, best] of bestByPerson) {
+    const person = peopleById.get(pid);
+    if (!person) continue;
+    const currentCoverFaceId = person.face?.FaceId ?? null;
+    const bestFaceId = best.face?.FaceId ?? null;
+    if (currentCoverFaceId === bestFaceId && person.asset_id === best.asset_id) continue;
+    const { error: coverErr } = await sb
+      .from("people")
+      .update({ face: best.face, asset_id: best.asset_id, updated_at: now })
+      .eq("id", pid);
+    if (coverErr) {
+      console.warn("clusterPeople: cover update failed", pid, coverErr.message);
+      continue;
+    }
+    person.face = best.face;
+    person.asset_id = best.asset_id;
+    covers_updated++;
   }
 
   return {
@@ -360,5 +396,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     skipped,
     duplicates_merged:  mergedPersonIds.size,
     orphans_removed:    orphanIds.length,
+    covers_updated,
   };
 }
