@@ -500,10 +500,30 @@ export async function storeFaceResults(opts: {
 
   if (opts.beforeWrite) await opts.beforeWrite();
 
-  // Delete-then-insert is the idempotency pattern for re-scans. beforeWrite is
-  // called once before the delete (not twice) to avoid the window where delete
-  // has committed but insert hasn't — a second beforeWrite call after delete
-  // could throw and leave the asset with zero rows permanently.
+  const { data: existingRows, error: existingErr } = await sb
+    .from("asset_faces")
+    .select("id")
+    .eq("asset_id", assetId);
+  if (existingErr) throw new Error(`storeFaceResults: existing asset_faces lookup failed: ${existingErr.message}`);
+  const existingCount = existingRows?.length ?? 0;
+
+  // Never let a force re-scan shrink a photo's face rows. Rekognition can return
+  // fewer faces for the same image depending on source/orientation/resize. A
+  // lower count is not strong enough evidence to delete previously good faces;
+  // keep the existing rows and let future scans with equal/more faces refresh.
+  if (existingCount > 0 && uniqueFaces.length < existingCount) {
+    console.warn("storeFaceResults: preserving existing face rows because rescan returned fewer faces", {
+      assetId,
+      existingCount,
+      newCount: uniqueFaces.length,
+    });
+    return { asset_faces: existingCount };
+  }
+
+  // Delete-then-insert is the idempotency pattern for stable/equal-or-better
+  // re-scans. beforeWrite is called once before the delete (not twice) to avoid
+  // the window where delete has committed but insert hasn't — a second
+  // beforeWrite call after delete could throw and leave the asset with zero rows.
   const { error: delErr } = await sb.from("asset_faces").delete().eq("asset_id", assetId);
   if (delErr) throw new Error(`storeFaceResults: asset_faces delete failed: ${delErr.message}`);
 
