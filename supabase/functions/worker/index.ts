@@ -5,6 +5,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { logger } from "../_pipeline/logger.ts";
 import { installOpenAIProviders } from "../_ai/factory.ts";
+import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 
 // Install real OpenAI providers when the environment is configured.
 // Falls back silently to mock providers when OPENAI_API_KEY / LIFESHOT_AI_PROVIDER
@@ -87,6 +88,55 @@ app.get("/debug/stats", async (c) => {
   out.asset_faces_count = await countRows("asset_faces");
   out.asset_faces_linked = await countRows("asset_faces", (q) => q.not("person_id", "is", null));
   out.asset_faces_unlinked = await countRows("asset_faces", (q) => q.is("person_id", null));
+  const { data: faceRows } = await (uid
+    ? sb.from("asset_faces").select("id, asset_id, person_id, face, created_at").eq("user_id", uid).limit(50000)
+    : sb.from("asset_faces").select("id, asset_id, person_id, face, created_at").limit(50000));
+  const faceBreakdown = {
+    usable_linked: 0,
+    usable_unlinked: 0,
+    unusable_linked: 0,
+    unusable_unlinked: 0,
+    unlinked_reasons: {} as Record<string, number>,
+    unlinked_samples: [] as Array<Record<string, unknown>>,
+  };
+  for (const row of faceRows ?? []) {
+    const usable = isUsableIndexedFace((row as any).face);
+    const linked = !!(row as any).person_id;
+    if (usable && linked) faceBreakdown.usable_linked++;
+    if (usable && !linked) faceBreakdown.usable_unlinked++;
+    if (!usable && linked) faceBreakdown.unusable_linked++;
+    if (!usable && !linked) faceBreakdown.unusable_unlinked++;
+    if (!linked) {
+      const detail = (row as any).face?.FaceDetail ?? {};
+      const confidence = Number((row as any).face?.Confidence ?? 0);
+      const reasons = [
+        confidence < 90 ? "confidence" : null,
+        Math.abs(Number(detail?.Pose?.Yaw ?? 0)) > 30 ? "yaw" : null,
+        Math.abs(Number(detail?.Pose?.Pitch ?? 0)) > 25 ? "pitch" : null,
+        Number(detail?.Quality?.Sharpness ?? 0) < 2 ? "sharpness" : null,
+        Number(detail?.Quality?.Brightness ?? 0) < 15 ? "brightness" : null,
+        detail?.FaceOccluded?.Value === true ? "occluded" : null,
+        detail?.EyesOpen?.Value === false ? "eyes_closed" : null,
+      ].filter(Boolean) as string[];
+      const key = reasons.length ? reasons.join("+") : "passes_quality_unlinked";
+      faceBreakdown.unlinked_reasons[key] = (faceBreakdown.unlinked_reasons[key] ?? 0) + 1;
+      if (faceBreakdown.unlinked_samples.length < 20) {
+        faceBreakdown.unlinked_samples.push({
+          asset_id: (row as any).asset_id,
+          face_id: (row as any).face?.FaceId ?? null,
+          confidence,
+          yaw: detail?.Pose?.Yaw ?? null,
+          pitch: detail?.Pose?.Pitch ?? null,
+          sharpness: detail?.Quality?.Sharpness ?? null,
+          brightness: detail?.Quality?.Brightness ?? null,
+          occluded: detail?.FaceOccluded?.Value ?? null,
+          eyes_open: detail?.EyesOpen?.Value ?? null,
+          reason: key,
+        });
+      }
+    }
+  }
+  out.asset_faces_quality_breakdown = faceBreakdown;
 
   let peopleQ = sb.from("people").select("id, display_name, asset_id, face");
   if (uid) peopleQ = peopleQ.eq("user_id", uid);
