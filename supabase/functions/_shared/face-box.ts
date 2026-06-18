@@ -61,7 +61,11 @@ export function faceQualityScore(box: FaceBox | null, confidence: number, facesI
   const idealArea = 0.1;
   const areaFit = 1 - Math.min(Math.abs(area - idealArea) / idealArea, 1);
   const soloBonus = facesInAsset <= 1 ? 0.25 : facesInAsset === 2 ? 0.1 : -0.05 * Math.min(facesInAsset - 2, 4);
-  return confidence * 2 + areaFit + soloBonus;
+  // Prefer cover faces that have enough source pixels to look crisp in an
+  // avatar. Confidence is usually saturated at 100 for every face in a group
+  // photo, so size must be a stronger signal than tiny confidence differences.
+  const sizeBonus = Math.sqrt(area) * 120;
+  return confidence * 2 + sizeBonus + areaFit + soloBonus;
 }
 
 export function faceVisualSignature(assetId: string, box: FaceBox | null): string {

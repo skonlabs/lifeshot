@@ -190,7 +190,8 @@ async function cropFace(
     let b64 = "";
     for (let i = 0; i < buf.length; i += 8192) b64 += String.fromCharCode(...buf.subarray(i, i + 8192));
     return `data:image/jpeg;base64,${btoa(b64)}`;
-  } catch {
+  } catch (e) {
+    console.warn("cropFace: failed to generate face crop", { error: String((e as Error)?.message ?? e), mime });
     return null;
   }
 }
