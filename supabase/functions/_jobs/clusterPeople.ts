@@ -85,13 +85,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     return { user_id: uid, skipped: "cluster_already_running", clustered: 0 };
   }
 
-  // ── 1. Load qualifying faces from asset_faces ────────────────────────────────
-  // Admission gate (applied in code so the same quality logic is always used):
-  //   • Confidence >= 90%
-  //   • EyesOpen.Value = true, EyesOpen.Confidence >= 90
-  //   • FaceOccluded.Value = false, FaceOccluded.Confidence >= 90
-  //   • |Yaw| <= 30°, |Pitch| <= 25°
-  //   • Sharpness >= 35, Brightness >= 25
+  // ── 1. Load detected faces from asset_faces ─────────────────────────────────
+  // Every Rekognition-indexed face should be linked to a person. The stricter
+  // quality gate is used later only to prefer better cover photos; using it as
+  // an admission gate caused valid but small/blurry/side-lit faces to disappear
+  // from the People page after force syncs.
   const { data: allAssetFaces, error: afErr } = await sb
     .from("asset_faces")
     .select("id, asset_id, person_id, face")
@@ -102,12 +100,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   interface AssetFaceRow { id: string; asset_id: string; person_id: string | null; face: any }
   const assetFaceRows: AssetFaceRow[] = allAssetFaces ?? [];
 
-  const qualifying = assetFaceRows
-    .filter((r) => r.face?.FaceId && r.asset_id && isUsableIndexedFace(r.face))
+  const detectedRows = assetFaceRows
+    .filter((r) => r.face?.FaceId && r.asset_id)
     .sort((a, b) => faceQualityRank(b.face) - faceQualityRank(a.face)); // best quality first
 
-  if (qualifying.length === 0) {
-    return { user_id: uid, people: 0, clustered: 0, reason: "no_qualifying_faces" };
+  if (detectedRows.length === 0) {
+    return { user_id: uid, people: 0, clustered: 0, reason: "no_detected_faces" };
   }
 
   // ── 2. Load existing people and build complete faceId → personId index ────────
@@ -154,8 +152,8 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   let linked = 0;
   let skipped = 0;
 
-  // ── 3. Process each qualifying face ─────────────────────────────────────────
-  // Rule: for each qualifying face —
+  // ── 3. Process each detected face ───────────────────────────────────────────
+  // Rule: for each detected face —
   //   a) Already has a known person → just ensure asset_faces.person_id is set.
   //   b) SearchFaces (similarity >= 90%) → if any match is a known person, add
   //      this face to that person (update face_ids + cover if better quality).
@@ -166,16 +164,16 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // are simply linked without displacing the cover.
 
   // Check reset guard once before the loop — O(n) per-face DB calls caused
-  // timeouts on accounts with thousands of qualifying faces.
+  // timeouts on accounts with thousands of detected faces.
   // Also re-check every 50 faces so a reset triggered mid-run is detected
   // within one batch rather than after the full loop completes.
   const preLoopGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
   if (!preLoopGuard.valid) {
-    return { user_id: uid, faces_processed: 0, people_created: 0, detections_linked: 0, skipped: qualifying.length, stopped: preLoopGuard.reason };
+    return { user_id: uid, faces_processed: 0, people_created: 0, detections_linked: 0, skipped: detectedRows.length, stopped: preLoopGuard.reason };
   }
 
-  for (let faceIdx = 0; faceIdx < qualifying.length; faceIdx++) {
-    const row = qualifying[faceIdx];
+  for (let faceIdx = 0; faceIdx < detectedRows.length; faceIdx++) {
+    const row = detectedRows[faceIdx];
 
     // Re-check reset guard every 50 faces to catch mid-run resets without
     // incurring a DB round-trip on every iteration.
@@ -336,19 +334,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // ── 6. Unlink asset_faces that no longer pass the quality gate ───────────────
-  const disqualifiedRows = assetFaceRows.filter(
-    (r) => r.person_id && !isUsableIndexedFace(r.face),
-  );
-  if (disqualifiedRows.length) {
-    const ids = disqualifiedRows.map((r) => r.id).filter(Boolean);
-    await sb.from("asset_faces").update({ person_id: null, updated_at: now }).in("id", ids);
-  }
-
-  // ── 7. Delete people rows with no qualifying linked faces (orphans) ───────────
+  // ── 6. Delete people rows with no linked detections (orphans) ────────────────
   const linkedPersonIds = new Set(
     assetFaceRows
-      .filter((r) => r.person_id && isUsableIndexedFace(r.face))
+      .filter((r) => r.person_id)
       .map((r) => r.person_id as string),
   );
   const orphanIds = Array.from(peopleById.keys()).filter((id) => !linkedPersonIds.has(id));
@@ -395,7 +384,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   return {
     user_id:            uid,
     trigger_asset_id:   asset_id ?? null,
-    faces_processed:    qualifying.length,
+    faces_processed:    detectedRows.length,
     people_created:     created,
     detections_linked:  linked,
     skipped,
