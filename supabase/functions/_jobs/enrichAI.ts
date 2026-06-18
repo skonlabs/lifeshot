@@ -205,12 +205,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     let analysis: Awaited<ReturnType<typeof analyzeAssetFaces>>;
     try {
       analysis = await analyzeAssetFaces({
-        // Detection must prefer the normalized preview. Provider originals can
-        // carry EXIF orientation or be very large; after canvas resize that can
-        // reduce/mis-orient detected faces. The original is still used below as
-        // cropSourceUrl only, so avatar quality stays high without changing face
-        // detection stability.
-        originalImageUrl: previewImageUrl || thumbnailImageUrl ? null : originalImageUrl,
+        originalImageUrl,
         previewImageUrl,
         thumbnailImageUrl,
         cropSourceUrl,
@@ -262,7 +257,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       const enrichmentUpdate: Record<string, unknown> = {
         asset_id,
         user_id:    asset.user_id,
-        face_count: Math.max(rawFaces.length, stored.asset_faces),
+        face_count: rawFaces.length,
       };
       if (rawFaces.length > 0) {
         enrichmentUpdate.faces = rawFaces;

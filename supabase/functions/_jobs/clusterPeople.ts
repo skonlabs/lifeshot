@@ -10,10 +10,8 @@ import { checkFaceResetGuard } from "./faceResetGuard.ts";
 // years, lighting, and expressions commonly scores 70-85% in Rekognition.
 // 80%+ is too strict and splits one real person into many entries.
 const SIMILARITY_THRESHOLD = 70;
-// Duplicate-person cleanup must be conservative. Lower thresholds can collapse
-// relatives/lookalikes into one row and make the People page appear to lose
-// most faces after a force sync.
-const MERGE_SIMILARITY_THRESHOLD = 85;
+// Lower threshold used only in the post-loop duplicate-person merge pass.
+const MERGE_SIMILARITY_THRESHOLD = 65;
 // SearchFaces returns only the top N matches. Some people already have many
 // linked detections, so MaxFaces=10 can be exhausted by faces that are already
 // in the same person row and never expose an equally strong match in another
@@ -326,9 +324,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       for (const fid of merged) faceIdToPersonId.set(fid, keepId);
       await sb.from("people").update({ face_ids: merged, updated_at: now }).eq("id", keepId);
       await sb.from("asset_faces").update({ person_id: keepId, updated_at: now }).eq("person_id", dropId).eq("user_id", uid);
-      for (const row of assetFaceRows) {
-        if (row.person_id === dropId) row.person_id = keepId;
-      }
       await sb.from("people").delete().eq("id", dropId);
       mergedPersonIds.add(dropId);
       peopleById.delete(dropId);
