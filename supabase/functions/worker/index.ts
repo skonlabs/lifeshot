@@ -208,8 +208,8 @@ app.get("/debug/asset", async (c) => {
     results.push({
       asset,
       face_count: (faces ?? []).length,
-      preview_signed: (await sb.storage.from("derived").createSignedUrl(asset.proxy_cache_key ?? "", 3600)).data?.signedUrl ?? null,
-      thumb_signed: (await sb.storage.from("derived").createSignedUrl(asset.thumbnail_cache_key ?? "", 3600)).data?.signedUrl ?? null,
+      preview_signed: asset.proxy_cache_key ? (await sb.storage.from("lifeshot-derived").createSignedUrl(asset.proxy_cache_key, 3600)).data?.signedUrl ?? null : null,
+      thumb_signed: asset.thumbnail_cache_key ? (await sb.storage.from("lifeshot-derived").createSignedUrl(asset.thumbnail_cache_key, 3600)).data?.signedUrl ?? null : null,
       faces: (faces ?? []).map((f: any) => ({
         face_id: f.face?.FaceId,
         person_id: f.person_id,
