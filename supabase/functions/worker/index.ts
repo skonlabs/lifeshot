@@ -181,6 +181,53 @@ app.get("/debug/stats", async (c) => {
   return c.json(out);
 });
 
+/** TEMP: per-asset face diagnostic. Look up by filename substring. */
+app.get("/debug/asset", async (c) => {
+  const sb = serviceClient();
+  const url = new URL(c.req.url);
+  const filename = url.searchParams.get("filename") ?? "";
+  if (!filename) return c.json({ error: "filename query param required" }, 400);
+  const { data: assets, error: aerr } = await sb.from("assets")
+    .select("id, user_id, filename, media_type, mime_type, width, height, original_url, preview_url, thumbnail_url, source_account_id, captured_at")
+    .ilike("filename", `%${filename}%`)
+    .limit(10);
+  if (aerr) return c.json({ error: aerr.message }, 500);
+  const results: any[] = [];
+  for (const asset of assets ?? []) {
+    const { data: faces } = await sb.from("asset_faces")
+      .select("id, person_id, face, created_at")
+      .eq("asset_id", asset.id);
+    const { data: enr } = await sb.from("asset_ai_enrichment")
+      .select("face_count, faces_indexed_at, last_error, vision_model, updated_at")
+      .eq("asset_id", asset.id);
+    const { data: jobs } = await sb.from("job_queue")
+      .select("job_name, status, attempts, last_error, created_at, payload")
+      .ilike("payload->>assetId", asset.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    results.push({
+      asset,
+      face_count: (faces ?? []).length,
+      faces: (faces ?? []).map((f: any) => ({
+        face_id: f.face?.FaceId,
+        person_id: f.person_id,
+        Confidence: f.face?.Confidence,
+        BoundingBox: f.face?.BoundingBox,
+        Pose: f.face?.FaceDetail?.Pose,
+        Quality: f.face?.FaceDetail?.Quality,
+        FaceOccluded: f.face?.FaceDetail?.FaceOccluded,
+        EyesOpen: f.face?.FaceDetail?.EyesOpen,
+        AgeRange: f.face?.FaceDetail?.AgeRange,
+        Gender: f.face?.FaceDetail?.Gender,
+        usable: isUsableIndexedFace(f.face),
+      })),
+      enrichment: enr ?? [],
+      jobs: jobs ?? [],
+    });
+  }
+  return c.json({ count: results.length, results });
+});
+
 /** Drain pending jobs. Called by pg_cron every 15s and as a nudge from
  * /sources/.../sync. Budget is generous (50s of the 60s Edge Function limit)
  * so a single Dropbox list_folder call (~20s timeout) plus DB writes fits
