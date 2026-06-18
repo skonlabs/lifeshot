@@ -210,7 +210,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
         // reduce/mis-orient detected faces. The original is still used below as
         // cropSourceUrl only, so avatar quality stays high without changing face
         // detection stability.
-        originalImageUrl: null,
+        originalImageUrl: previewImageUrl || thumbnailImageUrl ? null : originalImageUrl,
         previewImageUrl,
         thumbnailImageUrl,
         cropSourceUrl,
