@@ -164,7 +164,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // are simply linked without displacing the cover.
 
   // Check reset guard once before the loop — O(n) per-face DB calls caused
-  // timeouts on accounts with thousands of qualifying faces.
+  // timeouts on accounts with thousands of detected faces.
   // Also re-check every 50 faces so a reset triggered mid-run is detected
   // within one batch rather than after the full loop completes.
   const preLoopGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
@@ -384,7 +384,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   return {
     user_id:            uid,
     trigger_asset_id:   asset_id ?? null,
-    faces_processed:    qualifying.length,
+    faces_processed:    detectedRows.length,
     people_created:     created,
     detections_linked:  linked,
     skipped,
