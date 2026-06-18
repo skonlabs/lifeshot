@@ -73,7 +73,7 @@ app.get("/debug/stats", async (c) => {
 
   // Enrichment + faces + people counts. Use current column names only.
   const countRows = async (table: string, build?: (q: any) => any) => {
-    let q = sb.from(table).select("id", { count: "exact", head: true });
+    let q = sb.from(table).select("*", { count: "exact", head: true });
     if (uid) q = q.eq("user_id", uid);
     if (build) q = build(q);
     const { count, error } = await q;
