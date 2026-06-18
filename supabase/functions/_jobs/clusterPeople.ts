@@ -128,10 +128,10 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // ── 1. Load qualifying faces from asset_faces ────────────────────────────────
   // Admission gate (applied in code so the same quality logic is always used):
   //   • Confidence >= 90%
-  //   • EyesOpen.Value = true, EyesOpen.Confidence >= 90
-  //   • FaceOccluded.Value = false, FaceOccluded.Confidence >= 90
+  //   • EyesOpen.Value is not false; if true, Confidence >= 60
+  //   • FaceOccluded.Value is not true; if false, Confidence >= 60
   //   • |Yaw| <= 30°, |Pitch| <= 25°
-  //   • Sharpness >= 35, Brightness >= 25
+  //   • Sharpness >= 2, Brightness >= 15
   interface AssetFaceRow { id: string; asset_id: string; person_id: string | null; face: any }
   const assetFaceRows: AssetFaceRow[] = await loadAllAssetFaces(sb, uid);
 
