@@ -188,7 +188,7 @@ app.get("/debug/asset", async (c) => {
   const filename = url.searchParams.get("filename") ?? "";
   if (!filename) return c.json({ error: "filename query param required" }, 400);
   const { data: assets, error: aerr } = await sb.from("assets")
-    .select("id, user_id, filename, media_type, mime_type, width, height, original_url, preview_url, thumbnail_url, source_account_id, captured_at")
+    .select("*")
     .ilike("filename", `%${filename}%`)
     .limit(10);
   if (aerr) return c.json({ error: aerr.message }, 500);
