@@ -97,9 +97,20 @@ app.get("/debug/stats", async (c) => {
   out.asset_faces_count = await countRows("asset_faces");
   out.asset_faces_linked = await countRows("asset_faces", (q) => q.not("person_id", "is", null));
   out.asset_faces_unlinked = await countRows("asset_faces", (q) => q.is("person_id", null));
-  const { data: faceRows } = await (uid
-    ? sb.from("asset_faces").select("id, asset_id, person_id, face, created_at").eq("user_id", uid).limit(50000)
-    : sb.from("asset_faces").select("id, asset_id, person_id, face, created_at").limit(50000));
+  const faceRows: any[] = [];
+  for (let from = 0;; from += 1000) {
+    const query = sb.from("asset_faces")
+      .select("id, asset_id, person_id, face, created_at")
+      .order("created_at", { ascending: true })
+      .range(from, from + 999);
+    const { data, error } = uid ? await query.eq("user_id", uid) : await query;
+    if (error) {
+      out.asset_faces_debug_error = error.message;
+      break;
+    }
+    faceRows.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
   const faceBreakdown = {
     usable_linked: 0,
     usable_unlinked: 0,
