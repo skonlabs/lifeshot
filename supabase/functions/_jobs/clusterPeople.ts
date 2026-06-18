@@ -221,30 +221,17 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         person.face_ids = uniqueFaceIds([...person.face_ids, faceId]);
         faceIdToPersonId.set(faceId, personId);
 
-        // Replace cover only if this face has better quality.
-        const coverFaceId = person.face?.FaceId ?? null;
-        const coverRow = coverFaceId
-          ? assetFaceRows.find((r) => r.face?.FaceId === coverFaceId)
-          : null;
-        const useBetterCover =
-          !coverFaceId ||
-          !coverRow ||
-          faceQualityRank(row.face) > faceQualityRank(coverRow.face);
-
-        const updatePayload: Record<string, unknown> = {
-          face_ids: person.face_ids,
-          updated_at: now,
-        };
-        if (useBetterCover) {
-          updatePayload.face    = row.face;
-          updatePayload.asset_id = row.asset_id;
-          person.face    = row.face;
-          person.asset_id = row.asset_id;
-        }
-
+        // Cover is NOT updated here — the final pass below recomputes each
+        // person's cover from the best-quality asset_face currently linked.
+        // Doing per-face cover replacement caused force-sync instability: the
+        // stored cover FaceId often pointed at an asset_face row whose
+        // FaceId had been replaced by a new canonical id on rescan (the
+        // Rekognition dedup threshold is 98% — pose/lighting drift past
+        // that orphans the old id), so coverRow was null and the cover got
+        // replaced with whatever face happened to be processed first.
         const { error: upErr } = await sb
           .from("people")
-          .update(updatePayload)
+          .update({ face_ids: person.face_ids, updated_at: now })
           .eq("id", personId);
         if (upErr) {
           console.warn("clusterPeople: people update failed", personId, upErr.message);
@@ -362,6 +349,42 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const orphanIds = Array.from(peopleById.keys()).filter((id) => !linkedPersonIds.has(id));
   if (orphanIds.length) {
     await sb.from("people").delete().in("id", orphanIds);
+    for (const id of orphanIds) peopleById.delete(id);
+  }
+
+  // ── 8. Deterministic cover pass ─────────────────────────────────────────────
+  // For every surviving person, pick the cover as the single highest-quality
+  // asset_face currently linked to that person AND passing the usability gate.
+  // This makes covers stable across force syncs: regardless of processing order
+  // or whether canonical FaceIds shifted on rescan, the chosen cover is always
+  // the best face we actually have for the person right now.
+  const bestByPerson = new Map<string, AssetFaceRow>();
+  for (const r of assetFaceRows) {
+    if (!r.person_id || !peopleById.has(r.person_id)) continue;
+    if (!isUsableIndexedFace(r.face)) continue;
+    const current = bestByPerson.get(r.person_id);
+    if (!current || faceQualityRank(r.face) > faceQualityRank(current.face)) {
+      bestByPerson.set(r.person_id, r);
+    }
+  }
+  let covers_updated = 0;
+  for (const [pid, best] of bestByPerson) {
+    const person = peopleById.get(pid);
+    if (!person) continue;
+    const currentCoverFaceId = person.face?.FaceId ?? null;
+    const bestFaceId = best.face?.FaceId ?? null;
+    if (currentCoverFaceId === bestFaceId && person.asset_id === best.asset_id) continue;
+    const { error: coverErr } = await sb
+      .from("people")
+      .update({ face: best.face, asset_id: best.asset_id, updated_at: now })
+      .eq("id", pid);
+    if (coverErr) {
+      console.warn("clusterPeople: cover update failed", pid, coverErr.message);
+      continue;
+    }
+    person.face = best.face;
+    person.asset_id = best.asset_id;
+    covers_updated++;
   }
 
   return {
@@ -373,5 +396,6 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     skipped,
     duplicates_merged:  mergedPersonIds.size,
     orphans_removed:    orphanIds.length,
+    covers_updated,
   };
 }
