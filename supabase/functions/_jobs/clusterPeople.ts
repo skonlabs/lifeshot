@@ -18,6 +18,7 @@ const MERGE_SIMILARITY_THRESHOLD = 65;
 // in the same person row and never expose an equally strong match in another
 // duplicate row. Ask for the service maximum so the merge pass can see splits.
 const SEARCH_MAX_FACES = 4096;
+const DB_PAGE_SIZE = 1000;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
@@ -30,6 +31,38 @@ function faceQualityRank(face: any): number {
 
 function uniqueFaceIds(ids: string[]): string[] {
   return Array.from(new Set(ids.filter(Boolean)));
+}
+
+async function loadAllAssetFaces(sb: any, userId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await sb
+      .from("asset_faces")
+      .select("id, asset_id, person_id, face")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new Error(`clusterPeople: asset_faces load failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function loadAllPeople(sb: any, userId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await sb
+      .from("people")
+      .select("id, display_name, asset_id, face, face_ids")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new Error(`clusterPeople: people load failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
 }
 
 async function isLeaderClusterJob(sb: any, userId: string, jobId: string): Promise<boolean> {
@@ -95,19 +128,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // ── 1. Load qualifying faces from asset_faces ────────────────────────────────
   // Admission gate (applied in code so the same quality logic is always used):
   //   • Confidence >= 90%
-  //   • EyesOpen.Value = true, EyesOpen.Confidence >= 90
-  //   • FaceOccluded.Value = false, FaceOccluded.Confidence >= 90
+  //   • EyesOpen.Value is not false; if true, Confidence >= 60
+  //   • FaceOccluded.Value is not true; if false, Confidence >= 60
   //   • |Yaw| <= 30°, |Pitch| <= 25°
-  //   • Sharpness >= 35, Brightness >= 25
-  const { data: allAssetFaces, error: afErr } = await sb
-    .from("asset_faces")
-    .select("id, asset_id, person_id, face")
-    .eq("user_id", uid)
-    .limit(50000); // PostgREST default is 1000 — must override or faces are silently truncated
-  if (afErr) throw new Error(`clusterPeople: asset_faces load failed: ${afErr.message}`);
-
+  //   • Sharpness >= 2, Brightness >= 15
   interface AssetFaceRow { id: string; asset_id: string; person_id: string | null; face: any }
-  const assetFaceRows: AssetFaceRow[] = allAssetFaces ?? [];
+  const assetFaceRows: AssetFaceRow[] = await loadAllAssetFaces(sb, uid);
 
   const qualifying = assetFaceRows
     .filter((r) => r.face?.FaceId && r.asset_id && isUsableIndexedFace(r.face))
@@ -120,12 +146,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // ── 2. Load existing people and build complete faceId → personId index ────────
   // We index ALL face_ids from ALL people rows — not just those with currently
   // linked asset_faces — so we never create duplicates for already-known faces.
-  const { data: existingPeople, error: peopleErr } = await sb
-    .from("people")
-    .select("id, display_name, asset_id, face, face_ids")
-    .eq("user_id", uid)
-    .limit(10000); // PostgREST default is 1000 — must override or people are silently truncated
-  if (peopleErr) throw new Error(`clusterPeople: people load failed: ${peopleErr.message}`);
+  const existingPeople = await loadAllPeople(sb, uid);
 
   interface PersonEntry { id: string; display_name: string | null; face_ids: string[]; face: any; asset_id: string | null }
   const peopleById = new Map<string, PersonEntry>();

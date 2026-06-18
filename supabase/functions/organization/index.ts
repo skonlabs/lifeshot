@@ -19,6 +19,35 @@ const ListPage = z.object({
 });
 
 const app = authed(createApi("/organization/v1"));
+const DB_PAGE_SIZE = 1000;
+
+async function loadAssetFacesForPeople(supa: any, personIds: string[]) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("person_id, asset_id, face")
+      .in("person_id", personIds)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function loadPersonOccurrences(supa: any, personId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("id, asset_id, face")
+      .eq("person_id", personId)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
 
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
@@ -147,9 +176,7 @@ app.get("/people", async (c) => {
   // still point at legacy seed faces from older clustering runs.
   if (entries.length) {
     const ids = entries.map((e) => e.id);
-    const { data: linkRows } = await supa.from("asset_faces")
-      .select("person_id, asset_id, face")
-      .in("person_id", ids);
+    const linkRows = await loadAssetFacesForPeople(supa, ids);
 
     // Count every linked face row so the People page reflects the same total
     // as the `people` table. The quality gate is only used to *prefer* a
@@ -289,15 +316,13 @@ app.get("/people/:id", async (c) => {
   if (!person) throw new ApiError("not_found", "Person not found");
 
   // All occurrences: every asset_faces row linked to this person.
-  const { data: occurrences } = await supa.from("asset_faces")
-    .select("id, asset_id, face")
-    .eq("person_id", id);
+  const occurrences = await loadPersonOccurrences(supa, id);
 
-  const assetIds = [...new Set((occurrences ?? []).map((o: any) => o.asset_id).filter(Boolean))];
+  const assetIds = [...new Set(occurrences.map((o: any) => o.asset_id).filter(Boolean))];
   return c.json({
     ...(person as any),
     asset_count: assetIds.length,
-    occurrences: (occurrences ?? []).map((o: any) => ({
+    occurrences: occurrences.map((o: any) => ({
       id:       o.id,
       asset_id: o.asset_id,
       face_id:  o.face?.FaceId ?? null,
