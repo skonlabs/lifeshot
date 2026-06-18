@@ -320,6 +320,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       });
     } catch { continue; }
     for (const m of matches) {
+      if (!peopleById.has(pid)) break; // this source person was absorbed by an earlier match
       if (m.faceId === person.face.FaceId || m.similarity < MERGE_SIMILARITY_THRESHOLD) continue;
       const otherPersonId = faceIdToPersonId.get(m.faceId);
       if (!otherPersonId || otherPersonId === pid || mergedPersonIds.has(otherPersonId)) continue;
@@ -330,6 +331,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       const dropId   = keepId === pid ? otherPersonId : pid;
       const keepPerson = peopleById.get(keepId)!;
       const dropPerson = peopleById.get(dropId)!;
+      if (!keepPerson || !dropPerson) continue;
       const merged = uniqueFaceIds([...keepPerson.face_ids, ...dropPerson.face_ids]);
       keepPerson.face_ids = merged;
       for (const fid of merged) faceIdToPersonId.set(fid, keepId);
@@ -338,6 +340,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       await sb.from("people").delete().eq("id", dropId);
       mergedPersonIds.add(dropId);
       peopleById.delete(dropId);
+      if (dropId === pid) break;
     }
   }
 
