@@ -522,6 +522,25 @@ app.post("/assets/bulk", async (c) => {
  *   3. Reset face_scanned_at so all assets are re-queued.
  * The pipeline will re-detect and re-cluster everything from scratch.
  */
+/**
+ * POST /people/recluster
+ * Force-enqueue a clusterPeople job for the authenticated user with a unique
+ * idempotency key, bypassing enrichAI's 5-minute bucket dedup. Used to drain
+ * the tail of usable asset_faces left unlinked after a previous run finished
+ * its snapshot before the rest of the sync wrote their faces.
+ */
+app.post("/people/recluster", async (c) => {
+  const uid = c.get("userId") as string;
+  await enforceRateLimit(uid, "general");
+  const enqueuer = jobEnqueuer();
+  await enqueuer.enqueue("clusterPeople", {
+    userId: uid,
+    payload: { user_id: uid },
+    idempotencyKey: `people:${uid}:manual:${Date.now()}`,
+  });
+  return c.json({ ok: true });
+});
+
 app.post("/people/reset", async (c) => {
   const uid = c.get("userId") as string;
   const resetAt = new Date().toISOString();
