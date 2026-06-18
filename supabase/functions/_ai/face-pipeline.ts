@@ -21,6 +21,7 @@ import {
 } from "./rekognition.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
+import { Image } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
 const REKOGNITION_MAX_BYTES = 5_000_000; // Rekognition hard limit is 5 MB
 const DEDUP_SIMILARITY = 98;   // reuse existing indexed face only for near-identical rescans
@@ -72,18 +73,16 @@ const REKOGNITION_SUPPORTED_MIME = new Set([
 /** Scale image bytes down to fit within REKOGNITION_MAX_BYTES using canvas. */
 async function resizeToFit(bytes: Uint8Array, mime: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
-    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
-    const { width: W, height: H } = bitmap;
+    const image = await Image.decode(bytes);
+    const W = image.width, H = image.height;
     // Scale longest side to 3000 px — preserves enough detail for Rekognition
     // while keeping JPEG output under 5 MB for typical photos.
     const scale = Math.min(1, 3000 / Math.max(W, H));
     const sw = Math.round(W * scale);
     const sh = Math.round(H * scale);
-    const canvas = new OffscreenCanvas(sw, sh);
-    (canvas.getContext("2d") as any).drawImage(bitmap, 0, 0, sw, sh);
-    for (const quality of [0.92, 0.80, 0.65]) {
-      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
-      const resized = new Uint8Array(await blob.arrayBuffer());
+    const resizedImage = scale < 1 ? image.resize(sw, sh) : image;
+    for (const quality of [92, 80, 65]) {
+      const resized = await resizedImage.encodeJPEG(quality);
       if (resized.byteLength <= REKOGNITION_MAX_BYTES) return { bytes: resized, mime: "image/jpeg" };
     }
     return null;
@@ -137,8 +136,8 @@ async function cropFace(
   landmarks?: any[] | null,
 ): Promise<string | null> {
   try {
-    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
-    const W = bitmap.width, H = bitmap.height;
+    const image = await Image.decode(bytes);
+    const W = image.width, H = image.height;
 
     let left: number, right: number, top: number, bottom: number;
 
@@ -178,19 +177,18 @@ async function cropFace(
     const sw = Math.min(W, cx + half) - sx;
     const sh = Math.min(H, cy + half) - sy;
 
-    // Always output at exactly 512×512. For large faces this downscales,
-    // for small faces (group photos) this upscales — canvas handles both.
-    // Using Math.min here was the bug: small faces produced tiny blurry crops.
+    // Always output at exactly 512×512. Edge Functions do not reliably provide
+    // browser canvas APIs, so use ImageScript's WASM-backed decoder/resizer.
     const size = 512;
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext("2d") as any;
-    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
-    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 });
-    const buf = new Uint8Array(await blob.arrayBuffer());
+    const crop = image
+      .crop(Math.round(sx), Math.round(sy), Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)))
+      .resize(size, size);
+    const buf = await crop.encodeJPEG(92);
     let b64 = "";
     for (let i = 0; i < buf.length; i += 8192) b64 += String.fromCharCode(...buf.subarray(i, i + 8192));
     return `data:image/jpeg;base64,${btoa(b64)}`;
-  } catch {
+  } catch (e) {
+    console.warn("cropFace: failed to generate face crop", { error: String((e as Error)?.message ?? e), mime });
     return null;
   }
 }
