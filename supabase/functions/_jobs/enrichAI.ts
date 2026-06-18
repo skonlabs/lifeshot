@@ -262,7 +262,7 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
       const enrichmentUpdate: Record<string, unknown> = {
         asset_id,
         user_id:    asset.user_id,
-        face_count: rawFaces.length,
+        face_count: Math.max(rawFaces.length, stored.asset_faces),
       };
       if (rawFaces.length > 0) {
         enrichmentUpdate.faces = rawFaces;
