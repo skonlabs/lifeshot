@@ -82,15 +82,6 @@ app.get("/debug/stats", async (c) => {
   };
   out.assets_total = await countRows("assets");
   out.photo_assets = await countRows("assets", (q) => q.eq("media_type", "photo"));
-  if (!uid && url.searchParams.get("include_users") === "1") {
-    const { data: assetUsers } = await sb.from("assets").select("user_id").limit(50000);
-    const userAssetCounts: Record<string, number> = {};
-    for (const row of assetUsers ?? []) {
-      const userId = String((row as any).user_id ?? "");
-      if (userId) userAssetCounts[userId] = (userAssetCounts[userId] ?? 0) + 1;
-    }
-    out.user_asset_counts = userAssetCounts;
-  }
   out.asset_ai_enrichment_count = await countRows("asset_ai_enrichment");
   out.asset_ai_face_processed = await countRows("asset_ai_enrichment", (q) => q.not("face_count", "is", null));
   out.asset_ai_with_faces = await countRows("asset_ai_enrichment", (q) => q.gt("face_count", 0));
