@@ -12,6 +12,11 @@ import { checkFaceResetGuard } from "./faceResetGuard.ts";
 const SIMILARITY_THRESHOLD = 70;
 // Lower threshold used only in the post-loop duplicate-person merge pass.
 const MERGE_SIMILARITY_THRESHOLD = 65;
+// SearchFaces returns only the top N matches. Some people already have many
+// linked detections, so MaxFaces=10 can be exhausted by faces that are already
+// in the same person row and never expose an equally strong match in another
+// duplicate row. Ask for the service maximum so the merge pass can see splits.
+const SEARCH_MAX_FACES = 4096;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
@@ -194,7 +199,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           collectionId,
           faceId,
           faceMatchThreshold: SIMILARITY_THRESHOLD,
-          maxFaces: 10,
+          maxFaces: SEARCH_MAX_FACES,
         });
         // Pick the highest-similarity match that maps to a known person.
         const best = matches
@@ -311,10 +316,11 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         collectionId,
         faceId: person.face.FaceId as string,
         faceMatchThreshold: MERGE_SIMILARITY_THRESHOLD,
-        maxFaces: 10,
+        maxFaces: SEARCH_MAX_FACES,
       });
     } catch { continue; }
     for (const m of matches) {
+      if (!peopleById.has(pid)) break; // this source person was absorbed by an earlier match
       if (m.faceId === person.face.FaceId || m.similarity < MERGE_SIMILARITY_THRESHOLD) continue;
       const otherPersonId = faceIdToPersonId.get(m.faceId);
       if (!otherPersonId || otherPersonId === pid || mergedPersonIds.has(otherPersonId)) continue;
@@ -325,6 +331,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       const dropId   = keepId === pid ? otherPersonId : pid;
       const keepPerson = peopleById.get(keepId)!;
       const dropPerson = peopleById.get(dropId)!;
+      if (!keepPerson || !dropPerson) continue;
       const merged = uniqueFaceIds([...keepPerson.face_ids, ...dropPerson.face_ids]);
       keepPerson.face_ids = merged;
       for (const fid of merged) faceIdToPersonId.set(fid, keepId);
@@ -333,6 +340,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       await sb.from("people").delete().eq("id", dropId);
       mergedPersonIds.add(dropId);
       peopleById.delete(dropId);
+      if (dropId === pid) break;
     }
   }
 
