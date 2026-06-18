@@ -15,6 +15,22 @@ const SearchIn = z.object({
   mode: z.enum(["hybrid","vector","fts"]).default("hybrid"),
 }).strict();
 
+const VALID_MEDIA_TYPES = new Set(["photo", "video", "live_photo", "animation", "document", "audio", "unknown"]);
+
+function normalizeSearchFilters(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...input };
+  const rawMedia = Array.isArray(out.media_type) ? out.media_type[0] : out.media_type;
+  const mediaType = typeof rawMedia === "string" ? rawMedia.trim().toLowerCase() : "";
+  if (!mediaType || mediaType === "any" || mediaType === "all") {
+    delete out.media_type;
+  } else if (VALID_MEDIA_TYPES.has(mediaType)) {
+    out.media_type = mediaType;
+  } else {
+    delete out.media_type;
+  }
+  return out;
+}
+
 const app = authed(createApi("/search/v1"));
 
 app.post("/search", async (c) => {
@@ -29,7 +45,7 @@ app.post("/search", async (c) => {
 
   const parsed = await queryParser.parse(body.query);
   const vec = await embedder.embed(body.query);
-  const filters = { ...(parsed.filterPlan ?? {}), ...(body.filters ?? {}) };
+  const filters = normalizeSearchFilters({ ...(parsed.filterPlan ?? {}), ...(body.filters ?? {}) });
 
   // log query
   const { data: qlog } = await supa.from("search_queries").insert({
@@ -102,7 +118,7 @@ app.post("/search", async (c) => {
     if (uniqueAssetIds.length) {
       const _from = (filters as any).from ? new Date((filters as any).from).toISOString() : null;
       const _to = (filters as any).to ? new Date((filters as any).to).toISOString() : null;
-      const _media = (filters as any).media_type as string | undefined;
+      const _media = typeof filters.media_type === "string" ? filters.media_type : undefined;
 
       let q = supa
         .from("assets")
@@ -214,7 +230,7 @@ app.get("/facets", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
   await enforceRateLimit(uid, "general");
   const { filters } = parseQuery(c, z.object({ filters: z.string().optional() }));
-  const f = filters ? JSON.parse(filters) : {};
+  const f = normalizeSearchFilters(filters ? JSON.parse(filters) : {});
   const fh = await hashJson(f);
   const hit = await cache.get<any>(c, keys.facets(uid, fh));
   if (hit) return c.json({ facets: hit, cache: { hit: true } });
