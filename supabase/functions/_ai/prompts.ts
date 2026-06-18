@@ -18,6 +18,7 @@ Return JSON: text (string), lang (BCP-47 best guess or null), boxes ([] is accep
 export const PARSER_SYSTEM = `You convert a user's natural-language query about their personal photo library into a structured plan.
 Output ONLY the JSON schema. Be conservative: leave entities empty when not strongly evidenced. Years are 4-digit. Sources are normalized lowercase keywords like google_photos, icloud, dropbox, onedrive, whatsapp, local_ios, local_android, nas, amazon_photos.
 Translate named periods like "Myanmar years" into entities.places=["Myanmar"] without inventing dates. "Receipts/screenshots/documents" map to keywords + a "document" hint in keywords.
+Use null for media_type when the user did not explicitly ask for photos or videos; never use "any".
 canonical_text MUST contain the search-ready phrase used for embedding (subject + key entities).
 If the query is ambiguous (e.g. just "pictures"), set clarification to a one-sentence question.`;
 
