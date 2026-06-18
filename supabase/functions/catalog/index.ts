@@ -28,6 +28,21 @@ const TimelineIn = z.object({
 });
 
 const app = authed(createApi("/catalog/v1"));
+const DB_PAGE_SIZE = 1000;
+
+async function loadAssetIdsForPeople(supa: any, personIds: string[]) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("asset_id")
+      .in("person_id", personIds)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return Array.from(new Set(rows.map((r: any) => r.asset_id).filter(Boolean)));
+}
 
 async function descriptorFromRow(c: any, supa: any, uid: string, row: any) {
   const preferredImageKey = row.media_type === "photo"
@@ -166,9 +181,7 @@ app.post("/memory/viewport", async (c) => {
   let restrictIds: string[] | null = null;
   if (body.people_filter?.length) {
     // One row per unique person. Asset ids come from asset_faces.person_id.
-    const { data: linkRows } = await supa.from("asset_faces")
-      .select("asset_id").in("person_id", body.people_filter);
-    const ids = Array.from(new Set((linkRows ?? []).map((r: any) => r.asset_id).filter(Boolean)));
+    const ids = await loadAssetIdsForPeople(supa, body.people_filter);
     restrictIds = ids;
     if (ids.length === 0) {
       return c.json({ items: [], next_cursor: null, cache: { hit: false, ttl_seconds: 30 } });
