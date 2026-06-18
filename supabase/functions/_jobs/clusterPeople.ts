@@ -4,6 +4,7 @@ import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
+import { enqueueJob } from "../_pipeline/enqueuer.ts";
 
 // Faces must exceed this Rekognition similarity to be merged into the same person.
 // 70% is the right balance for a family photo album: same person across different
@@ -55,6 +56,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { user_id, asset_id } = ctx.payload as { user_id?: string; asset_id?: string };
   const uid = user_id ?? ctx.userId;
   if (!uid) throw new Error("invalid: user_id");
+
+  // Capture the moment we begin loading the asset_faces snapshot. Any
+  // asset_faces rows inserted after this timestamp are NOT visible to this
+  // run and must be picked up by a follow-up clusterPeople — otherwise the
+  // tail of a sync (faces written during/after this run) stays unlinked
+  // forever because enrichAI's 5-minute idempotency bucket dedupes every
+  // subsequent enqueue in the same window.
+  const runStartedAt = new Date().toISOString();
 
   const { data: privacy } = await sb
     .from("privacy_settings")
@@ -364,6 +373,35 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     await sb.from("people").delete().in("id", orphanIds);
   }
 
+  // ── 8. Tail re-enqueue ───────────────────────────────────────────────────────
+  // Detect asset_faces rows inserted after this run started its snapshot.
+  // These were never seen by the loop above and would otherwise remain
+  // unlinked indefinitely (enrichAI's 5-minute bucketed idempotency key
+  // suppresses every follow-up enqueue inside the same window).
+  let tailEnqueued = false;
+  const { count: newerFacesCount, error: newerErr } = await sb
+    .from("asset_faces")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", uid)
+    .gt("created_at", runStartedAt);
+  if (newerErr) {
+    console.warn("clusterPeople: tail count failed", uid, newerErr.message);
+  } else if ((newerFacesCount ?? 0) > 0) {
+    try {
+      await enqueueJob("clusterPeople", {
+        userId: uid,
+        payload: { user_id: uid },
+        // Unique key so the dedup window (5-min bucket used by enrichAI) does
+        // not swallow this follow-up. ctx.jobId + "tail" guarantees one
+        // tail-enqueue per finishing run.
+        idempotencyKey: `people:${uid}:tail:${ctx.jobId}`,
+      });
+      tailEnqueued = true;
+    } catch (e: any) {
+      console.warn("clusterPeople: tail enqueue failed", uid, String(e?.message ?? e));
+    }
+  }
+
   return {
     user_id:            uid,
     trigger_asset_id:   asset_id ?? null,
@@ -373,5 +411,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     skipped,
     duplicates_merged:  mergedPersonIds.size,
     orphans_removed:    orphanIds.length,
+    newer_faces_pending: newerFacesCount ?? 0,
+    tail_enqueued:      tailEnqueued,
   };
 }
