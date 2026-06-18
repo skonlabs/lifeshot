@@ -532,10 +532,8 @@ app.post("/assets/bulk", async (c) => {
 app.post("/people/recluster", async (c) => {
   const uid = c.get("userId") as string;
   await enforceRateLimit(uid, "general");
-  const enqueuer = jobEnqueuer();
-  await enqueuer.enqueue("clusterPeople", {
+  await jobEnqueuer.enqueue("clusterPeople", { user_id: uid }, {
     userId: uid,
-    payload: { user_id: uid },
     idempotencyKey: `people:${uid}:manual:${Date.now()}`,
   });
   return c.json({ ok: true });
