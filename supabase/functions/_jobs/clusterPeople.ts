@@ -12,6 +12,11 @@ import { checkFaceResetGuard } from "./faceResetGuard.ts";
 const SIMILARITY_THRESHOLD = 70;
 // Lower threshold used only in the post-loop duplicate-person merge pass.
 const MERGE_SIMILARITY_THRESHOLD = 65;
+// SearchFaces returns only the top N matches. Some people already have many
+// linked detections, so MaxFaces=10 can be exhausted by faces that are already
+// in the same person row and never expose an equally strong match in another
+// duplicate row. Ask for the service maximum so the merge pass can see splits.
+const SEARCH_MAX_FACES = 4096;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
@@ -194,7 +199,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           collectionId,
           faceId,
           faceMatchThreshold: SIMILARITY_THRESHOLD,
-          maxFaces: 10,
+          maxFaces: SEARCH_MAX_FACES,
         });
         // Pick the highest-similarity match that maps to a known person.
         const best = matches
@@ -311,7 +316,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
         collectionId,
         faceId: person.face.FaceId as string,
         faceMatchThreshold: MERGE_SIMILARITY_THRESHOLD,
-        maxFaces: 10,
+        maxFaces: SEARCH_MAX_FACES,
       });
     } catch { continue; }
     for (const m of matches) {
