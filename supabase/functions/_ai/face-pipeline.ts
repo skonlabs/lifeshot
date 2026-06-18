@@ -21,7 +21,6 @@ import {
 } from "./rekognition.ts";
 import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
-import jpeg from "npm:jpeg-js@0.4.4";
 
 const REKOGNITION_MAX_BYTES = 5_000_000; // Rekognition hard limit is 5 MB
 const DEDUP_SIMILARITY = 98;   // reuse existing indexed face only for near-identical rescans
@@ -73,51 +72,24 @@ const REKOGNITION_SUPPORTED_MIME = new Set([
 /** Scale image bytes down to fit within REKOGNITION_MAX_BYTES using canvas. */
 async function resizeToFit(bytes: Uint8Array, mime: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
-    if (!/^image\/jpe?g$/i.test(mime)) return null;
-    const image = jpeg.decode(bytes, { useTArray: true });
-    const W = image.width, H = image.height;
+    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
+    const { width: W, height: H } = bitmap;
     // Scale longest side to 3000 px — preserves enough detail for Rekognition
     // while keeping JPEG output under 5 MB for typical photos.
     const scale = Math.min(1, 3000 / Math.max(W, H));
     const sw = Math.round(W * scale);
     const sh = Math.round(H * scale);
-    const data = scale < 1 ? resizeRgba(image.data, W, H, sw, sh) : image.data;
-    for (const quality of [92, 80, 65]) {
-      const resized = jpeg.encode({ data, width: sw, height: sh }, quality).data;
+    const canvas = new OffscreenCanvas(sw, sh);
+    (canvas.getContext("2d") as any).drawImage(bitmap, 0, 0, sw, sh);
+    for (const quality of [0.92, 0.80, 0.65]) {
+      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+      const resized = new Uint8Array(await blob.arrayBuffer());
       if (resized.byteLength <= REKOGNITION_MAX_BYTES) return { bytes: resized, mime: "image/jpeg" };
     }
     return null;
   } catch {
     return null;
   }
-}
-
-function resizeRgba(src: Uint8Array, srcW: number, srcH: number, dstW: number, dstH: number): Uint8Array {
-  const dst = new Uint8Array(dstW * dstH * 4);
-  for (let y = 0; y < dstH; y++) {
-    const sy = Math.min(srcH - 1, Math.max(0, Math.round(((y + 0.5) * srcH) / dstH - 0.5)));
-    for (let x = 0; x < dstW; x++) {
-      const sx = Math.min(srcW - 1, Math.max(0, Math.round(((x + 0.5) * srcW) / dstW - 0.5)));
-      const si = (sy * srcW + sx) * 4;
-      const di = (y * dstW + x) * 4;
-      dst[di] = src[si]; dst[di + 1] = src[si + 1]; dst[di + 2] = src[si + 2]; dst[di + 3] = 255;
-    }
-  }
-  return dst;
-}
-
-function cropResizeRgba(src: Uint8Array, srcW: number, srcH: number, sx: number, sy: number, sw: number, sh: number, size: number): Uint8Array {
-  const dst = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    const srcY = Math.min(srcH - 1, Math.max(0, Math.round(sy + ((y + 0.5) * sh) / size - 0.5)));
-    for (let x = 0; x < size; x++) {
-      const srcX = Math.min(srcW - 1, Math.max(0, Math.round(sx + ((x + 0.5) * sw) / size - 0.5)));
-      const si = (srcY * srcW + srcX) * 4;
-      const di = (y * size + x) * 4;
-      dst[di] = src[si]; dst[di + 1] = src[si + 1]; dst[di + 2] = src[si + 2]; dst[di + 3] = 255;
-    }
-  }
-  return dst;
 }
 
 /** Fetch image bytes at full resolution (no size cap). Used for crop generation. */
@@ -165,9 +137,8 @@ async function cropFace(
   landmarks?: any[] | null,
 ): Promise<string | null> {
   try {
-    if (!/^image\/jpe?g$/i.test(mime)) return null;
-    const image = jpeg.decode(bytes, { useTArray: true });
-    const W = image.width, H = image.height;
+    const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
+    const W = bitmap.width, H = bitmap.height;
 
     let left: number, right: number, top: number, bottom: number;
 
@@ -207,15 +178,15 @@ async function cropFace(
     const sw = Math.min(W, cx + half) - sx;
     const sh = Math.min(H, cy + half) - sy;
 
-    // Always output at exactly 512×512. Edge Functions do not reliably provide
-    // browser canvas APIs, so use a lightweight pure-JS JPEG crop/resizer.
+    // Always output at exactly 512×512. For large faces this downscales,
+    // for small faces (group photos) this upscales — canvas handles both.
+    // Using Math.min here was the bug: small faces produced tiny blurry crops.
     const size = 512;
-    const crop = cropResizeRgba(
-      image.data, W, H,
-      Math.round(sx), Math.round(sy), Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)),
-      size,
-    );
-    const buf = jpeg.encode({ data: crop, width: size, height: size }, 92).data;
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext("2d") as any;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 });
+    const buf = new Uint8Array(await blob.arrayBuffer());
     let b64 = "";
     for (let i = 0; i < buf.length; i += 8192) b64 += String.fromCharCode(...buf.subarray(i, i + 8192));
     return `data:image/jpeg;base64,${btoa(b64)}`;
