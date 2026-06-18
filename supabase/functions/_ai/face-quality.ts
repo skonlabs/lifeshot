@@ -12,8 +12,8 @@ export const FACE_CLUSTER_QUALITY = {
   // still gated by confidence ≥ 90, pose (yaw/pitch), eyes-open and
   // not-occluded checks, so loosening sharpness alone does not let garbage
   // through — it just stops dropping valid faces from group photos.
-  minSharpness: 8,
-  minBrightness: 20,
+  minSharpness: 2,
+  minBrightness: 15,
 };
 
 function toNumber(value: unknown): number | null {
