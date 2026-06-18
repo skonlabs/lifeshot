@@ -36,12 +36,123 @@ app.post("/search", async (c) => {
     user_id: uid, raw_query: body.query, parsed,
   }).select("id").single();
 
-  const { data: rows, error } = await supa.rpc("hybrid_search", {
-    _query_text: body.query, _query_vector: vec, _filters: filters, _k: body.k,
-  });
-  if (error) throw new ApiError("internal", error.message);
+  // ── Person-name resolution ──────────────────────────────────────────────
+  // If the parsed query mentions a person (or the raw text contains a known
+  // person's display_name), resolve those to person_ids and short-circuit to
+  // an asset_faces lookup. Full-text search on "Bittu" returns nothing —
+  // names live in `people.display_name`, not in `assets.search_content`.
+  const personNames: string[] = Array.isArray((parsed as any)?.entities?.people)
+    ? (parsed as any).entities.people.filter((s: unknown) => typeof s === "string" && s.trim().length > 0)
+    : [];
 
-  const ids = (rows ?? []).map((r: any) => r.asset_id);
+  // Also harvest capitalized tokens from the raw query as fallback name hints
+  // (parser sometimes misses single-word names).
+  const rawTokens = body.query.match(/\b[A-Z][a-zA-Z'\-]{1,30}\b/g) ?? [];
+  const STOPWORDS = new Set([
+    "I","Me","My","Mine","You","Your","We","Our","He","She","It","They","Them",
+    "The","A","An","On","In","At","Of","For","With","And","Or","But","Last",
+    "First","Time","Met","Meet","When","Where","What","Who","Why","How","Was",
+    "Were","Is","Are","Did","Do","Does","Have","Has","Had","Show","Find","Photo",
+    "Photos","Video","Videos","Picture","Pictures","Pic","Pics","Yesterday",
+    "Today","Tomorrow","Summer","Winter","Spring","Fall","Autumn","Monday",
+    "Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday","January",
+    "February","March","April","May","June","July","August","September",
+    "October","November","December",
+  ]);
+  const nameHints = Array.from(new Set([
+    ...personNames,
+    ...rawTokens.filter((t) => !STOPWORDS.has(t)),
+  ]));
+
+  // Look up matching people by display_name (case-insensitive).
+  let personIds: string[] = [];
+  let matchedPeople: Array<{ id: string; display_name: string | null }> = [];
+  if (nameHints.length) {
+    const orFilter = nameHints
+      .map((n) => `display_name.ilike.%${n.replace(/[,()]/g, "")}%`)
+      .join(",");
+    const { data: peopleRows } = await supa
+      .from("people")
+      .select("id, display_name")
+      .eq("user_id", uid)
+      .not("display_name", "is", null)
+      .or(orFilter);
+    matchedPeople = peopleRows ?? [];
+    personIds = matchedPeople.map((p) => p.id);
+  }
+
+  // Detect "last/latest/recent/when did/most recent" → sort by capture_time desc.
+  const recencyRe = /\b(last|latest|recent|most recent|when (did|was)|when i|the last time)\b/i;
+  const sortByRecent = recencyRe.test(body.query) || personIds.length > 0;
+
+  let rows: Array<{ asset_id: string; score: number; explanation: any }> = [];
+
+  if (personIds.length > 0) {
+    // Person-scoped lookup: every asset that contains at least one face linked
+    // to one of the matched people, with all date/media filters applied.
+    const { data: faceRows, error: fErr } = await supa
+      .from("asset_faces")
+      .select("asset_id, person_id")
+      .eq("user_id", uid)
+      .in("person_id", personIds)
+      .limit(2000);
+    if (fErr) throw new ApiError("internal", fErr.message);
+
+    const uniqueAssetIds = Array.from(new Set((faceRows ?? []).map((r: any) => r.asset_id as string)));
+    if (uniqueAssetIds.length) {
+      const _from = (filters as any).from ? new Date((filters as any).from).toISOString() : null;
+      const _to = (filters as any).to ? new Date((filters as any).to).toISOString() : null;
+      const _media = (filters as any).media_type as string | undefined;
+
+      let q = supa
+        .from("assets")
+        .select("id, capture_time")
+        .eq("user_id", uid)
+        .eq("deleted_state", "active")
+        .in("id", uniqueAssetIds)
+        .order("capture_time", { ascending: false, nullsFirst: false })
+        .limit(body.k);
+      if (_from) q = q.gte("capture_time", _from);
+      if (_to) q = q.lte("capture_time", _to);
+      if (_media) q = q.eq("media_type", _media);
+
+      const { data: matched, error: aErr } = await q;
+      if (aErr) throw new ApiError("internal", aErr.message);
+      rows = (matched ?? []).map((a: any, idx: number) => ({
+        asset_id: a.id,
+        score: 1.0 / (60 + idx),
+        explanation: {
+          mode: "person",
+          people: matchedPeople.map((p) => p.display_name),
+          capture_time: a.capture_time,
+        },
+      }));
+    }
+  } else {
+    // Fallback: original FTS-based hybrid search.
+    const { data: rpcRows, error } = await supa.rpc("hybrid_search", {
+      _query_text: body.query, _query_vector: vec, _filters: filters, _k: body.k,
+    });
+    if (error) throw new ApiError("internal", error.message);
+    rows = (rpcRows ?? []) as any;
+
+    // If asked for recency, re-sort by capture_time desc.
+    if (sortByRecent && rows.length) {
+      const idList = rows.map((r) => r.asset_id);
+      const { data: dated } = await supa
+        .from("assets")
+        .select("id, capture_time")
+        .in("id", idList);
+      const tMap = new Map((dated ?? []).map((a: any) => [a.id, a.capture_time as string | null]));
+      rows.sort((a, b) => {
+        const ta = tMap.get(a.asset_id) ?? "";
+        const tb = tMap.get(b.asset_id) ?? "";
+        return tb.localeCompare(ta);
+      });
+    }
+  }
+
+  const ids = rows.map((r) => r.asset_id);
   let assetMap: Record<string, any> = {};
   if (ids.length) {
     const { data: assets } = await supa.from("assets")
