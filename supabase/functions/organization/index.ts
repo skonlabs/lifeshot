@@ -79,9 +79,10 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
   // by faceId. The face column is jsonb so we filter app-side.
   const otherPersonIds = new Set<string>();
   const unclusteredMatchedFaceIds = new Set<string>();
+  const unclusteredMatchedFaceRowIds = new Set<string>();
   for (let from = 0;; from += DB_PAGE_SIZE) {
     const { data, error } = await svc.from("asset_faces")
-      .select("person_id, face")
+      .select("id, person_id, face")
       .eq("user_id", userId)
       .range(from, from + DB_PAGE_SIZE - 1);
     if (error) { console.warn("autoMergeOnRename: load faces failed", error.message); break; }
@@ -92,6 +93,7 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
         otherPersonIds.add(String(row.person_id));
       } else if (!row.person_id) {
         unclusteredMatchedFaceIds.add(fid);
+        if ((row as any).id) unclusteredMatchedFaceRowIds.add(String((row as any).id));
       }
     }
     if (!data || data.length < DB_PAGE_SIZE) break;
@@ -101,7 +103,7 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
   console.log("autoMergeOnRename: candidates", {
     target: targetPersonId,
     other_clusters: sources.length,
-    unclustered_faces: unclusteredMatchedFaceIds.size,
+    unclustered_faces: unclusteredMatchedFaceRowIds.size,
   });
 
   // Reassign every asset_faces row from source persons → target person.
@@ -117,17 +119,15 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
 
   // Also adopt every unclustered face that matched (these never made it into a
   // cluster — typically because the clusterer's quality filter rejected them).
-  if (unclusteredMatchedFaceIds.size) {
-    const fids = Array.from(unclusteredMatchedFaceIds);
-    // jsonb filter: face->>'FaceId' IN (...). Do it in batches via .in() on a generated column-style filter.
-    // Supabase doesn't support .in() on a jsonb path directly, so iterate.
-    for (const fid of fids) {
+  if (unclusteredMatchedFaceRowIds.size) {
+    const rowIds = Array.from(unclusteredMatchedFaceRowIds);
+    for (let i = 0; i < rowIds.length; i += 100) {
       const { error: adoptErr } = await svc.from("asset_faces")
         .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
         .eq("user_id", userId)
         .is("person_id", null)
-        .or(`face->>FaceId.eq.${fid},face->>faceId.eq.${fid}`);
-      if (adoptErr) console.warn("autoMergeOnRename: adopt unclustered failed", fid, adoptErr.message);
+        .in("id", rowIds.slice(i, i + 100));
+      if (adoptErr) console.warn("autoMergeOnRename: adopt unclustered failed", adoptErr.message);
     }
   }
 
@@ -150,7 +150,7 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
     await svc.from("people").delete().eq("user_id", userId).in("id", sources);
   }
 
-  return sources.length + unclusteredMatchedFaceIds.size;
+  return sources.length + unclusteredMatchedFaceRowIds.size;
 }
 
 function uniqStrings(xs: string[]): string[] {
