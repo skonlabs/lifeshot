@@ -13,4 +13,4 @@ JOIN asset_ai_enrichment aie ON aie.asset_id = a.id
 WHERE a.deleted_state = 'active'
   AND aie.face_count IS NOT NULL
   AND (aie.caption IS NULL OR aie.caption = '')
-ON CONFLICT (idempotency_key) DO NOTHING;
+ON CONFLICT (user_id, job_name, idempotency_key) DO NOTHING;

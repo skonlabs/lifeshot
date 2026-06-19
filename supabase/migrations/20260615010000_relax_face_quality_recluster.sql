@@ -19,4 +19,4 @@ SELECT
   'pending',
   5
 FROM users_with_faces u
-ON CONFLICT (idempotency_key) DO NOTHING;
+ON CONFLICT (user_id, job_name, idempotency_key) DO NOTHING;

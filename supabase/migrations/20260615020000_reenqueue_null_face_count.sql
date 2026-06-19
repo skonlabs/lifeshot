@@ -17,4 +17,4 @@ JOIN public.asset_ai_enrichment e ON e.asset_id = a.id
 WHERE e.face_count IS NULL
   AND (a.media_type IS NULL OR a.media_type <> 'video')
   AND (a.mime_type IS NULL OR a.mime_type NOT LIKE 'video/%')
-ON CONFLICT (idempotency_key) DO NOTHING;
+ON CONFLICT (user_id, job_name, idempotency_key) DO NOTHING;
