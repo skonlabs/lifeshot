@@ -72,57 +72,85 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
       console.warn("autoMergeOnRename: SearchFaces failed", seed, String(e instanceof Error ? e.message : e));
     }
   }
+  console.log("autoMergeOnRename: matched faces from Rekognition", { target: targetPersonId, count: matchedFaceIds.size });
   if (matchedFaceIds.size === 0) return 0;
 
-  // Find which OTHER people own those matched faces. The face column is jsonb
-  // so we filter app-side after pulling the user's non-target face rows.
+  // Scan ALL of the user's face rows (clustered and unclustered) and bucket them
+  // by faceId. The face column is jsonb so we filter app-side.
   const otherPersonIds = new Set<string>();
+  const unclusteredMatchedFaceIds = new Set<string>();
   for (let from = 0;; from += DB_PAGE_SIZE) {
     const { data, error } = await svc.from("asset_faces")
       .select("person_id, face")
       .eq("user_id", userId)
-      .neq("person_id", targetPersonId)
-      .not("person_id", "is", null)
       .range(from, from + DB_PAGE_SIZE - 1);
     if (error) { console.warn("autoMergeOnRename: load faces failed", error.message); break; }
     for (const row of data ?? []) {
-      const fid = String(row?.face?.faceId ?? row?.face?.FaceId ?? "");
-      if (fid && matchedFaceIds.has(fid) && row.person_id) {
+      const fid = String((row as any)?.face?.faceId ?? (row as any)?.face?.FaceId ?? "");
+      if (!fid || !matchedFaceIds.has(fid)) continue;
+      if (row.person_id && String(row.person_id) !== targetPersonId) {
         otherPersonIds.add(String(row.person_id));
+      } else if (!row.person_id) {
+        unclusteredMatchedFaceIds.add(fid);
       }
     }
     if (!data || data.length < DB_PAGE_SIZE) break;
   }
-  if (otherPersonIds.size === 0) return 0;
 
   const sources = Array.from(otherPersonIds);
+  console.log("autoMergeOnRename: candidates", {
+    target: targetPersonId,
+    other_clusters: sources.length,
+    unclustered_faces: unclusteredMatchedFaceIds.size,
+  });
 
   // Reassign every asset_faces row from source persons → target person.
-  const { error: reassignErr } = await svc.from("asset_faces")
-    .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .in("person_id", sources);
-  if (reassignErr) {
-    console.warn("autoMergeOnRename: reassign failed", reassignErr.message);
-    return 0;
+  if (sources.length) {
+    const { error: reassignErr } = await svc.from("asset_faces")
+      .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
+      .eq("user_id", userId)
+      .in("person_id", sources);
+    if (reassignErr) {
+      console.warn("autoMergeOnRename: reassign clusters failed", reassignErr.message);
+    }
+  }
+
+  // Also adopt every unclustered face that matched (these never made it into a
+  // cluster — typically because the clusterer's quality filter rejected them).
+  if (unclusteredMatchedFaceIds.size) {
+    const fids = Array.from(unclusteredMatchedFaceIds);
+    // jsonb filter: face->>'FaceId' IN (...). Do it in batches via .in() on a generated column-style filter.
+    // Supabase doesn't support .in() on a jsonb path directly, so iterate.
+    for (const fid of fids) {
+      const { error: adoptErr } = await svc.from("asset_faces")
+        .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
+        .eq("user_id", userId)
+        .is("person_id", null)
+        .or(`face->>FaceId.eq.${fid},face->>faceId.eq.${fid}`);
+      if (adoptErr) console.warn("autoMergeOnRename: adopt unclustered failed", fid, adoptErr.message);
+    }
   }
 
   // Union face_ids onto the target person row, then drop the now-empty sources.
+  const peopleIds = [targetPersonId, ...sources];
   const { data: peopleRows } = await svc.from("people")
     .select("id, face_ids")
     .eq("user_id", userId)
-    .in("id", [targetPersonId, ...sources]);
+    .in("id", peopleIds);
   const merged = new Set<string>();
   for (const p of peopleRows ?? []) {
     for (const f of (p.face_ids ?? []) as string[]) if (f) merged.add(f);
   }
+  for (const fid of unclusteredMatchedFaceIds) merged.add(fid);
   await svc.from("people").update({
     face_ids: Array.from(merged),
     updated_at: new Date().toISOString(),
   }).eq("id", targetPersonId);
-  await svc.from("people").delete().eq("user_id", userId).in("id", sources);
+  if (sources.length) {
+    await svc.from("people").delete().eq("user_id", userId).in("id", sources);
+  }
 
-  return sources.length;
+  return sources.length + unclusteredMatchedFaceIds.size;
 }
 
 function uniqStrings(xs: string[]): string[] {
