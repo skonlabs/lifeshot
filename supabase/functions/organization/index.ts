@@ -74,23 +74,24 @@ async function autoMergeOnRename(userId: string, targetPersonId: string): Promis
   }
   if (matchedFaceIds.size === 0) return 0;
 
-  // Find which OTHER people own those matched faces.
-  const matchedList = Array.from(matchedFaceIds);
+  // Find which OTHER people own those matched faces. The face column is jsonb
+  // so we filter app-side after pulling the user's non-target face rows.
   const otherPersonIds = new Set<string>();
-  // Pull rows in chunks to stay under the 1000-row limit on `.in()`.
-  for (let i = 0; i < matchedList.length; i += 200) {
-    const chunk = matchedList.slice(i, i + 200);
-    const { data } = await svc.from("asset_faces")
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await svc.from("asset_faces")
       .select("person_id, face")
       .eq("user_id", userId)
       .neq("person_id", targetPersonId)
-      .not("person_id", "is", null);
+      .not("person_id", "is", null)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) { console.warn("autoMergeOnRename: load faces failed", error.message); break; }
     for (const row of data ?? []) {
       const fid = String(row?.face?.faceId ?? row?.face?.FaceId ?? "");
-      if (fid && chunk.includes(fid) && row.person_id) {
+      if (fid && matchedFaceIds.has(fid) && row.person_id) {
         otherPersonIds.add(String(row.person_id));
       }
     }
+    if (!data || data.length < DB_PAGE_SIZE) break;
   }
   if (otherPersonIds.size === 0) return 0;
 
