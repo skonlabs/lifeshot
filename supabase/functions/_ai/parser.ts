@@ -8,7 +8,7 @@ import { ParsedQueryZ, PARSER_JSON_SCHEMA, type ParsedQuery } from "./schemas.ts
 export async function parseQuery(query: string, ctx?: CallContext): Promise<ParsedQuery> {
   const messages = [
     { role: "system", content: PARSER_SYSTEM },
-    { role: "user", content: query.slice(0, 1000) },
+    { role: "user", content: query.slice(0, 4000) },
   ];
   const { data } = await chatStructured<ParsedQuery>({
     model: aiConfig.parserModel,
