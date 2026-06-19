@@ -10,7 +10,7 @@ import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
 import { faceQualityScore, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
-import { recreateCollection, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { recreateCollection, collectionIdForUser, rekognitionConfigured, searchFaces } from "../_ai/rekognition.ts";
 import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 
 const ListPage = z.object({
@@ -477,6 +477,7 @@ app.post("/corrections", async (c) => {
   // re-run face clustering; for other entities we just record the correction
   // (search reindex picks up the changes on next pipeline pass).
   let job_id: string | null = null;
+  let merged_people = 0;
   if (body.target_type === "person") {
     // Persist the new display_name directly on the (single) person row.
     const newName = typeof (body.correction as any)?.display_name === "string"
@@ -487,13 +488,20 @@ app.post("/corrections", async (c) => {
         .update({ display_name: newName, updated_at: new Date().toISOString() })
         .eq("id", body.target_id);
       if (renameErr) throw new ApiError("internal", renameErr.message);
+      // Auto-merge: pull other clusters of the same physical person into this
+      // one so naming a cluster surfaces every photo of that person.
+      try {
+        merged_people = await autoMergeOnRename(uid, body.target_id);
+      } catch (e) {
+        console.warn("auto-merge on rename failed", String(e instanceof Error ? e.message : e));
+      }
     }
     const job = await jobEnqueuer.enqueue("clusterPeople",
       { user_id: uid, target_person_id: body.target_id, correction: body.correction },
       { userId: uid });
     job_id = job.id;
   }
-  const out = { id, job_id };
+  const out = { id, job_id, merged_people };
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
