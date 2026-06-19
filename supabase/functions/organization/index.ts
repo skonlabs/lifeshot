@@ -10,7 +10,7 @@ import { hashJson } from "../_shared/cache.ts";
 import { emitEvent } from "../_shared/observability.ts";
 import { resolveThumbUrl } from "../_shared/signed-url.ts";
 import { faceQualityScore, sanitizeFaceBox, type FaceBox } from "../_shared/face-box.ts";
-import { recreateCollection, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
+import { recreateCollection, collectionIdForUser, rekognitionConfigured, searchFaces } from "../_ai/rekognition.ts";
 import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 
 const ListPage = z.object({
@@ -20,6 +20,114 @@ const ListPage = z.object({
 
 const app = authed(createApi("/organization/v1"));
 const DB_PAGE_SIZE = 1000;
+
+// Threshold (0-100) used when an unnamed cluster gets a display_name and we
+// look across the rest of the user's Rekognition collection for other clusters
+// of the same physical person. 80 is permissive enough to catch the same person
+// across pose/lighting/age drift without dragging in look-alikes.
+const AUTO_MERGE_SIMILARITY = 80;
+// How many seed faces from the target person we feed to SearchFaces. Each call
+// returns up to MaxFaces matches; sampling a handful keeps cost bounded while
+// covering the variety of poses/ages in that cluster.
+const AUTO_MERGE_SEED_LIMIT = 8;
+const AUTO_MERGE_MAX_FACES = 200;
+
+/**
+ * When a person cluster is named for the first time, look across the user's
+ * Rekognition collection for other clusters that hold the same physical person
+ * (face-cluster splits caused by pose/lighting/age drift) and merge them into
+ * the named target. Returns the count of merged-in (and deleted) people rows.
+ */
+async function autoMergeOnRename(userId: string, targetPersonId: string): Promise<number> {
+  if (!rekognitionConfigured()) return 0;
+  const svc = getServiceClient();
+
+  // Seed faces from the target person — these define "who is Bittu".
+  const { data: seeds } = await svc.from("asset_faces")
+    .select("face")
+    .eq("user_id", userId)
+    .eq("person_id", targetPersonId)
+    .not("face", "is", null)
+    .limit(AUTO_MERGE_SEED_LIMIT * 4);
+  const seedFaceIds = uniqStrings(
+    (seeds ?? [])
+      .map((r: any) => String(r?.face?.faceId ?? r?.face?.FaceId ?? ""))
+      .filter(Boolean),
+  ).slice(0, AUTO_MERGE_SEED_LIMIT);
+  if (seedFaceIds.length === 0) return 0;
+
+  // Ask Rekognition: which other face_ids in the collection look ≥80% similar?
+  const collectionId = collectionIdForUser(userId);
+  const matchedFaceIds = new Set<string>();
+  for (const seed of seedFaceIds) {
+    try {
+      const matches = await searchFaces({
+        collectionId,
+        faceId: seed,
+        faceMatchThreshold: AUTO_MERGE_SIMILARITY,
+        maxFaces: AUTO_MERGE_MAX_FACES,
+      });
+      for (const m of matches) if (m.faceId) matchedFaceIds.add(m.faceId);
+    } catch (e) {
+      console.warn("autoMergeOnRename: SearchFaces failed", seed, String(e instanceof Error ? e.message : e));
+    }
+  }
+  if (matchedFaceIds.size === 0) return 0;
+
+  // Find which OTHER people own those matched faces. The face column is jsonb
+  // so we filter app-side after pulling the user's non-target face rows.
+  const otherPersonIds = new Set<string>();
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await svc.from("asset_faces")
+      .select("person_id, face")
+      .eq("user_id", userId)
+      .neq("person_id", targetPersonId)
+      .not("person_id", "is", null)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) { console.warn("autoMergeOnRename: load faces failed", error.message); break; }
+    for (const row of data ?? []) {
+      const fid = String(row?.face?.faceId ?? row?.face?.FaceId ?? "");
+      if (fid && matchedFaceIds.has(fid) && row.person_id) {
+        otherPersonIds.add(String(row.person_id));
+      }
+    }
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  if (otherPersonIds.size === 0) return 0;
+
+  const sources = Array.from(otherPersonIds);
+
+  // Reassign every asset_faces row from source persons → target person.
+  const { error: reassignErr } = await svc.from("asset_faces")
+    .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .in("person_id", sources);
+  if (reassignErr) {
+    console.warn("autoMergeOnRename: reassign failed", reassignErr.message);
+    return 0;
+  }
+
+  // Union face_ids onto the target person row, then drop the now-empty sources.
+  const { data: peopleRows } = await svc.from("people")
+    .select("id, face_ids")
+    .eq("user_id", userId)
+    .in("id", [targetPersonId, ...sources]);
+  const merged = new Set<string>();
+  for (const p of peopleRows ?? []) {
+    for (const f of (p.face_ids ?? []) as string[]) if (f) merged.add(f);
+  }
+  await svc.from("people").update({
+    face_ids: Array.from(merged),
+    updated_at: new Date().toISOString(),
+  }).eq("id", targetPersonId);
+  await svc.from("people").delete().eq("user_id", userId).in("id", sources);
+
+  return sources.length;
+}
+
+function uniqStrings(xs: string[]): string[] {
+  return Array.from(new Set(xs));
+}
 
 async function loadAssetFacesForPeople(supa: any, personIds: string[]) {
   const rows: any[] = [];
@@ -477,6 +585,7 @@ app.post("/corrections", async (c) => {
   // re-run face clustering; for other entities we just record the correction
   // (search reindex picks up the changes on next pipeline pass).
   let job_id: string | null = null;
+  let merged_people = 0;
   if (body.target_type === "person") {
     // Persist the new display_name directly on the (single) person row.
     const newName = typeof (body.correction as any)?.display_name === "string"
@@ -487,13 +596,20 @@ app.post("/corrections", async (c) => {
         .update({ display_name: newName, updated_at: new Date().toISOString() })
         .eq("id", body.target_id);
       if (renameErr) throw new ApiError("internal", renameErr.message);
+      // Auto-merge: pull other clusters of the same physical person into this
+      // one so naming a cluster surfaces every photo of that person.
+      try {
+        merged_people = await autoMergeOnRename(uid, body.target_id);
+      } catch (e) {
+        console.warn("auto-merge on rename failed", String(e instanceof Error ? e.message : e));
+      }
     }
     const job = await jobEnqueuer.enqueue("clusterPeople",
       { user_id: uid, target_person_id: body.target_id, correction: body.correction },
       { userId: uid });
     job_id = job.id;
   }
-  const out = { id, job_id };
+  const out = { id, job_id, merged_people };
   await storeIdempotent(c, "corrections", reqHash, out, 200);
   emitEvent(c, "organization.correction", { type: body.target_type });
   return c.json(out);
