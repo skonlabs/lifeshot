@@ -24,7 +24,7 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
     .single();
   if (!asset) throw new Error("not found: asset");
 
-  const [aiRow, gpsRow, exifRow] = await Promise.all([
+  const [aiRow, gpsRow, exifRow, eventAssocRow] = await Promise.all([
     sb.from("asset_ai_enrichment").select("caption, tags, ocr_text")
       .eq("asset_id", asset_id).maybeSingle().then((r) => r.data),
     sb.from("asset_gps").select(
@@ -35,6 +35,8 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
       "iso, aperture, f_number, shutter_speed, focal_length, focal_length_35mm, " +
       "flash, white_balance, exposure_mode, software",
     ).eq("asset_id", asset_id).maybeSingle().then((r) => r.data),
+    sb.from("event_assets").select("events!event_id(title)")
+      .eq("asset_id", asset_id).maybeSingle().then((r) => r.data),
   ]);
 
   const parts: string[] = [];
@@ -76,6 +78,10 @@ export async function indexSearchDocument(ctx: JobContext): Promise<unknown> {
   if (exifRow?.white_balance)   parts.push(exifRow.white_balance);
   if (exifRow?.exposure_mode)   parts.push(exifRow.exposure_mode);
   if (exifRow?.software)        parts.push(exifRow.software);
+
+  // Event title (FK join: event_assets.event_id → events.title)
+  const evTitle = (eventAssocRow as any)?.events?.title as string | null | undefined;
+  if (evTitle) parts.push(evTitle);
 
   // Filename / folder path (now on assets directly)
   if (asset.filename)           parts.push(asset.filename);

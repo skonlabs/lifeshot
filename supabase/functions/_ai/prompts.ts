@@ -15,11 +15,21 @@ Do NOT identify specific people. Stay factual and neutral.`;
 export const OCR_PROMPT = `Extract any readable text from the image.
 Return JSON: text (string), lang (BCP-47 best guess or null), boxes ([] is acceptable).`;
 
-export const PARSER_SYSTEM = `You convert a user's natural-language query about their personal photo library into a structured plan.
-Output ONLY the JSON schema. Be conservative: leave entities empty when not strongly evidenced. Years are 4-digit. Sources are normalized lowercase keywords like google_photos, icloud, dropbox, onedrive, whatsapp, local_ios, local_android, nas, amazon_photos.
-Translate named periods like "Myanmar years" into entities.places=["Myanmar"] without inventing dates. "Receipts/screenshots/documents" map to keywords + a "document" hint in keywords.
-canonical_text MUST contain the search-ready phrase used for embedding (subject + key entities).
-If the query is ambiguous (e.g. just "pictures"), set clarification to a one-sentence question.`;
+export const PARSER_SYSTEM = `Parse a personal photo library query into structured JSON. Output ONLY the JSON.
+Context (when provided after "---"): today's date, people list (id|name), events list (id|title|from|to), places list (id|name).
+
+RULES (be conservative — leave arrays empty when not evidenced):
+- people_ids_all_of: ALL must appear together ("X and Y", "me with Z"). people_ids_any_of: ANY is fine.
+- "me/myself/I" → people[0].id (first person in list). Relational terms ("my wife/mom/dad") → fuzzy-match people[].name.
+- Unresolved names → entities.people fallback only (leave people_ids_* empty).
+- Dates: resolve named periods using today. "last summer"=Jun1–Aug31 prev year. "last year"=full prev year. "recently"=3mo ago–today. Output ISO dates in filter_plan.from/to.
+- Events: fuzzy-match query against events list → event_ids. Generic terms ("camping") → keywords only unless a specific event matches.
+- Places: fuzzy-match → place_ids. Also add original term to entities.places.
+- is_temporal_query=true for "last time I was with X / when did I last see X / most recent photo with X".
+- friendly_response: 1–2 warm sentences saying what you'll show. No exact counts. Note unresolved names.
+- canonical_text: embedding-ready phrase (subject + key entities). Years are 4-digit.
+- Sources: google_photos icloud dropbox onedrive whatsapp local_ios local_android nas amazon_photos.
+- media_type: "any" unless explicitly asked for photos or videos.`;
 
 export const EXPLAIN_SYSTEM = `You explain why a small set of search results matches a user query.
 - Cite ONLY signals present in the provided rows (date, place, source, semantic_score, text snippet match).

@@ -119,6 +119,12 @@ export const ParsedQueryZ = z.object({
   }),
   canonical_text: z.string().default(""),
   clarification: z.string().nullable().optional(),
+  people_ids_all_of: z.array(z.string()).default([]),
+  people_ids_any_of: z.array(z.string()).default([]),
+  event_ids: z.array(z.string()).default([]),
+  place_ids: z.array(z.string()).default([]),
+  is_temporal_query: z.boolean().default(false),
+  friendly_response: z.string().nullable().default(null),
 });
 export type ParsedQuery = z.infer<typeof ParsedQueryZ>;
 
@@ -126,7 +132,7 @@ export const PARSER_JSON_SCHEMA = {
   name: "parsed_query", strict: true,
   schema: {
     type: "object", additionalProperties: false,
-    required: ["intent","entities","filter_plan","canonical_text","clarification"],
+    required: ["intent","entities","filter_plan","canonical_text","clarification","people_ids_all_of","people_ids_any_of","event_ids","place_ids","is_temporal_query","friendly_response"],
     properties: {
       intent: { type: "string",
         enum: ["find_assets","find_event","find_person","find_place","find_duplicates","find_at_risk","timeline_navigate","browse"] },
@@ -166,6 +172,12 @@ export const PARSER_JSON_SCHEMA = {
       },
       canonical_text: { type:"string" },
       clarification: { type:["string","null"] },
+      people_ids_all_of: { type:"array", items:{ type:"string" } },
+      people_ids_any_of: { type:"array", items:{ type:"string" } },
+      event_ids: { type:"array", items:{ type:"string" } },
+      place_ids: { type:"array", items:{ type:"string" } },
+      is_temporal_query: { type:"boolean" },
+      friendly_response: { anyOf:[{ type:"string" },{ type:"null" }] },
     },
   },
 } as const;

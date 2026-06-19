@@ -115,21 +115,20 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     { onConflict: "asset_id", ignoreDuplicates: true },
   );
 
-  // ── Vision analysis (caption + tags + objects) ─────────────────────────────
-  // TEMPORARILY DISABLED — uncomment to re-enable OpenAI vision calls.
+  // ── Vision analysis (caption + tags) ──────────────────────────────────────
   let caption = "";
   let tags: string[] = [];
   let visionError: string | null = null;
-  void visionError; // suppress unused-variable lint
 
-  // try {
-  //   const capResult = await providers.ai.caption({ url });
-  //   caption = capResult.caption;
-  //   tags = capResult.tags ?? [];
-  // } catch (e: any) {
-  //   visionError = String(e?.message ?? e);
-  //   console.error("enrichAI: vision failed", { asset_id, error: visionError });
-  // }
+  try {
+    const capResult = await providers.ai.caption({ url });
+    caption = capResult.caption;
+    tags = capResult.tags ?? [];
+  } catch (e: any) {
+    visionError = String(e?.message ?? e);
+    console.error("enrichAI: vision failed", { asset_id, error: visionError });
+  }
+  void visionError;
 
   // ── Face detection & storage (face-pipeline.ts) ────────────────────────────
   //   1. analyzeAssetFaces   — Rekognition IndexFaces, raw face JSON
@@ -245,15 +244,17 @@ export async function enrichAI(ctx: JobContext): Promise<unknown> {
     });
   }
 
-  // Vision error handling and caption/tags write are temporarily disabled
-  // while OpenAI calls are commented out above. Re-enable both when vision is
-  // turned back on.
-
-  // await enqueueJob("indexSearchDocument", {
-  //   userId: ctx.userId,
-  //   payload: { asset_id },
-  //   idempotencyKey: `index:${asset_id}`,
-  // });
+  if (caption) {
+    await sb.from("asset_ai_enrichment").upsert(
+      { asset_id, user_id: asset.user_id, caption, tags },
+      { onConflict: "asset_id" },
+    );
+    await enqueueJob("indexSearchDocument", {
+      userId: ctx.userId,
+      payload: { asset_id },
+      idempotencyKey: `index:${asset_id}`,
+    });
+  }
 
   return {
     asset_id,
