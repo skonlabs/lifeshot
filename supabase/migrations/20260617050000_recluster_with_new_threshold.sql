@@ -18,4 +18,4 @@ where media_type in ('photo', 'live_photo', 'animation')
     select 1 from job_queue jq
     where jq.idempotency_key = 'recluster-threshold80:' || assets.user_id
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;

@@ -29,4 +29,4 @@ where a.face_scanned_at is not null
     where jq.idempotency_key = 'fresh-recluster-70pct:' || a.user_id
       and jq.status in ('pending', 'running')
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;

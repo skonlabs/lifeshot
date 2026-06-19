@@ -35,7 +35,7 @@ where a.media_type in ('photo', 'live_photo', 'animation')
       and jq.status in ('pending', 'running')
       and jq.payload->>'asset_id' = a.id::text
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;
 
 -- Also enqueue generateDerived to rebuild derivatives from the uploads bucket
 -- for any asset that has no derived storage paths yet.
@@ -65,7 +65,7 @@ where a.media_type in ('photo', 'live_photo', 'animation')
       and jq.status in ('pending', 'running')
       and jq.payload->>'asset_id' = a.id::text
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;
 
 select
   (select count(*) from public.job_queue where job_name = 'enrichAI' and idempotency_key like 'reenrich-bucket-fix:%' and status = 'pending') as enrichai_enqueued,

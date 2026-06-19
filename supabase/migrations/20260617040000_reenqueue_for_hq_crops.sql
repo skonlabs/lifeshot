@@ -24,7 +24,7 @@ where a.media_type in ('photo', 'live_photo', 'animation')
     select 1 from job_queue jq
     where jq.idempotency_key = 'hq-crop-regen:' || a.id
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;
 
 -- Re-enqueue clusterPeople once per user to merge duplicates and re-cluster
 -- with the relaxed thresholds.
@@ -44,4 +44,4 @@ where a.media_type in ('photo', 'live_photo', 'animation')
     select 1 from job_queue jq
     where jq.idempotency_key = 'recluster-dedup:' || a.user_id
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;
