@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useSearch } from "@/lib/api/hooks";
 import { AssetCell } from "@/components/app/AssetCell";
-import { Search as SearchIcon, Sparkles, X } from "lucide-react";
+import { Search as SearchIcon, Sparkles, X, SlidersHorizontal, ImageOff } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/search")({
   validateSearch: (s: Record<string, unknown>): { q?: string } =>
@@ -62,6 +62,14 @@ function SearchPage() {
     });
   }
 
+  const totalResults = result.data?.results?.length ?? 0;
+  const prettyKey = (k: string) =>
+    k.replace(/^by[_\s-]?/i, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const prettyValue = (v: string) => {
+    if (!v || v === "none" || v === "unknown") return "Unspecified";
+    return v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
       <header className="hairline-b mb-6 pb-4">
@@ -100,58 +108,82 @@ function SearchPage() {
             <button
               key={`${k}:${v}`}
               onClick={() => toggleFilter(k, v)}
-              className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1 text-xs text-primary"
+              className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-xs text-[color:var(--ink)] hover:border-[color:var(--umber)]"
             >
-              {k}: {v}
+              <span className="text-[color:var(--umber)]">{prettyKey(k)}:</span> {prettyValue(v)}
               <X className="h-3 w-3" />
             </button>
           ))}
-          <button onClick={() => setFilters({})} className="text-xs text-muted-foreground hover:text-foreground">Clear all</button>
+          <button onClick={() => setFilters({})} className="self-center text-xs text-[color:var(--umber)] underline-offset-2 hover:text-[color:var(--ink)] hover:underline">Clear all</button>
         </div>
       )}
       {!submitted ? (
-        <p className="text-sm text-muted-foreground">Ask anything about your memories.</p>
+        <p className="text-sm text-[color:var(--umber)]">Ask anything about your memories.</p>
       ) : result.isLoading ? (
-        <p className="text-sm text-muted-foreground">Searching…</p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="aspect-square animate-pulse rounded-md bg-[color:var(--border)]/40" />
+          ))}
+        </div>
       ) : result.error ? (
-        <p className="text-sm text-destructive">Search failed.</p>
+        <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Search failed. Please try again.</p>
       ) : (
-        <div className="grid grid-cols-[1fr_240px] gap-6">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-[1fr_260px]">
           <div>
+            {totalResults > 0 && (
+              <div className="mb-3 flex items-baseline justify-between">
+                <p className="text-sm text-[color:var(--umber)]">
+                  <span className="font-medium text-[color:var(--ink)]">{totalResults}</span> result{totalResults === 1 ? "" : "s"} for <span className="italic">"{submitted}"</span>
+                </p>
+              </div>
+            )}
             {result.data?.results?.length ? (
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
                 {result.data.results.map((r) => (
-                  <div key={r.asset_id} className="aspect-square">
+                  <div key={r.asset_id} className="aspect-square overflow-hidden rounded-md border border-[color:var(--border)] bg-[color:var(--paper)] transition-transform hover:-translate-y-0.5 hover:shadow-md">
                     <AssetCell d={r} style={{ width: "100%", height: "100%" }} />
                   </div>
                 ))}
               </div>
             ) : (
-              <div>
-                <p className="text-sm text-muted-foreground">No results.</p>
+              <div className="rounded-lg border border-dashed border-[color:var(--border)] bg-[color:var(--paper)] p-8 text-center">
+                <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-[color:var(--border)]/30 text-[color:var(--umber)]">
+                  <ImageOff className="h-5 w-5" />
+                </div>
+                <h3 className="font-serif-display text-xl text-[color:var(--ink)]">No matches found</h3>
+                <p className="mt-1 text-sm text-[color:var(--umber)]">We couldn't find anything for "{submitted}".</p>
                 {result.data?.zero_result_suggestions?.length ? (
-                  <ul className="mt-3 space-y-1 text-sm">
-                    {result.data.zero_result_suggestions.map((s, i) => (
-                      <li key={i}>
-                        <button onClick={() => { setQuery(s); setSubmitted(s); }} className="text-primary hover:underline">
-                          Try: {s}
+                  <div className="mt-5">
+                    <p className="text-archive-label mb-2">Try instead</p>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {result.data.zero_result_suggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { setQuery(s); setSubmitted(s); }}
+                          className="inline-flex items-center gap-1 rounded-full border border-[color:var(--border)] bg-[color:var(--paper)] px-3 py-1 text-xs text-[color:var(--ink)] hover:border-[color:var(--umber)]"
+                        >
+                          <Sparkles className="h-3 w-3 text-[color:var(--umber)]" /> {s}
                         </button>
-                      </li>
-                    ))}
-                  </ul>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
               </div>
             )}
           </div>
-          <aside className="space-y-4 text-sm">
+          <aside className="space-y-4 text-sm md:sticky md:top-6 md:self-start">
             {Object.keys(facets).length > 0 && (
-              <section className="rounded-lg border p-3">
-                <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Refine</h2>
-                <div className="space-y-3">
-                  {Object.entries(facets).map(([key, values]) => (
+              <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--paper)] p-4">
+                <h2 className="mb-3 flex items-center gap-1.5 text-xs uppercase tracking-wide text-[color:var(--umber)]">
+                  <SlidersHorizontal className="h-3.5 w-3.5" /> Refine
+                </h2>
+                <div className="space-y-4">
+                  {Object.entries(facets)
+                    .filter(([, values]) => values && values.length > 0)
+                    .map(([key, values]) => (
                     <div key={key}>
-                      <div className="mb-1 text-xs font-medium capitalize text-muted-foreground">{key}</div>
-                      <div className="flex flex-wrap gap-1">
+                      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-[color:var(--umber)]">{prettyKey(key)}</div>
+                      <div className="flex flex-wrap gap-1.5">
                         {values.slice(0, 8).map((f) => {
                           const active = filters[key]?.includes(f.value);
                           return (
@@ -159,11 +191,13 @@ function SearchPage() {
                               key={f.value}
                               onClick={() => toggleFilter(key, f.value)}
                               className={
-                                "rounded-full border px-2 py-0.5 text-xs transition-colors " +
-                                (active ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")
+                                "rounded-full border px-2.5 py-1 text-xs transition-colors " +
+                                (active
+                                  ? "border-[color:var(--ink)] bg-[color:var(--ink)] text-[color:var(--paper)]"
+                                  : "border-[color:var(--border)] bg-[color:var(--paper)] text-[color:var(--ink)] hover:border-[color:var(--umber)]")
                               }
                             >
-                              {f.label ?? f.value} <span className="opacity-60">· {f.count}</span>
+                              {prettyValue(f.label ?? f.value)} <span className="opacity-60">· {f.count}</span>
                             </button>
                           );
                         })}
@@ -173,10 +207,10 @@ function SearchPage() {
                 </div>
               </section>
             )}
-            {result.data?.parsed && import.meta.env.DEV && (
-              <section className="rounded-lg border p-3">
-                <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Why these</h2>
-                <pre className="overflow-auto text-xs">{JSON.stringify(result.data.parsed, null, 2)}</pre>
+            {result.data?.parsed && import.meta.env.DEV && typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug") && (
+              <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--paper)] p-3">
+                <h2 className="mb-2 text-xs uppercase tracking-wide text-[color:var(--umber)]">Why these</h2>
+                <pre className="overflow-auto text-[11px] text-[color:var(--umber)]">{JSON.stringify(result.data.parsed, null, 2)}</pre>
               </section>
             )}
           </aside>
