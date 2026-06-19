@@ -375,8 +375,13 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   }
 
   // ── 6. Unlink asset_faces that no longer pass the quality gate ───────────────
+  const isUserNamedPerson = (personId: string | null) => {
+    if (!personId) return false;
+    const name = peopleById.get(personId)?.display_name?.trim() ?? "";
+    return !!name && !/^Person \d+$/i.test(name);
+  };
   const disqualifiedRows = assetFaceRows.filter(
-    (r) => r.person_id && !isUsableIndexedFace(r.face),
+    (r) => r.person_id && !isUsableIndexedFace(r.face) && !isUserNamedPerson(r.person_id),
   );
   if (disqualifiedRows.length) {
     const ids = disqualifiedRows.map((r) => r.id).filter(Boolean);
