@@ -22,4 +22,4 @@ where a.media_type in ('photo', 'live_photo', 'animation')
     where jq.idempotency_key = 'crop-fix-512:' || a.id
       and jq.status in ('pending', 'running')
   )
-on conflict (idempotency_key) do nothing;
+on conflict (user_id, job_name, idempotency_key) do nothing;
