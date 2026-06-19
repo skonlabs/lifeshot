@@ -394,7 +394,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
       .filter((r) => r.person_id && isUsableIndexedFace(r.face))
       .map((r) => r.person_id as string),
   );
-  const orphanIds = Array.from(peopleById.keys()).filter((id) => !linkedPersonIds.has(id));
+  const orphanIds = Array.from(peopleById.keys()).filter((id) => !linkedPersonIds.has(id) && !isUserNamedPerson(id));
   if (orphanIds.length) {
     await sb.from("people").delete().in("id", orphanIds);
   }
