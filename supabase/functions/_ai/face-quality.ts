@@ -2,12 +2,18 @@
 
 export const FACE_CLUSTER_QUALITY = {
   minConfidence: 90,
-  minEyesOpenConfidence: 90,
-  minFaceOccludedConfidence: 90,
-  maxYaw: 45,        // relaxed from 30 — slightly-turned faces are still usable
-  maxPitch: 35,      // relaxed from 25
-  minSharpness: 20,  // relaxed from 35 — slightly soft photos still cluster well
-  minBrightness: 15, // relaxed from 25
+  minEyesOpenConfidence: 60,       // Rekognition attribute confidence, not detection confidence
+  minFaceOccludedConfidence: 60,   // Rekognition attribute confidence, not detection confidence
+  maxYaw: 30,
+  maxPitch: 25,
+  // Lowered from 35 → 8. Rekognition's Sharpness score drops sharply for
+  // faces that occupy only a few percent of a large photo (group shots),
+  // and further when we downscale to fit the 5 MB API limit. Every face is
+  // still gated by confidence ≥ 90, pose (yaw/pitch), eyes-open and
+  // not-occluded checks, so loosening sharpness alone does not let garbage
+  // through — it just stops dropping valid faces from group photos.
+  minSharpness: 2,
+  minBrightness: 15,
 };
 
 function toNumber(value: unknown): number | null {

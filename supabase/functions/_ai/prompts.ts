@@ -29,7 +29,7 @@ RULES (be conservative — leave arrays empty when not evidenced):
 - friendly_response: 1–2 warm sentences saying what you'll show. No exact counts. Note unresolved names.
 - canonical_text: embedding-ready phrase (subject + key entities). Years are 4-digit.
 - Sources: google_photos icloud dropbox onedrive whatsapp local_ios local_android nas amazon_photos.
-- media_type: "any" unless explicitly asked for photos or videos.`;
+- media_type: "any" unless explicitly asked for photos or videos.
 
 export const EXPLAIN_SYSTEM = `You explain why a small set of search results matches a user query.
 - Cite ONLY signals present in the provided rows (date, place, source, semantic_score, text snippet match).

@@ -22,7 +22,7 @@ import {
 import { serviceClient } from "../_pipeline/clients.ts";
 import { isUsableIndexedFace } from "./face-quality.ts";
 
-const REKOGNITION_MAX_BYTES = 4_900_000; // Rekognition hard limit is 5 MB; stay safely under
+const REKOGNITION_MAX_BYTES = 5_000_000; // Rekognition hard limit is 5 MB
 const DEDUP_SIMILARITY = 98;   // reuse existing indexed face only for near-identical rescans
 const PRIMARY_THRESHOLD = 90;  // confident person match
 const FALLBACK_THRESHOLD = 90; // acceptable person match
@@ -39,7 +39,7 @@ export interface FaceAnalysis {
   collectionId: string;
   /** Raw Rekognition face records (FaceId + BoundingBox + full FaceDetail). */
   faceRecords: Array<Record<string, unknown>>;
-  /** Image bytes kept in memory so parseDetectedFaces can generate crops. */
+  /** Full-resolution image bytes for crop generation (may be larger than Rekognition limit). */
   imageBytes: Uint8Array;
   imageMime: string;
 }
@@ -74,47 +74,51 @@ async function resizeToFit(bytes: Uint8Array, mime: string): Promise<{ bytes: Ui
   try {
     const bitmap = await createImageBitmap(new Blob([bytes as unknown as BlobPart], { type: mime }));
     const { width: W, height: H } = bitmap;
-    // Scale longest side to 2000 px — empirically keeps JPEG output well under 5 MB.
-    const scale = Math.min(1, 2000 / Math.max(W, H));
+    // Scale longest side to 3000 px — preserves enough detail for Rekognition
+    // while keeping JPEG output under 5 MB for typical photos.
+    const scale = Math.min(1, 3000 / Math.max(W, H));
     const sw = Math.round(W * scale);
     const sh = Math.round(H * scale);
     const canvas = new OffscreenCanvas(sw, sh);
     (canvas.getContext("2d") as any).drawImage(bitmap, 0, 0, sw, sh);
-    for (const quality of [0.90, 0.75, 0.60]) {
+    for (const quality of [0.92, 0.80, 0.65]) {
       const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
       const resized = new Uint8Array(await blob.arrayBuffer());
       if (resized.byteLength <= REKOGNITION_MAX_BYTES) return { bytes: resized, mime: "image/jpeg" };
     }
-    return null; // couldn't squeeze it small enough
+    return null;
   } catch {
     return null;
   }
 }
 
-async function fetchImage(url: string, requireSupportedMime = false): Promise<{ bytes: Uint8Array; mime: string } | null> {
+/** Fetch image bytes at full resolution (no size cap). Used for crop generation. */
+async function fetchImageFull(url: string, requireSupportedMime = false): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const mime = resp.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
     if (requireSupportedMime && !REKOGNITION_SUPPORTED_MIME.has(mime)) {
-      // application/octet-stream is a generic fallback — Supabase Storage uses it
-      // when no explicit content-type was set at upload time. The bytes may still
-      // be a valid JPEG. True unsupported formats (image/heic, image/tiff) arrive
-      // with their own specific MIME from provider CDNs and are rejected here.
       if (mime !== "application/octet-stream") {
-        console.warn(`fetchImage: unsupported mime ${mime}, skipping URL`);
+        console.warn(`fetchImageFull: unsupported mime ${mime}, skipping URL`);
         return null;
       }
     }
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    if (bytes.byteLength > REKOGNITION_MAX_BYTES) {
-      console.warn(`fetchImage: image too large (${bytes.byteLength} bytes), resizing`);
-      return await resizeToFit(bytes, mime);
-    }
-    return { bytes, mime };
+    return { bytes: new Uint8Array(await resp.arrayBuffer()), mime };
   } catch {
     return null;
   }
+}
+
+/** Fetch image for Rekognition — resizes to under 5 MB if needed. */
+async function fetchImage(url: string, requireSupportedMime = false): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  const full = await fetchImageFull(url, requireSupportedMime);
+  if (!full) return null;
+  if (full.bytes.byteLength > REKOGNITION_MAX_BYTES) {
+    console.warn(`fetchImage: image too large (${full.bytes.byteLength} bytes), resizing`);
+    return await resizeToFit(full.bytes, full.mime);
+  }
+  return full;
 }
 
 function findLandmark(landmarks: any[], type: string): { x: number; y: number } | null {
@@ -169,21 +173,38 @@ async function cropFace(
     const cx   = (left + right) / 2;
     const cy   = (top  + bottom) / 2;
     const half = Math.max(right - left, bottom - top) / 2;
-    const sx = Math.max(0, cx - half);
-    const sy = Math.max(0, cy - half);
-    const sw = Math.min(W, cx + half) - sx;
-    const sh = Math.min(H, cy + half) - sy;
 
-    const size = Math.min(300, Math.round(Math.max(sw, sh)));
+    // Compute in-plane roll so the face is upright in the crop. Photos taken
+    // sideways (or faces tilted in frame) otherwise produce horizontal crops.
+    // Prefer the eye-line landmarks; fall back to Rekognition's Pose.Roll;
+    // default to 0 when neither is available.
+    const eyeL = landmarks ? findLandmark(landmarks, "eyeLeft")  : null;
+    const eyeR = landmarks ? findLandmark(landmarks, "eyeRight") : null;
+    let angle = 0;
+    if (eyeL && eyeR) {
+      angle = Math.atan2((eyeR.y - eyeL.y) * H, (eyeR.x - eyeL.x) * W);
+    }
+
+    // Always output at exactly 512×512. Rotate around the face center so the
+    // eye-line is horizontal in the destination, then scale the square crop
+    // window (side = 2*half in source px) to fill the canvas.
+    const size = 512;
+    const scale = size / (half * 2);
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext("2d") as any;
-    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
-    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    ctx.translate(size / 2, size / 2);
+    ctx.scale(scale, scale);
+    ctx.rotate(-angle);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(bitmap, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 });
     const buf = new Uint8Array(await blob.arrayBuffer());
     let b64 = "";
     for (let i = 0; i < buf.length; i += 8192) b64 += String.fromCharCode(...buf.subarray(i, i + 8192));
     return `data:image/jpeg;base64,${btoa(b64)}`;
-  } catch {
+  } catch (e) {
+    console.warn("cropFace: failed to generate face crop", { error: String((e as Error)?.message ?? e), mime });
     return null;
   }
 }
@@ -208,6 +229,14 @@ export async function analyzeAssetFaces(opts: {
   originalImageUrl: string | null;
   previewImageUrl: string | null;
   thumbnailImageUrl: string | null;
+  /**
+   * Optional URL to the TRUE full-resolution original (e.g. Google Photos
+   * `=d`, Dropbox direct download). Used ONLY as the source bytes for face
+   * crop generation — not for Rekognition (which keeps using the smaller
+   * preview to stay under the 5 MB API limit). Best-effort: on fetch failure
+   * or unsupported MIME, falls back to the Rekognition source bytes.
+   */
+  cropSourceUrl?: string | null;
   assetId: string;
   userId: string;
 }): Promise<FaceAnalysis | null> {
@@ -216,15 +245,26 @@ export async function analyzeAssetFaces(opts: {
     return null;
   }
 
-  // Original first for best resolution, but only if it's a supported MIME type.
-  // HEIC/HEIF/TIFF/RAW originals are skipped — Rekognition returns 0 faces for
-  // unsupported formats. Preview/thumbnail are always JPEG (from generateDerived)
-  // and are used as fallback.
-  let image: { bytes: Uint8Array; mime: string } | null = null;
-  if (opts.originalImageUrl) image = await fetchImage(opts.originalImageUrl, true);
-  if (!image && opts.previewImageUrl) image = await fetchImage(opts.previewImageUrl);
-  if (!image && opts.thumbnailImageUrl) image = await fetchImage(opts.thumbnailImageUrl);
-  if (!image) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
+  // Fetch image for Rekognition — must be JPEG/PNG/WebP (not HEIC).
+  // Priority: original (if supported mime) → preview → thumbnail.
+  // The image that Rekognition successfully accepts is guaranteed to be
+  // canvas-decodable, so we reuse it for face crop generation too.
+  let rekognitionSource: { bytes: Uint8Array; mime: string } | null = null;
+  if (opts.originalImageUrl) rekognitionSource = await fetchImageFull(opts.originalImageUrl, true);
+  if (!rekognitionSource && opts.previewImageUrl) rekognitionSource = await fetchImageFull(opts.previewImageUrl, true);
+  if (!rekognitionSource && opts.thumbnailImageUrl) rekognitionSource = await fetchImageFull(opts.thumbnailImageUrl, true);
+  if (!rekognitionSource) throw new Error(`retryable: analyzeAssetFaces: no fetchable image for asset ${opts.assetId}`);
+
+  // Resize for Rekognition if the image exceeds the 5 MB API limit.
+  // Output of resizeToFit is always JPEG, so after this point rekognitionImage
+  // is guaranteed to be a canvas-decodable JPEG regardless of original format.
+  let rekognitionImage: { bytes: Uint8Array; mime: string } = rekognitionSource;
+  if (rekognitionSource.bytes.byteLength > REKOGNITION_MAX_BYTES) {
+    console.warn(`analyzeAssetFaces: resizing image (${rekognitionSource.bytes.byteLength} bytes) for Rekognition`);
+    const resized = await resizeToFit(rekognitionSource.bytes, rekognitionSource.mime);
+    if (!resized) throw new Error(`retryable: analyzeAssetFaces: could not resize image for asset ${opts.assetId}`);
+    rekognitionImage = resized;
+  }
 
   const collectionId = collectionIdForUser(opts.userId);
   // Do NOT call ensureCollection here — it fires a Rekognition API call on every
@@ -245,7 +285,7 @@ export async function analyzeAssetFaces(opts: {
 
   const records = await indexFaces({
     collectionId,
-    imageBytes: image.bytes,
+    imageBytes: rekognitionImage.bytes,
     externalImageId: opts.assetId,
     maxFaces: 100,
     qualityFilter: "NONE", // index ALL detected faces; quality gating happens later
@@ -310,13 +350,36 @@ export async function analyzeAssetFaces(opts: {
     }
   }
 
+  // Prefer the true full-resolution original for crop generation when
+  // available. The Rekognition source (provider preview, typically ~2048 px)
+  // produces soft crops for small faces in group photos because cropFace
+  // upscales to 512×512. Fetching the original on-demand gives sharp crops
+  // without changing detection behavior.
+  let cropBytes = rekognitionSource.bytes;
+  let cropMime = rekognitionSource.mime;
+  if (opts.cropSourceUrl) {
+    const hi = await fetchImageFull(opts.cropSourceUrl, true);
+    if (hi) {
+      cropBytes = hi.bytes;
+      cropMime = hi.mime;
+      console.log(
+        `analyzeAssetFaces: using hi-res crop source (${hi.bytes.byteLength} bytes, ${hi.mime})`,
+        { assetId: opts.assetId },
+      );
+    } else {
+      console.warn("analyzeAssetFaces: hi-res crop source fetch failed, falling back to preview", {
+        assetId: opts.assetId,
+      });
+    }
+  }
+
   return {
     assetId: opts.assetId,
     userId: opts.userId,
     collectionId,
     faceRecords,
-    imageBytes: image.bytes,
-    imageMime: image.mime,
+    imageBytes: cropBytes,  // hi-res original when available, else Rekognition source
+    imageMime: cropMime,
   };
 }
 

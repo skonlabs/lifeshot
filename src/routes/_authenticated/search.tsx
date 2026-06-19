@@ -34,7 +34,22 @@ function SearchPage() {
     [submitted, filters],
   );
   const result = useSearch(searchInput);
-  const facets = (result.data?.facets ?? {}) as FacetMap;
+  // Server may return facets as either Record<string, Array<{value,count}>>
+  // or Record<string, Record<value, count>>. Normalise to the array form so
+  // .slice/.map are always safe.
+  const rawFacets = (result.data?.facets ?? {}) as Record<string, unknown>;
+  const facets: FacetMap = Object.fromEntries(
+    Object.entries(rawFacets).map(([k, v]) => {
+      if (Array.isArray(v)) return [k, v as FacetMap[string]];
+      if (v && typeof v === "object") {
+        return [k, Object.entries(v as Record<string, unknown>).map(([value, count]) => ({
+          value,
+          count: typeof count === "number" ? count : Number(count) || 0,
+        }))];
+      }
+      return [k, []];
+    }),
+  );
   const activeFilters = Object.entries(filters).flatMap(([k, vs]) => vs.map((v) => ({ k, v })));
 
   function toggleFilter(key: string, value: string) {

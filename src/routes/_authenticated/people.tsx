@@ -116,9 +116,9 @@ function PersonTile({ person }: { person: Person }) {
 /**
  * Renders a circular face avatar.
  * Priority:
- *   1. face_crop data-URL (200×200 JPEG from Rekognition crop) — exact face pixels, no CSS cropping needed.
- *   2. thumbnail_url + face_bbox — CSS zoom/position trick to isolate the face region.
- *   3. thumbnail_url only — full photo centered at 25% from top (portraits are usually top-half).
+ *   1. face_crop data-URL (512×512 JPEG from Rekognition crop) — exact face pixels, no CSS cropping needed.
+ *   2. zoom_url + face_bbox — CSS zoom/position trick using high-res preview image.
+ *   3. zoom_url only — full photo centered at 25% from top (portraits are usually top-half).
  *   4. Fallback icon.
  */
 function FaceAvatar({ cover }: { cover: Cover }) {
@@ -149,8 +149,10 @@ function FaceAvatar({ cover }: { cover: Cover }) {
   }
 
   const bb = cover?.face_bbox;
+  // Use zoom_url (high-res preview) for CSS zoom paths; fall back to thumbnail_url.
+  const zoomSrc = (cover as any)?.zoom_url ?? cover?.thumbnail_url;
 
-  if (!cover?.thumbnail_url || imgFailed) {
+  if (!zoomSrc || imgFailed) {
     return (
       <div className="mx-auto grid aspect-square w-full place-items-center rounded-full bg-[color:var(--paper-2)] text-[color:var(--umber)]">
         <UserRound className="h-10 w-10" strokeWidth={1.2} />
@@ -165,7 +167,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
     return (
       <div className="hairline relative mx-auto aspect-square w-full overflow-hidden rounded-full border bg-[color:var(--paper-2)] transition-transform group-hover:scale-[1.02]">
         <img
-          src={cover.thumbnail_url}
+          src={zoomSrc}
           alt=""
           loading="lazy"
           decoding="async"
@@ -208,7 +210,7 @@ function FaceAvatar({ cover }: { cover: Cover }) {
       aria-label="Face thumbnail"
     >
       <img
-        src={cover.thumbnail_url}
+        src={zoomSrc}
         alt=""
         loading="lazy"
         decoding="async"

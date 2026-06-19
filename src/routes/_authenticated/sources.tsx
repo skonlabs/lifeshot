@@ -832,10 +832,17 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   // server-side with full context (queue + persisted job stats). Re-running
   // that check here with only the public progress numbers mis-classifies
   // freshly-enqueued force-sync jobs as "stale" and hides the progress bar.
-  const running =
+  const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
+  const stage = typeof stats.stage === "string" ? stats.stage : null;
+  const staleProcessing =
+    stage === "processing" &&
+    (s?.cursor_age_seconds ?? 0) > 120 &&
+    s?.last_job?.status === "running";
+  const running = !staleProcessing && (
     s?.status === "syncing" ||
     s?.last_job?.status === "running" ||
-    s?.last_job?.status === "pending";
+    s?.last_job?.status === "pending"
+  );
   // While running, refresh the parent accounts list so indexed/folder counts
   // climb in near-real-time as the worker upserts assets.
   const wasRunningRef = useRef(running);
@@ -863,12 +870,10 @@ function SourceRow({ a, onSync, onForceSync, onStop, onSelectFolders, onDisconne
   const pct = total > 0 ? Math.min(100, Math.round((indexed / total) * 100)) : 0;
   const folders = a.selected_container_count ?? a.selected_containers?.length ?? 0;
   const docsCombined = k.document + k.audio + k.other;
-  const stats = (s?.last_job?.stats as Record<string, unknown> | undefined) ?? {};
   const currentFolderRaw = stats.current_folder;
   const currentFolder = typeof currentFolderRaw === "string" && currentFolderRaw.length > 0 ? currentFolderRaw : null;
   const currentFileRaw = stats.current_file;
   const currentFile = typeof currentFileRaw === "string" && currentFileRaw.length > 0 ? currentFileRaw : null;
-  const stage = typeof stats.stage === "string" ? stats.stage : null;
   const showProgressNumbers = stage === "listing" || stage === "indexing" || stage === "processing" || stage === "completed";
   const stageLabel =
     stage === "queued"     ? "Queued…" :

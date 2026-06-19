@@ -5,6 +5,7 @@ import { serviceClient } from "../_pipeline/clients.ts";
 import { enqueueJob } from "../_pipeline/enqueuer.ts";
 import { logger } from "../_pipeline/logger.ts";
 import { installOpenAIProviders } from "../_ai/factory.ts";
+import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 
 // Install real OpenAI providers when the environment is configured.
 // Falls back silently to mock providers when OPENAI_API_KEY / LIFESHOT_AI_PROVIDER
@@ -41,21 +42,21 @@ app.get("/debug/stats", async (c) => {
 
   // Job queue breakdown by name + status.
   const { data: jobs } = await sb.from("job_queue")
-    .select("name, status, attempts, max_attempts, dead_letter, last_error, next_attempt_at, locked_by, locked_at, payload")
+    .select("job_name, status, attempts, max_attempts, dead_letter, last_error, next_attempt_at, locked_by, locked_at, payload")
     .order("created_at", { ascending: false })
     .limit(2000);
   const byStatus: Record<string, number> = {};
   const byNameStatus: Record<string, number> = {};
   const errors: Record<string, number> = {};
-  const sampleErrors: Array<{ name: string; status: string; attempts: number; err: string }> = [];
+  const sampleErrors: Array<{ job_name: string; status: string; attempts: number; err: string }> = [];
   for (const j of jobs ?? []) {
     byStatus[j.status] = (byStatus[j.status] ?? 0) + 1;
-    const k = `${j.name}:${j.status}`;
+    const k = `${j.job_name}:${j.status}`;
     byNameStatus[k] = (byNameStatus[k] ?? 0) + 1;
     if (j.last_error) {
       const sig = String(j.last_error).slice(0, 120);
       errors[sig] = (errors[sig] ?? 0) + 1;
-      if (sampleErrors.length < 20) sampleErrors.push({ name: j.name, status: j.status, attempts: j.attempts, err: String(j.last_error).slice(0, 400) });
+      if (sampleErrors.length < 20) sampleErrors.push({ job_name: j.job_name, status: j.status, attempts: j.attempts, err: String(j.last_error).slice(0, 400) });
     }
   }
   out.jobs_total = jobs?.length ?? 0;
@@ -66,32 +67,87 @@ app.get("/debug/stats", async (c) => {
 
   // Locked / running jobs (potential stuck).
   const { data: locked } = await sb.from("job_queue")
-    .select("id, name, status, locked_by, locked_at, attempts, payload")
+    .select("id, job_name, status, locked_by, locked_at, attempts, payload")
     .not("locked_at", "is", null)
     .order("locked_at", { ascending: true }).limit(20);
   out.locked_sample = locked ?? [];
 
-  // Enrichment + faces + people counts.
-  let enrichQ = sb.from("asset_ai_enrichment").select("asset_id, faces, processed_at", { count: "exact" });
-  if (uid) enrichQ = enrichQ.eq("user_id", uid);
-  const { count: enrichCount } = await enrichQ.range(0, 0);
-  out.asset_ai_enrichment_count = enrichCount ?? 0;
-
-  const { data: enrichRows } = await (uid
-    ? sb.from("asset_ai_enrichment").select("asset_id, faces").eq("user_id", uid).limit(2000)
-    : sb.from("asset_ai_enrichment").select("asset_id, faces").limit(2000));
-  let withFaces = 0, withoutFaces = 0;
-  for (const r of enrichRows ?? []) {
-    const f = (r as any).faces;
-    if (Array.isArray(f) && f.length > 0) withFaces++; else withoutFaces++;
+  // Enrichment + faces + people counts. Use current column names only.
+  const countRows = async (table: string, build?: (q: any) => any) => {
+    let q = sb.from(table).select("*", { count: "exact", head: true });
+    if (uid) q = q.eq("user_id", uid);
+    if (build) q = build(q);
+    const { count, error } = await q;
+    return error ? { error: error.message } : count ?? 0;
+  };
+  out.assets_total = await countRows("assets");
+  out.photo_assets = await countRows("assets", (q) => q.eq("media_type", "photo"));
+  out.asset_ai_enrichment_count = await countRows("asset_ai_enrichment");
+  out.asset_ai_face_processed = await countRows("asset_ai_enrichment", (q) => q.not("face_count", "is", null));
+  out.asset_ai_with_faces = await countRows("asset_ai_enrichment", (q) => q.gt("face_count", 0));
+  out.asset_faces_count = await countRows("asset_faces");
+  out.asset_faces_linked = await countRows("asset_faces", (q) => q.not("person_id", "is", null));
+  out.asset_faces_unlinked = await countRows("asset_faces", (q) => q.is("person_id", null));
+  const faceRows: any[] = [];
+  for (let from = 0;; from += 1000) {
+    const query = sb.from("asset_faces")
+      .select("id, asset_id, person_id, face, created_at")
+      .order("created_at", { ascending: true })
+      .range(from, from + 999);
+    const { data, error } = uid ? await query.eq("user_id", uid) : await query;
+    if (error) {
+      out.asset_faces_debug_error = error.message;
+      break;
+    }
+    faceRows.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
   }
-  out.enrichment_with_faces = withFaces;
-  out.enrichment_without_faces = withoutFaces;
-
-  let facesQ = sb.from("asset_faces").select("asset_id", { count: "exact", head: true });
-  if (uid) facesQ = facesQ.eq("user_id", uid);
-  const { count: faceCount } = await facesQ;
-  out.asset_faces_count = faceCount ?? 0;
+  const faceBreakdown = {
+    usable_linked: 0,
+    usable_unlinked: 0,
+    unusable_linked: 0,
+    unusable_unlinked: 0,
+    unlinked_reasons: {} as Record<string, number>,
+    unlinked_samples: [] as Array<Record<string, unknown>>,
+  };
+  for (const row of faceRows ?? []) {
+    const usable = isUsableIndexedFace((row as any).face);
+    const linked = !!(row as any).person_id;
+    if (usable && linked) faceBreakdown.usable_linked++;
+    if (usable && !linked) faceBreakdown.usable_unlinked++;
+    if (!usable && linked) faceBreakdown.unusable_linked++;
+    if (!usable && !linked) faceBreakdown.unusable_unlinked++;
+    if (!linked) {
+      const detail = (row as any).face?.FaceDetail ?? {};
+      const confidence = Number((row as any).face?.Confidence ?? 0);
+      const reasons = [
+        confidence < 90 ? "confidence" : null,
+        Math.abs(Number(detail?.Pose?.Yaw ?? 0)) > 30 ? "yaw" : null,
+        Math.abs(Number(detail?.Pose?.Pitch ?? 0)) > 25 ? "pitch" : null,
+        Number(detail?.Quality?.Sharpness ?? 0) < 2 ? "sharpness" : null,
+        Number(detail?.Quality?.Brightness ?? 0) < 15 ? "brightness" : null,
+        detail?.FaceOccluded?.Value === true ? "occluded" : null,
+        detail?.EyesOpen?.Value === false ? "eyes_closed" : null,
+      ].filter(Boolean) as string[];
+      const key = reasons.length ? reasons.join("+") : "passes_quality_unlinked";
+      faceBreakdown.unlinked_reasons[key] = (faceBreakdown.unlinked_reasons[key] ?? 0) + 1;
+      if (faceBreakdown.unlinked_samples.length < 20) {
+        faceBreakdown.unlinked_samples.push({
+          asset_id: (row as any).asset_id,
+          face_id: (row as any).face?.FaceId ?? null,
+          confidence,
+          yaw: detail?.Pose?.Yaw ?? null,
+          pitch: detail?.Pose?.Pitch ?? null,
+          sharpness: detail?.Quality?.Sharpness ?? null,
+          brightness: detail?.Quality?.Brightness ?? null,
+          occluded: detail?.FaceOccluded?.Value ?? null,
+          eyes_open: detail?.EyesOpen?.Value ?? null,
+          reason: key,
+        });
+      }
+    }
+  }
+  out.asset_faces_quality_breakdown = faceBreakdown;
 
   let peopleQ = sb.from("people").select("id, display_name, asset_id, face");
   if (uid) peopleQ = peopleQ.eq("user_id", uid);
@@ -123,6 +179,72 @@ app.get("/debug/stats", async (c) => {
   }
 
   return c.json(out);
+});
+
+/** TEMP: per-asset face diagnostic. Look up by filename substring. */
+app.get("/debug/asset", async (c) => {
+  const sb = serviceClient();
+  const url = new URL(c.req.url);
+  const filename = url.searchParams.get("filename") ?? "";
+  if (!filename) return c.json({ error: "filename query param required" }, 400);
+  const { data: assets, error: aerr } = await sb.from("assets")
+    .select("*")
+    .ilike("filename", `%${filename}%`)
+    .limit(10);
+  if (aerr) return c.json({ error: aerr.message }, 500);
+  const results: any[] = [];
+  for (const asset of assets ?? []) {
+    const { data: faces } = await sb.from("asset_faces")
+      .select("id, person_id, face, created_at")
+      .eq("asset_id", asset.id);
+    const { data: enr } = await sb.from("asset_ai_enrichment")
+      .select("face_count, faces_indexed_at, last_error, vision_model, updated_at")
+      .eq("asset_id", asset.id);
+    const { data: jobs } = await sb.from("job_queue")
+      .select("job_name, status, attempts, last_error, created_at, payload")
+      .ilike("payload->>assetId", asset.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    results.push({
+      asset,
+      face_count: (faces ?? []).length,
+      preview_signed: asset.proxy_cache_key ? (await sb.storage.from("lifeshot-derived").createSignedUrl(asset.proxy_cache_key, 3600)).data?.signedUrl ?? null : null,
+      thumb_signed: asset.thumbnail_cache_key ? (await sb.storage.from("lifeshot-derived").createSignedUrl(asset.thumbnail_cache_key, 3600)).data?.signedUrl ?? null : null,
+      faces: (faces ?? []).map((f: any) => ({
+        face_id: f.face?.FaceId,
+        person_id: f.person_id,
+        Confidence: f.face?.Confidence,
+        BoundingBox: f.face?.BoundingBox,
+        Pose: f.face?.FaceDetail?.Pose,
+        Quality: f.face?.FaceDetail?.Quality,
+        FaceOccluded: f.face?.FaceDetail?.FaceOccluded,
+        EyesOpen: f.face?.FaceDetail?.EyesOpen,
+        AgeRange: f.face?.FaceDetail?.AgeRange,
+        Gender: f.face?.FaceDetail?.Gender,
+        usable: isUsableIndexedFace(f.face),
+      })),
+      enrichment: enr ?? [],
+      jobs: jobs ?? [],
+    });
+  }
+  return c.json({ count: results.length, results });
+});
+
+/** TEMP: reset person clusters for a user, then enqueue a fresh clusterPeople run. */
+app.post("/debug/reset-clusters", async (c) => {
+  const sb = serviceClient();
+  const url = new URL(c.req.url);
+  let uid = url.searchParams.get("user_id");
+  if (!uid) {
+    const { data } = await sb.from("people").select("user_id").limit(1).maybeSingle();
+    uid = (data as any)?.user_id ?? null;
+  }
+  if (!uid) return c.json({ error: "no user_id" }, 400);
+  const { error: e1 } = await sb.from("asset_faces").update({ person_id: null }).eq("user_id", uid).not("person_id", "is", null);
+  const { error: e2 } = await sb.from("people").delete().eq("user_id", uid);
+  if (e1 || e2) return c.json({ error: e1?.message ?? e2?.message }, 500);
+  await enqueueJob("clusterPeople", { userId: uid, payload: { user_id: uid }, idempotencyKey: `reset-clusters:${uid}:${Date.now()}` });
+  return c.json({ ok: true, user_id: uid, reset: true });
 });
 
 /** Drain pending jobs. Called by pg_cron every 15s and as a nudge from

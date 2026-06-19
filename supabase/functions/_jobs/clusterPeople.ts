@@ -4,9 +4,21 @@ import type { JobContext } from "../_pipeline/runner.ts";
 import { searchFaces, collectionIdForUser, rekognitionConfigured } from "../_ai/rekognition.ts";
 import { isUsableIndexedFace } from "../_ai/face-quality.ts";
 import { checkFaceResetGuard } from "./faceResetGuard.ts";
+import { enqueueJob } from "../_pipeline/enqueuer.ts";
 
 // Faces must exceed this Rekognition similarity to be merged into the same person.
-const SIMILARITY_THRESHOLD = 90;
+// 70% is the right balance for a family photo album: same person across different
+// years, lighting, and expressions commonly scores 70-85% in Rekognition.
+// 80%+ is too strict and splits one real person into many entries.
+const SIMILARITY_THRESHOLD = 92;
+// Lower threshold used only in the post-loop duplicate-person merge pass.
+const MERGE_SIMILARITY_THRESHOLD = 94;
+// SearchFaces returns only the top N matches. Some people already have many
+// linked detections, so MaxFaces=10 can be exhausted by faces that are already
+// in the same person row and never expose an equally strong match in another
+// duplicate row. Ask for the service maximum so the merge pass can see splits.
+const SEARCH_MAX_FACES = 4096;
+const DB_PAGE_SIZE = 1000;
 
 function faceQualityRank(face: any): number {
   const confidence = Number(face?.Confidence ?? 0);
@@ -19,6 +31,38 @@ function faceQualityRank(face: any): number {
 
 function uniqueFaceIds(ids: string[]): string[] {
   return Array.from(new Set(ids.filter(Boolean)));
+}
+
+async function loadAllAssetFaces(sb: any, userId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await sb
+      .from("asset_faces")
+      .select("id, asset_id, person_id, face")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new Error(`clusterPeople: asset_faces load failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function loadAllPeople(sb: any, userId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await sb
+      .from("people")
+      .select("id, display_name, asset_id, face, face_ids")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new Error(`clusterPeople: people load failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
 }
 
 async function isLeaderClusterJob(sb: any, userId: string, jobId: string): Promise<boolean> {
@@ -45,6 +89,14 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   const { user_id, asset_id } = ctx.payload as { user_id?: string; asset_id?: string };
   const uid = user_id ?? ctx.userId;
   if (!uid) throw new Error("invalid: user_id");
+
+  // Capture the moment we begin loading the asset_faces snapshot. Any
+  // asset_faces rows inserted after this timestamp are NOT visible to this
+  // run and must be picked up by a follow-up clusterPeople — otherwise the
+  // tail of a sync (faces written during/after this run) stays unlinked
+  // forever because enrichAI's 5-minute idempotency bucket dedupes every
+  // subsequent enqueue in the same window.
+  const runStartedAt = new Date().toISOString();
 
   const { data: privacy } = await sb
     .from("privacy_settings")
@@ -76,19 +128,12 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // ── 1. Load qualifying faces from asset_faces ────────────────────────────────
   // Admission gate (applied in code so the same quality logic is always used):
   //   • Confidence >= 90%
-  //   • EyesOpen.Value = true, EyesOpen.Confidence >= 90
-  //   • FaceOccluded.Value = false, FaceOccluded.Confidence >= 90
+  //   • EyesOpen.Value is not false; if true, Confidence >= 60
+  //   • FaceOccluded.Value is not true; if false, Confidence >= 60
   //   • |Yaw| <= 30°, |Pitch| <= 25°
-  //   • Sharpness >= 35, Brightness >= 25
-  const { data: allAssetFaces, error: afErr } = await sb
-    .from("asset_faces")
-    .select("id, asset_id, person_id, face")
-    .eq("user_id", uid)
-    .limit(50000); // PostgREST default is 1000 — must override or faces are silently truncated
-  if (afErr) throw new Error(`clusterPeople: asset_faces load failed: ${afErr.message}`);
-
+  //   • Sharpness >= 2, Brightness >= 15
   interface AssetFaceRow { id: string; asset_id: string; person_id: string | null; face: any }
-  const assetFaceRows: AssetFaceRow[] = allAssetFaces ?? [];
+  const assetFaceRows: AssetFaceRow[] = await loadAllAssetFaces(sb, uid);
 
   const qualifying = assetFaceRows
     .filter((r) => r.face?.FaceId && r.asset_id && isUsableIndexedFace(r.face))
@@ -101,12 +146,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
   // ── 2. Load existing people and build complete faceId → personId index ────────
   // We index ALL face_ids from ALL people rows — not just those with currently
   // linked asset_faces — so we never create duplicates for already-known faces.
-  const { data: existingPeople, error: peopleErr } = await sb
-    .from("people")
-    .select("id, display_name, asset_id, face, face_ids")
-    .eq("user_id", uid)
-    .limit(10000); // PostgREST default is 1000 — must override or people are silently truncated
-  if (peopleErr) throw new Error(`clusterPeople: people load failed: ${peopleErr.message}`);
+  const existingPeople = await loadAllPeople(sb, uid);
 
   interface PersonEntry { id: string; display_name: string | null; face_ids: string[]; face: any; asset_id: string | null }
   const peopleById = new Map<string, PersonEntry>();
@@ -155,12 +195,25 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
 
   // Check reset guard once before the loop — O(n) per-face DB calls caused
   // timeouts on accounts with thousands of qualifying faces.
+  // Also re-check every 50 faces so a reset triggered mid-run is detected
+  // within one batch rather than after the full loop completes.
   const preLoopGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
   if (!preLoopGuard.valid) {
     return { user_id: uid, faces_processed: 0, people_created: 0, detections_linked: 0, skipped: qualifying.length, stopped: preLoopGuard.reason };
   }
 
-  for (const row of qualifying) {
+  for (let faceIdx = 0; faceIdx < qualifying.length; faceIdx++) {
+    const row = qualifying[faceIdx];
+
+    // Re-check reset guard every 50 faces to catch mid-run resets without
+    // incurring a DB round-trip on every iteration.
+    if (faceIdx > 0 && faceIdx % 50 === 0) {
+      const midGuard = await checkFaceResetGuard(sb, { userId: uid, jobId: ctx.jobId, resetAt: privacy?.face_pipeline_reset_at ?? null });
+      if (!midGuard.valid) {
+        return { user_id: uid, faces_processed: faceIdx, people_created: created, detections_linked: linked, skipped, stopped: midGuard.reason };
+      }
+    }
+
     const faceId = row.face.FaceId as string;
 
     // (a) Already assigned to a person.
@@ -176,7 +229,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
           collectionId,
           faceId,
           faceMatchThreshold: SIMILARITY_THRESHOLD,
-          maxFaces: 10,
+          maxFaces: SEARCH_MAX_FACES,
         });
         // Pick the highest-similarity match that maps to a known person.
         const best = matches
@@ -277,7 +330,51 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     }
   }
 
-  // ── 4. Unlink asset_faces that no longer pass the quality gate ───────────────
+  // ── 4. Merge duplicate people (same physical person split across two rows) ────
+  // Two person rows can exist for the same physical person when concurrent
+  // clusterPeople runs both created a "new person" for the same face before
+  // either run had written the other's person_id to faceIdToPersonId.
+  // Strategy: for each person, SearchFaces for their representative face. If the
+  // result points to a DIFFERENT person in peopleById, merge the lower-quality
+  // person into the higher-quality one (copy face_ids, delete the loser).
+  const mergedPersonIds = new Set<string>(); // already absorbed — skip as source
+  for (const [pid, person] of peopleById) {
+    if (mergedPersonIds.has(pid) || !person.face?.FaceId) continue;
+    let matches: Array<{ faceId: string; similarity: number }> = [];
+    try {
+      matches = await searchFaces({
+        collectionId,
+        faceId: person.face.FaceId as string,
+        faceMatchThreshold: MERGE_SIMILARITY_THRESHOLD,
+        maxFaces: SEARCH_MAX_FACES,
+      });
+    } catch { continue; }
+    for (const m of matches) {
+      if (!peopleById.has(pid)) break; // this source person was absorbed by an earlier match
+      if (m.faceId === person.face.FaceId || m.similarity < MERGE_SIMILARITY_THRESHOLD) continue;
+      const otherPersonId = faceIdToPersonId.get(m.faceId);
+      if (!otherPersonId || otherPersonId === pid || mergedPersonIds.has(otherPersonId)) continue;
+      const other = peopleById.get(otherPersonId);
+      if (!other) continue;
+      // Keep the higher-quality person as winner; absorb the other.
+      const keepId   = faceQualityRank(person.face) >= faceQualityRank(other.face) ? pid : otherPersonId;
+      const dropId   = keepId === pid ? otherPersonId : pid;
+      const keepPerson = peopleById.get(keepId)!;
+      const dropPerson = peopleById.get(dropId)!;
+      if (!keepPerson || !dropPerson) continue;
+      const merged = uniqueFaceIds([...keepPerson.face_ids, ...dropPerson.face_ids]);
+      keepPerson.face_ids = merged;
+      for (const fid of merged) faceIdToPersonId.set(fid, keepId);
+      await sb.from("people").update({ face_ids: merged, updated_at: now }).eq("id", keepId);
+      await sb.from("asset_faces").update({ person_id: keepId, updated_at: now }).eq("person_id", dropId).eq("user_id", uid);
+      await sb.from("people").delete().eq("id", dropId);
+      mergedPersonIds.add(dropId);
+      peopleById.delete(dropId);
+      if (dropId === pid) break;
+    }
+  }
+
+  // ── 6. Unlink asset_faces that no longer pass the quality gate ───────────────
   const disqualifiedRows = assetFaceRows.filter(
     (r) => r.person_id && !isUsableIndexedFace(r.face),
   );
@@ -286,7 +383,7 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     await sb.from("asset_faces").update({ person_id: null, updated_at: now }).in("id", ids);
   }
 
-  // ── 5. Delete people rows with no qualifying linked faces (orphans) ───────────
+  // ── 7. Delete people rows with no qualifying linked faces (orphans) ───────────
   const linkedPersonIds = new Set(
     assetFaceRows
       .filter((r) => r.person_id && isUsableIndexedFace(r.face))
@@ -297,6 +394,35 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     await sb.from("people").delete().in("id", orphanIds);
   }
 
+  // ── 8. Tail re-enqueue ───────────────────────────────────────────────────────
+  // Detect asset_faces rows inserted after this run started its snapshot.
+  // These were never seen by the loop above and would otherwise remain
+  // unlinked indefinitely (enrichAI's 5-minute bucketed idempotency key
+  // suppresses every follow-up enqueue inside the same window).
+  let tailEnqueued = false;
+  const { count: newerFacesCount, error: newerErr } = await sb
+    .from("asset_faces")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", uid)
+    .gt("created_at", runStartedAt);
+  if (newerErr) {
+    console.warn("clusterPeople: tail count failed", uid, newerErr.message);
+  } else if ((newerFacesCount ?? 0) > 0) {
+    try {
+      await enqueueJob("clusterPeople", {
+        userId: uid,
+        payload: { user_id: uid },
+        // Unique key so the dedup window (5-min bucket used by enrichAI) does
+        // not swallow this follow-up. ctx.jobId + "tail" guarantees one
+        // tail-enqueue per finishing run.
+        idempotencyKey: `people:${uid}:tail:${ctx.jobId}`,
+      });
+      tailEnqueued = true;
+    } catch (e: any) {
+      console.warn("clusterPeople: tail enqueue failed", uid, String(e?.message ?? e));
+    }
+  }
+
   return {
     user_id:            uid,
     trigger_asset_id:   asset_id ?? null,
@@ -304,6 +430,9 @@ export async function clusterPeople(ctx: JobContext): Promise<unknown> {
     people_created:     created,
     detections_linked:  linked,
     skipped,
+    duplicates_merged:  mergedPersonIds.size,
     orphans_removed:    orphanIds.length,
+    newer_faces_pending: newerFacesCount ?? 0,
+    tail_enqueued:      tailEnqueued,
   };
 }

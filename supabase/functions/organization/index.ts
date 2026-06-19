@@ -19,6 +19,35 @@ const ListPage = z.object({
 });
 
 const app = authed(createApi("/organization/v1"));
+const DB_PAGE_SIZE = 1000;
+
+async function loadAssetFacesForPeople(supa: any, personIds: string[]) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("person_id, asset_id, face")
+      .in("person_id", personIds)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function loadPersonOccurrences(supa: any, personId: string) {
+  const rows: any[] = [];
+  for (let from = 0;; from += DB_PAGE_SIZE) {
+    const { data, error } = await supa.from("asset_faces")
+      .select("id, asset_id, face")
+      .eq("person_id", personId)
+      .range(from, from + DB_PAGE_SIZE - 1);
+    if (error) throw new ApiError("internal", error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  return rows;
+}
 
 app.get("/events", async (c) => {
   const supa = c.get("supabase"); const uid = c.get("userId");
@@ -147,17 +176,17 @@ app.get("/people", async (c) => {
   // still point at legacy seed faces from older clustering runs.
   if (entries.length) {
     const ids = entries.map((e) => e.id);
-    const { data: linkRows } = await supa.from("asset_faces")
-      .select("person_id, asset_id, face")
-      .in("person_id", ids);
+    const linkRows = await loadAssetFacesForPeople(supa, ids);
 
-    const usableRows = (linkRows ?? []).filter((row: any) => (
-      row.person_id && row.asset_id && isUsableIndexedFace(row.face)
-    ));
+    // Count every linked face row so the People page reflects the same total
+    // as the `people` table. The quality gate is only used to *prefer* a
+    // sharper cover; it must not drop people whose detections all failed it.
+    const linkedRows = (linkRows ?? []).filter((row: any) => row.person_id && row.asset_id);
+    const usableRows = linkedRows.filter((row: any) => isUsableIndexedFace(row.face));
 
     const perPerson = new Map<string, Set<string>>();
     const facesPerAsset = new Map<string, number>();
-    for (const r of usableRows) {
+    for (const r of linkedRows) {
       if (!r.person_id || !r.asset_id) continue;
       let s = perPerson.get(r.person_id);
       if (!s) { s = new Set<string>(); perPerson.set(r.person_id, s); }
@@ -166,8 +195,26 @@ app.get("/people", async (c) => {
     }
 
     const bestByPerson = new Map<string, PersonCoverCandidate>();
+    // First pass: pick the best *usable* (sharp, well-posed) face per person.
     for (const row of usableRows) {
       const personId = row.person_id as string;
+      const assetId = row.asset_id as string;
+      const bbox = sanitizeFaceBox(row.face?.BoundingBox ?? null);
+      const score = faceQualityScore(
+        bbox,
+        Number(row.face?.Confidence ?? 0),
+        facesPerAsset.get(assetId) ?? 1,
+      );
+      const current = bestByPerson.get(personId);
+      if (!current || score > current.score) {
+        bestByPerson.set(personId, { asset_id: assetId, face_bbox: bbox, score, face_crop: row.face?.FaceCrop ?? null });
+      }
+    }
+    // Fallback pass: for people with no usable face, still pick a cover from
+    // any linked face so they appear on the /people grid.
+    for (const row of linkedRows) {
+      const personId = row.person_id as string;
+      if (bestByPerson.has(personId)) continue;
       const assetId = row.asset_id as string;
       const bbox = sanitizeFaceBox(row.face?.BoundingBox ?? null);
       const score = faceQualityScore(
@@ -226,11 +273,29 @@ app.get("/people", async (c) => {
           ?? asset?.proxy_cache_key
           ?? null,
       );
+      // High-res URL for CSS zoom fallback — preview first (full-res), then thumbnail.
+      // When face_crop is null the browser zooms this image to isolate the face region;
+      // using a small thumbnail causes a 12× upscale → blurry. Preview is the original
+      // re-hosted at full resolution and produces a sharp crop even for small faces.
+      const zoomUrl = await resolveThumbUrl(
+        c,
+        supa,
+        uid,
+        aid,
+        media?.preview_storage_path
+          ?? media?.preview_url
+          ?? asset?.proxy_cache_key
+          ?? media?.thumbnail_storage_path
+          ?? media?.thumbnail_url
+          ?? asset?.thumbnail_cache_key
+          ?? null,
+      );
       const faceCrop = e.best?.face_crop ?? null;
       const cover = (faceCrop || thumbUrl)
         ? {
             face_crop: faceCrop,
             thumbnail_url: thumbUrl,
+            zoom_url: zoomUrl ?? thumbUrl,
             face_bbox: e.best?.face_bbox ?? null,
             width: asset?.width ?? null,
             height: asset?.height ?? null,
@@ -251,15 +316,13 @@ app.get("/people/:id", async (c) => {
   if (!person) throw new ApiError("not_found", "Person not found");
 
   // All occurrences: every asset_faces row linked to this person.
-  const { data: occurrences } = await supa.from("asset_faces")
-    .select("id, asset_id, face")
-    .eq("person_id", id);
+  const occurrences = await loadPersonOccurrences(supa, id);
 
-  const assetIds = [...new Set((occurrences ?? []).map((o: any) => o.asset_id).filter(Boolean))];
+  const assetIds = [...new Set(occurrences.map((o: any) => o.asset_id).filter(Boolean))];
   return c.json({
     ...(person as any),
     asset_count: assetIds.length,
-    occurrences: (occurrences ?? []).map((o: any) => ({
+    occurrences: occurrences.map((o: any) => ({
       id:       o.id,
       asset_id: o.asset_id,
       face_id:  o.face?.FaceId ?? null,
@@ -484,6 +547,23 @@ app.post("/assets/bulk", async (c) => {
  *   3. Reset face_scanned_at so all assets are re-queued.
  * The pipeline will re-detect and re-cluster everything from scratch.
  */
+/**
+ * POST /people/recluster
+ * Force-enqueue a clusterPeople job for the authenticated user with a unique
+ * idempotency key, bypassing enrichAI's 5-minute bucket dedup. Used to drain
+ * the tail of usable asset_faces left unlinked after a previous run finished
+ * its snapshot before the rest of the sync wrote their faces.
+ */
+app.post("/people/recluster", async (c) => {
+  const uid = c.get("userId") as string;
+  await enforceRateLimit(uid, "general");
+  await jobEnqueuer.enqueue("clusterPeople", { user_id: uid }, {
+    userId: uid,
+    idempotencyKey: `people:${uid}:manual:${Date.now()}`,
+  });
+  return c.json({ ok: true });
+});
+
 app.post("/people/reset", async (c) => {
   const uid = c.get("userId") as string;
   const resetAt = new Date().toISOString();

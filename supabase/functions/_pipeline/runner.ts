@@ -53,6 +53,7 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 export async function drainOnce(opts: { batch?: number; lanes?: string[] } = {}): Promise<{ claimed: number; ok: number; failed: number }> {
   await ensureBuckets();
   const sb = serviceClient();
+
   const batch = opts.batch ?? DEFAULT_BATCH;
   const lanes = opts.lanes ?? null;
   const { data, error } = await sb.rpc("claim_pending_jobs", {
