@@ -21,6 +21,113 @@ const ListPage = z.object({
 const app = authed(createApi("/organization/v1"));
 const DB_PAGE_SIZE = 1000;
 
+// Threshold (0-100) used when an unnamed cluster gets a display_name and we
+// look across the rest of the user's Rekognition collection for other clusters
+// of the same physical person. 80 is permissive enough to catch the same person
+// across pose/lighting/age drift without dragging in look-alikes.
+const AUTO_MERGE_SIMILARITY = 80;
+// How many seed faces from the target person we feed to SearchFaces. Each call
+// returns up to MaxFaces matches; sampling a handful keeps cost bounded while
+// covering the variety of poses/ages in that cluster.
+const AUTO_MERGE_SEED_LIMIT = 8;
+const AUTO_MERGE_MAX_FACES = 200;
+
+/**
+ * When a person cluster is named for the first time, look across the user's
+ * Rekognition collection for other clusters that hold the same physical person
+ * (face-cluster splits caused by pose/lighting/age drift) and merge them into
+ * the named target. Returns the count of merged-in (and deleted) people rows.
+ */
+async function autoMergeOnRename(userId: string, targetPersonId: string): Promise<number> {
+  if (!rekognitionConfigured()) return 0;
+  const svc = getServiceClient();
+
+  // Seed faces from the target person — these define "who is Bittu".
+  const { data: seeds } = await svc.from("asset_faces")
+    .select("face")
+    .eq("user_id", userId)
+    .eq("person_id", targetPersonId)
+    .not("face", "is", null)
+    .limit(AUTO_MERGE_SEED_LIMIT * 4);
+  const seedFaceIds = uniqStrings(
+    (seeds ?? [])
+      .map((r: any) => String(r?.face?.faceId ?? r?.face?.FaceId ?? ""))
+      .filter(Boolean),
+  ).slice(0, AUTO_MERGE_SEED_LIMIT);
+  if (seedFaceIds.length === 0) return 0;
+
+  // Ask Rekognition: which other face_ids in the collection look ≥80% similar?
+  const collectionId = collectionIdForUser(userId);
+  const matchedFaceIds = new Set<string>();
+  for (const seed of seedFaceIds) {
+    try {
+      const matches = await searchFaces({
+        collectionId,
+        faceId: seed,
+        faceMatchThreshold: AUTO_MERGE_SIMILARITY,
+        maxFaces: AUTO_MERGE_MAX_FACES,
+      });
+      for (const m of matches) if (m.faceId) matchedFaceIds.add(m.faceId);
+    } catch (e) {
+      console.warn("autoMergeOnRename: SearchFaces failed", seed, String(e instanceof Error ? e.message : e));
+    }
+  }
+  if (matchedFaceIds.size === 0) return 0;
+
+  // Find which OTHER people own those matched faces.
+  const matchedList = Array.from(matchedFaceIds);
+  const otherPersonIds = new Set<string>();
+  // Pull rows in chunks to stay under the 1000-row limit on `.in()`.
+  for (let i = 0; i < matchedList.length; i += 200) {
+    const chunk = matchedList.slice(i, i + 200);
+    const { data } = await svc.from("asset_faces")
+      .select("person_id, face")
+      .eq("user_id", userId)
+      .neq("person_id", targetPersonId)
+      .not("person_id", "is", null);
+    for (const row of data ?? []) {
+      const fid = String(row?.face?.faceId ?? row?.face?.FaceId ?? "");
+      if (fid && chunk.includes(fid) && row.person_id) {
+        otherPersonIds.add(String(row.person_id));
+      }
+    }
+  }
+  if (otherPersonIds.size === 0) return 0;
+
+  const sources = Array.from(otherPersonIds);
+
+  // Reassign every asset_faces row from source persons → target person.
+  const { error: reassignErr } = await svc.from("asset_faces")
+    .update({ person_id: targetPersonId, updated_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .in("person_id", sources);
+  if (reassignErr) {
+    console.warn("autoMergeOnRename: reassign failed", reassignErr.message);
+    return 0;
+  }
+
+  // Union face_ids onto the target person row, then drop the now-empty sources.
+  const { data: peopleRows } = await svc.from("people")
+    .select("id, face_ids")
+    .eq("user_id", userId)
+    .in("id", [targetPersonId, ...sources]);
+  const merged = new Set<string>();
+  for (const p of peopleRows ?? []) {
+    for (const f of (p.face_ids ?? []) as string[]) if (f) merged.add(f);
+  }
+  await svc.from("people").update({
+    face_ids: Array.from(merged),
+    updated_at: new Date().toISOString(),
+  }).eq("id", targetPersonId);
+  await svc.from("people").delete().eq("user_id", userId).in("id", sources);
+
+  return sources.length;
+}
+
+function uniqStrings(xs: string[]): string[] {
+  return Array.from(new Set(xs));
+}
+
 async function loadAssetFacesForPeople(supa: any, personIds: string[]) {
   const rows: any[] = [];
   for (let from = 0;; from += DB_PAGE_SIZE) {
